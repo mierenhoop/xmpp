@@ -41,6 +41,15 @@ static char *EncodeXmlString(char *d, char *e, const char *s) {
     case '\'':
       d = SafeStpCpy(d, e, "&apos;");
       break;
+    case '&':
+      d = SafeStpCpy(d, e, "&amp;");
+      break;
+    case '<':
+      d = SafeStpCpy(d, e, "&lt;");
+      break;
+    case '>':
+      d = SafeStpCpy(d, e, "&gt;");
+      break;
     default:
       *d++ = *s;
       break;
