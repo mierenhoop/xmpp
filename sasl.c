@@ -11,16 +11,62 @@
 
 #define xmppSaslInitialized 1
 
+#define xmppMaxJidSize 3071
+#define xmppMinMaxStanzaSize 10000
+
+// gets the length of the stanza, sees if stanza is complete
+// or is larger than max stanza size
+// gets length of content stuffs specific to stanza type
+// also store pointer offsets of content or attr strings
+// maybe mutate original xml?
+struct StanzaParser {
+  // yxml_t
+  int depth;
+};
+
+// p can be null!
+struct xmppAttrSlice {
+  const char *p;
+  size_t n, rawn;
+};
+
+struct xmppContentSlice {
+  const char *p;
+  size_t n, rawn;
+}
+
+// if (s.p && (d = malloc(s.n))) xmppReadAttrSlice(d, s);
+// TODO: have specific impl for this?
+void xmppReadAttrSlice(char *d, struct xmppAttrSlice s) {
+  //yxml_t x;
+}
+
+struct xmppMessage {
+  struct xmppAttrSlice from, to, id;
+}
+
+struct xmppStanza {
+  int type; // iq/message/presence
+  xmppAttrSlice id, from to;
+  union {
+  };
+};
+
+
 // p is a buffer allocated by a parent as heap or static
 // n is length of said buffer
-// buffer will contain n,, + authmessage + temp stuff
+// have max size be influenced by prosody's impl?
+// buffer will contain n,, + authmessage + ,p= + clientproofb64
 // https://wiki.xmpp.org/web/SASL_Authentication_and_SCRAM#In_detail
-// feel free to realloc p if malloc'ed
+// feel free to realloc p if malloc'ed: ctx.p = realloc(ctx.p, (ctx.n*=2))
 struct xmppSaslContext {
   int fsm;
   char *p;
   size_t n;
-  size_t r, s, i;
+  size_t initialmsg, username, clientnonce;
+  size_t serverfirstmsg, servernonce, saltb64, iter;
+  size_t clientfinalmsg;
+  size_t clientproofb64;
   char srvsig[20];
 };
 
@@ -60,29 +106,8 @@ void xmppFormatSaslInitialMessage(char *p, struct xmppSaslContext *ctx) {
   stpcpy(p + n, "</auth>");
 }
 
-// c = challenge base64, nc = len
-// make sure pwd is all printable chars
-void xmppSolveSaslChallenge(struct xmppSaslContext *ctx, const char *c, size_t nc, const char *pwd) {
-  // assert ctx-fsm == xmppSaslInitialized
+void xmppFormatSaslResponse(char *p, struct xmppSaslContext *ctx) {
   size_t n;
-  char *r = ctx->p+ctx->r;
-  mbedtls_base64_decode(r, 9001, &n, c, nc); // IDK random value
-  for (int i = 0; i < n; i++) {
-    if (r[i] == ',') {
-      switch (r[i+1]) {
-      case 's':
-        ctx->s = ctx->r + i + 1;
-        break;
-      case 'i':
-        ctx->i = ctx->r + i + 1;
-        break;
-      }
-    }
-  }
-  int itrs = atoi(ctx->p+ctx->i+2);
-}
-
-void xmppFormatSaslResponse(char *p, struct xmppSaslContect *ctx) {
   p = stpcpy(p, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>");
   mbedtls_base64_encode(p, 9001, &n, ctx->p+2, 9001); // IDK random values
   p = stpcpy(p, "</response>");
@@ -108,7 +133,7 @@ void dumphex(const char *p, size_t n) {
   puts("");
 }
 
-void H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
+static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
   mbedtls_md_context_t sha_context;
   mbedtls_md_init(&sha_context);
   printf("H setup: %d\n", mbedtls_md_setup(&sha_context, mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 1));
@@ -116,28 +141,24 @@ void H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t
   mbedtls_md_free(&sha_context);
 }
 
-void HMAC(char d[static 20], const char *p, size_t n, const char k[static 20]) {
-  printf("md hmac: %d\n", mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), k, 20, p, n, d));
+static void HMAC(char d[static 20], const char *p, size_t n, const char k[static 20]) {
+  printf("hmac: %d\n", mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), k, 20, p, n, d));
 }
 
-void SHA1(char d[static 20], const char p[static 20]) {
-  printf("md: %d\n", mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), p, 20, d));
+static void SHA1(char d[static 20], const char p[static 20]) {
+  printf("sha1: %d\n", mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), p, 20, d));
 }
 
-void calculate(struct xmppSaslContext *ctx) {
+static void calculate(struct xmppSaslContext *ctx, const char *pwd, const char *salt, size_t slen, int itrs) {
   char saltedpwd[20], clientkey[20],
        storedkey[20], clientsig[20],
        clientproof[20],
        serverkey[20];
   char authmsg[400];
-  const char *pwd = "pencil";
-  const char *salt = "\x41\x25\xc2\x47\xe4\x3a\xb1\xe9\x3c\x6d\xff\x76";
-  int slen = 12;
-  int itrs = 4096;
   H(saltedpwd, pwd, strlen(pwd), salt, slen, itrs);
   HMAC(clientkey, "Client Key", 10, saltedpwd);
   SHA1(storedkey, clientkey);
-  strcpy(authmsg, "n=user,r=fyko+d2lbbFgONRv9qkxdawL,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,s=QSXCR+Q6sek8bf92,i=4096,c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j");
+  strcpy(authmsg, "n=user,r=fyko+d2lbbFgONRv9qkxdawL,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,s=QSXCR+Q6sek8bf92,i=4096,c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j"); // TODO: ctx->p+3
   HMAC(clientsig, authmsg, strlen(authmsg), storedkey);
   for (int i = 0; i < 20; i++)
     clientproof[i] = clientkey[i] ^ clientsig[i];
@@ -145,12 +166,37 @@ void calculate(struct xmppSaslContext *ctx) {
   HMAC(ctx->srvsig, authmsg, strlen(authmsg), serverkey);
 }
 
-static char buffer[10000], buffer2[1000];
+// c = challenge base64, nc = len
+// make sure pwd is all printable chars
+void xmppSolveSaslChallenge(struct xmppSaslContext *ctx, const char *c, size_t nc, const char *pwd) {
+  // assert ctx-fsm == xmppSaslInitialized
+  size_t n;
+  char *r = ctx->p+ctx->r;
+  mbedtls_base64_decode(r, 9001, &n, c, nc); // IDK random value
+  for (int i = 0; i < n; i++) {
+    if (r[i] == ',') {
+      switch (r[i+1]) {
+      case 's':
+        ctx->s = ctx->r + i + 1;
+        break;
+      case 'i':
+        ctx->i = ctx->r + i + 1;
+        break;
+      }
+    }
+  }
+  int itrs = atoi(ctx->p+ctx->i+1);
+}
+
+
+// minimum maximum stanza size = 10000
+static char buffer[xmppMinMaxStanzaSize+1], buffer2[1000];
 int main() {
   struct xmppSaslContext ctx;
   xmppInitSaslContext(&ctx, buffer2, sizeof(buffer2), "joe");
-  memcpy(ctx.srvsig, "\xae\x61\x7d\xa6\xa5\x7c\x4b\xbb\x2e\x02\x86\x56\x8d\xae\x1d\x25\x19\x05\xb0\xa4", 20);
-  printf("%d\n", xmppVerifySaslSuccess(&ctx, "dj1ybUY5cHFWOFM3c3VBb1pXamE0ZEpSa0ZzS1E9"));
-  //xmppFormatSaslInitialMessage(buffer, &ctx);
-  //puts(buffer);
+  xmppFormatSaslInitialMessage(buffer, &ctx);
+  puts(buffer);
+  xmppSolveSaslChallenge(&ctx, "cj1meWtvK2QybGJiRmdPTlJ2OXFreGRhd0wzcmZjTkhZSlkxWlZ2V1ZzN2oscz1RU1hDUitRNnNlazhiZjkyLGk9NDA5Ng==", );
+  //memcpy(ctx.srvsig, "\xae\x61\x7d\xa6\xa5\x7c\x4b\xbb\x2e\x02\x86\x56\x8d\xae\x1d\x25\x19\x05\xb0\xa4", 20);
+  //printf("%d\n", xmppVerifySaslSuccess(&ctx, "dj1ybUY5cHFWOFM3c3VBb1pXamE0ZEpSa0ZzS1E9"));
 }
