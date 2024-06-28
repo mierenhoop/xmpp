@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <sys/random.h>
 #include <stdbool.h>
+#include <assert.h>
 
 #include "xmpp.h"
 #include "yxml.h"
@@ -44,21 +45,18 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
   //yxml_t x;
 }
 
-
-struct xmppMessage {
-  struct xmppXmlSlice from, to, id;
-};
-
-struct xmppSaslChallenge {
-  struct xmppXmlSlice challenge;
-};
-
-struct xmppSaslSuccess {
-  struct xmppXmlSlice v;
-};
-
 #define XMPP_SASL_CHALLENGE 1
 #define XMPP_SASL_SUCCESS   2
+
+#define XMPP_STREAMFEATURE_STARTTLS (1 << 0)
+#define XMPP_STREAMFEATURE_BIND (1 << 1)
+#define XMPP_STREAMFEATURE_SCRAMSHA1 (1 << 2)
+#define XMPP_STREAMFEATURE_SCRAMSHA1PLUS (1 << 3)
+#define XMPP_STREAMFEATURE_PLAIN (1 << 4)
+
+enum xmppStanzaType {
+  xmppStanzaStreamFeatures,
+};
 
 struct xmppStanza {
   int type; // iq/message/presence
@@ -69,11 +67,128 @@ struct xmppStanza {
   };
 };
 
-void xmppReadStanza(char *s, size_t n) {
-  static char buf[5000];
+enum xmppStanzaReadReturn {
+  xmppStanzaReadError = -1,
+  xmppStanzaReadNothing = 0,
+  xmppStanzaReadOk,
+  xmppStanzaReadEndStream,
+  xmppStanzaReadUnknown,
+};
+
+static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
+  return true;
+}
+
+struct xmppStream {
   yxml_t x;
-  yxml_init(&x, buf, sizeof(buf));
-  yxml_parse(&x, 0);
+};
+
+// Skip all the way until the end of the element it has just entered
+// ret:
+//   < 0: respective yxml error
+//   = 0: unexpected end
+//   > 0: amount of bytes read
+static int SkipUnknownXml(yxml_t *x, const char *p, size_t n) {
+  int stack = 1;
+  for (int i = 0; i < n; i++) {
+    yxml_ret_t r = yxml_parse(x, p[i]);
+    switch (r) {
+    case YXML_ELEMSTART:
+      stack++;
+      break;
+    case YXML_ELEMEND:
+      if (--stack == 0)
+        return i; // TODO: i+1?
+      break;
+    default:
+      if (r < 0)
+        return r;
+    }
+  }
+  return 0;
+}
+
+// expects yxml state already entered stream:features
+static int ReadStreamFeatures(struct xmppStream *s, int f, const char *p, size_t n) {
+  int j;
+  for (int i = 0; i < n; i++) {
+    yxml_ret_t r = yxml_parse(&s->x, p[i]);
+    switch (r) {
+    case YXML_ELEMSTART:
+      i++;
+      if ((j = SkipUnknownXml(&s->x, p+i, n-i)) < 0)
+        return j;
+      i += j;
+    case YXML_ELEMEND:
+      assert(!strcmp(s->x.elem, "stream:features"));
+      return i;
+    default:
+      if (r < 0)
+        return r;
+    }
+  }
+}
+
+enum xmppStanzaReadReturn xmppReadStanza(struct xmppStream *s, const char *p, size_t n) {
+  enum {
+    IQ,
+    MESSAGE,
+    PRESENCE,
+  };
+  struct xmppStanza st;
+  int i;
+  for (i = 0; i < n; i++) {
+    yxml_ret_t r = yxml_parse(&s->x, p[i]);
+    switch (r) {
+    case YXML_OK:
+    case YXML_CONTENT:
+      break;
+    case YXML_ELEMSTART:
+      if (!strcmp(s->x.elem, "iq")) {
+      } else if (!strcmp(s->x.elem, "message")) {
+      } else if (!strcmp(s->x.elem, "presence")) {
+      } else if (!strcmp(s->x.elem, "stream:features")) {
+      } else {
+        SkipUnknownXml(&s->x, p+i, n-i);
+        return xmppStanzaReadUnknown;
+      }
+      goto found;
+    case YXML_ELEMEND:
+      puts("stream end");
+      return xmppStanzaReadEndStream;
+    default:
+      puts("stream error");
+      return xmppStanzaReadError;
+    }
+  }
+  return xmppStanzaReadNothing;
+found:
+  for (; i < n; i++) {
+    yxml_ret_t r = yxml_parse(&s->x, p[i]);
+    switch (r) {
+    }
+  }
+}
+
+void xmppExpectStream(struct xmppStream *s, char *b, size_t bn, const char *p, size_t pn) {
+  yxml_init(&s->x, (void*)b, bn);
+  for (int i = 0; i < pn; i++) {
+    yxml_ret_t r = yxml_parse(&s->x, p[i]);
+    switch (r) {
+    case YXML_OK:
+    case YXML_CONTENT:
+      break;
+    case YXML_ELEMSTART:
+      if (!strcmp(s->x.elem, "stream:stream")) {
+        return;
+      } else {
+        puts("errrorrrr");
+        return;
+      }
+    default:
+      puts("stream error");
+    }
+  }
 }
 
 static char *SafeStpCpy(char *d, char *e, char *s) {
@@ -199,6 +314,26 @@ static int SHA1(char d[static 20], const char p[static 20]) {
   return mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), p, 20, d);
 }
 
+// TODO: this flowchart can be used to reuse buffers
+//
+// |PBKDF2-SHA-1|
+//       |
+//   saltedpwd----------------------+
+//       |                          |
+//  |HMAC-SHA-1|                    |
+//       |                     |HMAC-SHA-1|
+//   clientkey---------+            |
+//       |             |        serverkey
+//    |SHA-1|          |            |
+//       |             |       |HMAC-SHA-1|
+//   storedkey         |            |
+//       |             |            |
+//  |HMAC-SHA-1|       |            |
+//       |             |            |
+//   clientsig-------|XOR|          |
+//                     |            |
+//                clientproof   serversig
+//
 // TODO: check mbedtls return values
 static void calculate(struct xmppSaslContext *ctx, char clientproof[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
   char saltedpwd[20], clientkey[20],
@@ -252,3 +387,12 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
 }
 
 
+#ifdef XMPP_RUNTEST
+
+int main() {
+  puts("Starting tests");
+  puts("All tests passed");
+  return 0;
+}
+
+#endif

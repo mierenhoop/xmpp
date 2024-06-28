@@ -1,0 +1,12 @@
+Goals:
+- Run on embedded (support for ESP-IDF (ESP32) & pico-sdk (Raspberry Pi Pico)).
+- Support non-embedded too.
+- Be compatible with Prosody.
+- Be very fast.
+- Low amount of code while still being readable.
+- Extreme control of memory
+- Have the modern XMPP features available.
+
+Non-goals:
+- Implement the XMPP spec word-for-word.
+- Have an extension/plugin system, for additional features you must patch the library.
