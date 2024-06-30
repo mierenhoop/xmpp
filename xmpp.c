@@ -79,116 +79,196 @@ static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
   return true;
 }
 
+// TODO: rename to struct Parser?
+// TODO: don't use yxml, but in-house parser,
+// dozens of LOC can be removed because XMPP only allows subset of XML
+// and the usage here is usecase specific.
 struct xmppStream {
   yxml_t x;
+  int i, n;
+  const char *p;
 };
 
 // Skip all the way until the end of the element it has just entered
+// TODO: ret yxml_ret_t?
 // ret:
 //   < 0: respective yxml error
-//   = 0: unexpected end
-//   > 0: amount of bytes read
-static int SkipUnknownXml(yxml_t *x, const char *p, size_t n) {
+//   = 0: OK
+static int SkipUnknownXml(struct xmppStream *s) {
   int stack = 1;
-  for (int i = 0; i < n; i++) {
-    yxml_ret_t r = yxml_parse(x, p[i]);
+  for (; s->i < s->n; s->i++) {
+    yxml_ret_t r = yxml_parse(&s->x, s->p[s->i]);
     switch (r) {
     case YXML_ELEMSTART:
       stack++;
       break;
     case YXML_ELEMEND:
       if (--stack == 0)
-        return i; // TODO: i+1?
+        return 0;
       break;
     default:
       if (r < 0)
         return r;
     }
   }
-  return 0;
+  return YXML_EEOF;
 }
 
-// expects yxml state already entered stream:features
-static int ReadStreamFeatures(struct xmppStream *s, int f, const char *p, size_t n) {
-  int j;
-  for (int i = 0; i < n; i++) {
-    yxml_ret_t r = yxml_parse(&s->x, p[i]);
-    switch (r) {
+// ret:
+//  < 0: yxml error
+//  = 0: OK
+//  = 1: end
+// attribute name will be in s->x.attr
+// slc will contain the attr value
+// MUST be called directly after YXML_ELEMSTART
+static int ParseAttribute(struct xmppStream *s, struct xmppXmlSlice *slc) {
+  int r;
+  slc->p = NULL;
+  slc->n = 0;
+  slc->rawn = 0;
+  while (1) { // hacky way to check end of attr list
+    if (!slc->p && (s->p[s->i-1] == '>' || s->p[s->i-1] == '/'))
+      return 1;
+    if (!(s->i < s->n))
+      break;
+    switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
+    case YXML_ATTREND:
+      return 0;
+    case YXML_ATTRVAL:
+      if (!slc->p)
+        slc->p = s->p + s->i - 1;
+      slc->n += strlen(s->x.data);
+      break;
+    default:
+      if (r < 0)
+        return r;
+    }
+    if (slc->p)
+      slc->rawn++;
+  }
+  return YXML_EEOF;
+}
+
+// opposite of inspect element ;)
+static int ExpectElement(struct xmppStream *s) {
+  int r;
+  while (s->i < s->n) {
+    switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
+    case YXML_OK:
+      break;
     case YXML_ELEMSTART:
-      i++;
-      if ((j = SkipUnknownXml(&s->x, p+i, n-i)) < 0)
-        return j;
-      i += j;
-    case YXML_ELEMEND:
-      assert(!strcmp(s->x.elem, "stream:features"));
-      return i;
+      return 0;
     default:
       if (r < 0)
         return r;
     }
   }
+  return YXML_EEOF;
 }
 
+// expects yxml state already entered stream:features
+static int ReadStreamFeatures(struct xmppStream *s, int *f, const char *p, size_t n) {
+  //int j;
+  //for (int i = 0; i < n; i++) {
+  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
+  //  switch (r) {
+  //  case YXML_ELEMSTART:
+  //    i++;
+  //    if ((j = SkipUnknownXml(&s->x, p+i, n-i)) < 0)
+  //      return j;
+  //    i += j;
+  //  case YXML_ELEMEND:
+  //    assert(!strcmp(s->x.elem, "stream:features"));
+  //    return i;
+  //  default:
+  //    if (r < 0)
+  //      return r;
+  //  }
+  //}
+  return 0;
+}
+
+// TODO: have new yxml state per stanza
 enum xmppStanzaReadReturn xmppReadStanza(struct xmppStream *s, const char *p, size_t n) {
   enum {
     IQ,
     MESSAGE,
     PRESENCE,
   };
-  struct xmppStanza st;
-  int i;
-  for (i = 0; i < n; i++) {
-    yxml_ret_t r = yxml_parse(&s->x, p[i]);
-    switch (r) {
-    case YXML_OK:
-    case YXML_CONTENT:
-      break;
-    case YXML_ELEMSTART:
-      if (!strcmp(s->x.elem, "iq")) {
-      } else if (!strcmp(s->x.elem, "message")) {
-      } else if (!strcmp(s->x.elem, "presence")) {
-      } else if (!strcmp(s->x.elem, "stream:features")) {
-      } else {
-        SkipUnknownXml(&s->x, p+i, n-i);
-        return xmppStanzaReadUnknown;
-      }
-      goto found;
-    case YXML_ELEMEND:
-      puts("stream end");
-      return xmppStanzaReadEndStream;
-    default:
-      puts("stream error");
-      return xmppStanzaReadError;
-    }
-  }
+  //struct xmppStanza st;
+  //int i;
+  //for (i = 0; i < n; i++) {
+  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
+  //  switch (r) {
+  //  case YXML_OK:
+  //  case YXML_CONTENT:
+  //    break;
+  //  case YXML_ELEMSTART:
+  //    if (!strcmp(s->x.elem, "iq")) {
+  //    } else if (!strcmp(s->x.elem, "message")) {
+  //    } else if (!strcmp(s->x.elem, "presence")) {
+  //    } else if (!strcmp(s->x.elem, "stream:features")) {
+  //    } else {
+  //      SkipUnknownXml(&s->x, p+i, n-i);
+  //      return xmppStanzaReadUnknown;
+  //    }
+  //    goto found;
+  //  case YXML_ELEMEND:
+  //    puts("stream end");
+  //    return xmppStanzaReadEndStream;
+  //  default:
+  //    puts("stream error");
+  //    return xmppStanzaReadError;
+  //  }
+  //}
   return xmppStanzaReadNothing;
 found:
-  for (; i < n; i++) {
-    yxml_ret_t r = yxml_parse(&s->x, p[i]);
-    switch (r) {
-    }
-  }
+  //for (; i < n; i++) {
+  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
+  //  switch (r) {
+  //  }
+  //}
 }
 
-void xmppExpectStream(struct xmppStream *s, char *b, size_t bn, const char *p, size_t pn) {
-  yxml_init(&s->x, (void*)b, bn);
-  for (int i = 0; i < pn; i++) {
-    yxml_ret_t r = yxml_parse(&s->x, p[i]);
-    switch (r) {
-    case YXML_OK:
-    case YXML_CONTENT:
-      break;
-    case YXML_ELEMSTART:
-      if (!strcmp(s->x.elem, "stream:stream")) {
-        return;
-      } else {
-        puts("errrorrrr");
-        return;
-      }
-    default:
-      puts("stream error");
+int xmppExpectStream(struct xmppStream *s) {
+  struct xmppXmlSlice attr;
+  int r;
+  if ((r = ExpectElement(s)))
+    return r;
+  puts("Found element!");
+  if (strcmp(s->x.elem, "stream:stream"))
+    return 1;
+  puts("Element is stream");
+  while (!(r = ParseAttribute(s, &attr))) {
+    printf("found attr %s %d %d\n", s->x.attr, attr.rawn, attr.n);
+    if (!strcmp(s->x.attr, "xmlns")) {
+    } else if (!strcmp(s->x.attr, "from")) {
     }
   }
+  if (r < 0)
+    return r;
+  puts("Success!");
+  return 0;
+  //for (int i = 0; i < pn; i++) {
+  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
+  //  switch (r) {
+  //  case YXML_OK:
+  //  case YXML_CONTENT:
+  //    break;
+  //  case YXML_ELEMSTART:
+  //    if (!strcmp(s->x.elem, "stream:stream")) {
+  //      return;
+  //    } else {
+  //      puts("errrorrrr");
+  //      return;
+  //    }
+  //  case YXML_ATTRSTART:
+  //  case YXML_ATTREND:
+  //  case YXML_ATTRVAL:
+  //  default:
+  //    puts("stream error");
+  //  }
+  //}
 }
 
 static char *SafeStpCpy(char *d, char *e, char *s) {
@@ -389,10 +469,36 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
 
 #ifdef XMPP_RUNTEST
 
-// minimum maximum stanza size = 10000
-static char buffer[xmppMinMaxStanzaSize+1], buffer2[1000];
-int main() {
-  puts("Starting tests");
+static struct xmppStream SetupXmppStream(const char *xml) {
+  static char buf[1000];
+  struct xmppStream s;
+  yxml_init(&s.x, buf, sizeof(buf));
+  s.p = xml;
+  s.i = 0;
+  s.n = strlen(xml);
+  return s;
+}
+
+static void TestXml() {
+	struct xmppStream s = SetupXmppStream(
+			"<?xml version='1.0'?>"
+			"<stream:stream"
+			" from='im.example.com'"
+			" id='++TR84Sm6A3hnt3Q065SnAbbk3Y='"
+			" to='juliet@im.example.com'"
+			" version='1.0'"
+			" xml:lang='en'"
+			" xmlns='jabber:client'"
+			" xmlns:stream='http://etherx.jabber.org/streams'>"
+      );
+  assert(xmppExpectStream(&s) == 0);
+}
+
+static void TestSkipUnknownXml() {
+}
+
+static void TestSasl() {
+  static char buffer[xmppMinMaxStanzaSize+1], buffer2[1000];
   char *bufe = buffer + sizeof(buffer);
   struct xmppSaslContext ctx;
   xmppInitSaslContext(&ctx, buffer2, sizeof(buffer2), "user");
@@ -407,6 +513,13 @@ int main() {
   c.p =  "dj1ybUY5cHFWOFM3c3VBb1pXamE0ZEpSa0ZzS1E9";
   c.rawn = strlen(c.p);
   printf("%d\n", xmppVerifySaslSuccess(&ctx, c));
+}
+
+// minimum maximum stanza size = 10000
+int main() {
+  puts("Starting tests");
+  TestXml();
+  TestSasl();
   puts("All tests passed");
   return 0;
 }
