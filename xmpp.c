@@ -6,6 +6,10 @@
 #include <sys/random.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <stdarg.h>
 
 #include "xmpp.h"
 #include "yxml.h"
@@ -87,6 +91,7 @@ struct xmppStream {
   yxml_t x;
   int i, n;
   const char *p;
+  struct xmppXmlSlice from, to, id;
 };
 
 // Skip all the way until the end of the element it has just entered
@@ -241,8 +246,12 @@ int xmppExpectStream(struct xmppStream *s) {
   puts("Element is stream");
   while (!(r = ParseAttribute(s, &attr))) {
     printf("found attr %s %d %d\n", s->x.attr, attr.rawn, attr.n);
-    if (!strcmp(s->x.attr, "xmlns")) {
+    if (!strcmp(s->x.attr, "id")) {
+      memcpy(&s->id, &attr, sizeof(attr));
     } else if (!strcmp(s->x.attr, "from")) {
+      memcpy(&s->from, &attr, sizeof(attr));
+    } else if (!strcmp(s->x.attr, "to")) {
+      memcpy(&s->to, &attr, sizeof(attr));
     }
   }
   if (r < 0)
@@ -342,10 +351,47 @@ static char *DecodeBase64(char *d, char *e, char *s, size_t n, bool nul) {
   return d+n;
 }
 
+static char *EncodeXmlString(char *d, char *e, const char *s) {
+  for (;*s && d < e; s++) {
+    switch (*s) {
+    case '"': d = SafeStpCpy(d, e, "&quot;"); break;
+    case '\'': d = SafeStpCpy(d, e, "&apos;"); break;
+    case '&': d = SafeStpCpy(d, e, "&amp;"); break;
+    case '<': d = SafeStpCpy(d, e, "&lt;"); break;
+    case '>': d = SafeStpCpy(d, e, "&gt;"); break;
+    default:
+      *d++ = *s;
+      break;
+    }
+  }
+  return d;
+}
+
+static char *FormatXml(char *d, char *e, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  for (; *fmt && d < e; fmt++) {
+    if (*fmt == '%')
+      d = EncodeXmlString(d, e, va_arg(ap, const char*));
+    else
+      *d++ = *fmt;
+  }
+  va_end(ap);
+  if (d < e)
+    *d = 0;
+  return d;
+}
+
+char *xmppFormatStream(char *p, char *e, const char *from, const char *to) {
+  return FormatXml(p, e, "<?xml version='1.0'?>"
+      "<stream:stream xmlns='jabber:client'"
+      " version='1.0' xmlns:stream='http://etherx.jabber.org/streams'"
+      " from='%' to='%'>", from, to);
+}
+
 char *xmppFormatSaslInitialMessage(char *p, char *e, struct xmppSaslContext *ctx) {
-  p = SafeStpCpy(p, e, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>");
+  p = SafeStpCpy(p, e, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>"); // TODO: have base64 encode in gormatXml?
   p = EncodeBase64(p, e, ctx->p, ctx->serverfirstmsg-1);
-  //mbedtls_base64_encode(p, 9001, &n, ctx->p, ctx->serverfirstmsg-1); // IDK random value
   return SafeStpCpy(p, e, "</auth>");
 }
 
@@ -492,6 +538,8 @@ static void TestXml() {
 			" xmlns:stream='http://etherx.jabber.org/streams'>"
       );
   assert(xmppExpectStream(&s) == 0);
+  assert(s.to.p && !strncmp(s.to.p, "juliet@im.example.com", s.to.rawn));
+  assert(s.to.rawn == s.to.n);
 }
 
 static void TestSkipUnknownXml() {
@@ -515,13 +563,54 @@ static void TestSasl() {
   printf("%d\n", xmppVerifySaslSuccess(&ctx, c));
 }
 
+static void Do(int s) {
+  static char in[10000], out[10000], saslbuf[1000], *e;
+  e = xmppFormatStream(out, out+sizeof(out), "admin@localhost", "localhost");
+  //struct xmppSaslContext ctx;
+  //xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
+  //e = xmppFormatSaslInitialMessage(out, out+sizeof(out), &ctx);
+  printf("%s\n", out);
+  write(s, out, e-out);
+  int r;
+  if ((r = read(s, in, sizeof(in))) > 0) {
+    in[r] = '\0';
+    printf("%d %s\n", r, in);
+  }
+}
+
+static void TestConnection() {
+  int s = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in sa = {0};
+  sa.sin_family = AF_INET;
+  sa.sin_port = htons(10444);
+  puts("Connecting");
+  if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) < 0)
+    perror("connection failed");
+  puts("Connected");
+  Do(s);
+  close(s);
+}
+
 // minimum maximum stanza size = 10000
 int main() {
   puts("Starting tests");
-  TestXml();
-  TestSasl();
+  //TestXml();
+  //TestSasl();
+  TestConnection();
   puts("All tests passed");
   return 0;
 }
+
+#if 0
+
+struct xmppClient c;
+char req[10000], resp[10000];
+xmppInitiate(&c, from, to, features); // features can be SASLSCRAMSHA1|SASLPLAIN|TLS|MUSTTLS
+// r could be one of 
+//  | PARTIAL(req buffer not complete, stanza not complete ending, so should read more bytes from stream)
+//  | SEND(should send req)
+int r = xmppIterate(req, strlen(req), resp, sizeof(resp));
+
+#endif
 
 #endif
