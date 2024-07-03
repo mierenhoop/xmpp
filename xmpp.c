@@ -395,11 +395,11 @@ char *xmppFormatSaslInitialMessage(char *p, char *e, struct xmppSaslContext *ctx
   return SafeStpCpy(p, e, "</auth>");
 }
 
-void xmppFormatSaslResponse(char *p, struct xmppSaslContext *ctx) {
+char * xmppFormatSaslResponse(char *p, struct xmppSaslContext *ctx) {
   size_t n;
   p = stpcpy(p, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>");
   mbedtls_base64_encode(p, 9001, &n, ctx->p+ctx->clientfinalmsg, ctx->clientfinalmsgend-ctx->clientfinalmsg); // IDK random values
-  p = stpcpy(p + n, "</response>");
+  return stpcpy(p + n, "</response>");
 }
 
 // TODO: use a single buf? mbedtls decode base64 probably allows overlap
@@ -512,6 +512,21 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   return 0;
 }
 
+static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
+  for (;*p;p++) {
+    if (*p == '>') {
+      s->p = p+1;
+      break;
+    }
+  }
+  for (;*p;p++) {
+    if (*p == '<') {
+      s->n = s->rawn = p - s->p;
+      break;
+    }
+  }
+}
+
 
 #ifdef XMPP_RUNTEST
 
@@ -563,26 +578,39 @@ static void TestSasl() {
   printf("%d\n", xmppVerifySaslSuccess(&ctx, c));
 }
 
-static void Do(int s) {
-  static char in[10000], out[10000], saslbuf[1000], *e;
-  e = xmppFormatStream(out, out+sizeof(out), "admin@localhost", "localhost");
-  //struct xmppSaslContext ctx;
-  //xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
-  //e = xmppFormatSaslInitialMessage(out, out+sizeof(out), &ctx);
-  printf("%s\n", out);
+static char in[10000], out[10000], saslbuf[1000], *e;
+static void Transfer(int s) {
+  printf("Sending %s\n", out);
   write(s, out, e-out);
   int r;
   if ((r = read(s, in, sizeof(in))) > 0) {
     in[r] = '\0';
-    printf("%d %s\n", r, in);
+    printf("Got response %d %s\n", r, in);
   }
+}
+
+static void Do(int s) {
+  struct xmppSaslContext ctx;
+  struct xmppXmlSlice c;
+  e = xmppFormatStream(out, out+sizeof(out), "admin@localhost", "localhost");
+  Transfer(s);
+  xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
+  e = xmppFormatSaslInitialMessage(out, out+sizeof(out), &ctx);
+  Transfer(s);
+  GetChallengeRealFast(in, &c);
+  printf("%p %d\n", c.p, c.rawn);
+  xmppSolveSaslChallenge(&ctx, c, "adminpass");
+  e = xmppFormatSaslResponse(out, &ctx);
+  Transfer(s);
+  GetChallengeRealFast(in, &c);
+  printf("Success? %s\n", xmppVerifySaslSuccess(&ctx, c) == 0 ? "yes" : "no");
 }
 
 static void TestConnection() {
   int s = socket(AF_INET, SOCK_STREAM, 0);
   struct sockaddr_in sa = {0};
   sa.sin_family = AF_INET;
-  sa.sin_port = htons(10444);
+  sa.sin_port = htons(5222);
   puts("Connecting");
   if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) < 0)
     perror("connection failed");
