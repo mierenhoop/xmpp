@@ -1,5 +1,14 @@
 #include <mbedtls/pkcs5.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/platform.h>
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/error.h>
+
+
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -13,6 +22,8 @@
 
 #include "xmpp.h"
 #include "yxml.h"
+
+#include "cacert.h"
 
 // https://sans-io.readthedocs.io/
 
@@ -640,6 +651,98 @@ static void Transfer(int s) {
   }
 }
 
+void thing() {
+  char *buf = NULL;
+  int ret, len;
+
+  mbedtls_entropy_context entropy;
+  mbedtls_ctr_drbg_context ctr_drbg;
+  mbedtls_ssl_context ssl;
+  mbedtls_x509_crt cacert;
+  mbedtls_ssl_config conf;
+  mbedtls_net_context server_fd;
+
+  mbedtls_ssl_init(&ssl);
+  mbedtls_x509_crt_init(&cacert);
+  mbedtls_ctr_drbg_init(&ctr_drbg);
+
+  mbedtls_ssl_config_init(&conf);
+
+  mbedtls_entropy_init(&entropy);
+  if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+          NULL, 0)) != 0) {
+    assert(false);
+  }
+
+  ret = mbedtls_x509_crt_parse(&cacert, cacert_pem, cacert_pem_len);
+
+  if (ret < 0) {
+    assert(false);
+  }
+
+  /* Hostname set here should match CN in server certificate */
+  if ((ret = mbedtls_ssl_set_hostname(&ssl, "localhost")) != 0) {
+    assert(false);
+  }
+
+  if ((ret = mbedtls_ssl_config_defaults(&conf,
+          MBEDTLS_SSL_IS_CLIENT,
+          MBEDTLS_SSL_TRANSPORT_STREAM,
+          MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
+    assert(false);
+  }
+
+  mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+  mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
+  mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
+
+  if ((ret = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
+    assert(false);
+  }
+
+  mbedtls_net_init(&server_fd);
+
+  if ((ret = mbedtls_net_connect(&server_fd, "localhost",
+          "5222", MBEDTLS_NET_PROTO_TCP)) != 0) {
+    assert(false);
+  }
+
+  mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
+
+  puts("done everything");
+
+  static char buf1[1000], buf2[1000];
+  char *e = xmppFormatStream(buf1, buf1+sizeof(buf1), "admin@localhost", "localhost");
+  mbedtls_net_send(&server_fd, buf1, e-buf1);
+  size_t n = mbedtls_net_recv(&server_fd, buf2, sizeof(buf2));
+  buf2[n] = '\0';
+  printf("n = %d %s\n", n, buf2);
+  strcpy(buf1, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
+  mbedtls_net_send(&server_fd, buf1, strlen(buf1));
+  n = mbedtls_net_recv(&server_fd, buf2, sizeof(buf2));
+  buf2[n] = '\0';
+  printf("n = %d %s\n", n, buf2);
+
+	while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
+		if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+      printf("%d\n", ret);
+			assert(false);
+		}
+	}
+
+  int flags;
+	if ((flags = mbedtls_ssl_get_verify_result(&ssl)) != 0) {
+    puts("cert faile");
+	} else {
+    puts("cert Successssss");
+	}
+  e = xmppFormatStream(buf1, buf1+sizeof(buf1), "admin@localhost", "localhost");
+  mbedtls_ssl_write(&ssl, buf1, e-buf1);
+  n = mbedtls_ssl_read(&ssl, buf2, sizeof(buf2));
+  buf2[n] = '\0';
+  printf("n = %d %s\n", n, buf2);
+}
+
 static void Do(int s) {
   struct xmppSaslContext ctx;
   struct xmppXmlSlice c;
@@ -673,7 +776,8 @@ static void TestConnection() {
 // minimum maximum stanza size = 10000
 int main() {
   puts("Starting tests");
-  TestXml();
+  //TestXml();
+  thing();
   //TestSasl();
   //TestConnection();
   puts("All tests passed");
@@ -682,9 +786,12 @@ int main() {
 
 #if 0
 
+https://github.com/espressif/esp-idf/blob/master/examples/protocols/smtp_client/main/smtp_client_example_main.c
+
 struct xmppClient c;
 char req[10000], resp[10000];
 xmppInitiate(&c, from, to, features); // features can be SASLSCRAMSHA1|SASLPLAIN|TLS|MUSTTLS
+
 // r could be one of 
 //  | PARTIAL(req buffer not complete, stanza not complete ending, so should read more bytes from stream)
 //  | SEND(should send req)

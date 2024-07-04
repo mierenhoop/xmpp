@@ -1,4 +1,4 @@
-LDFLAGS= /usr/lib/x86_64-linux-gnu/libmbedcrypto.a
+LDFLAGS= -lmbedtls -lmbedcrypto -lmbedx509
 
 all:
 	mkdir -p o

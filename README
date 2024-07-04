@@ -1,10 +1,12 @@
 Goals:
 - Run on embedded (support for ESP-IDF (ESP32) & pico-sdk (Raspberry Pi Pico)).
 - Support non-embedded too.
-- Be compatible with Prosody.
+- Be compatible with the major XMPP servers (Prosody).
+- Don't allow unusual or malicious data sent from a server.
 - Be very fast.
 - Low amount of code while still being readable.
-- Extreme control of memory
+- Don't expect the programmer to be stupid.
+- Extreme control of memory.
 - Have the modern XMPP features available.
 
 Non-goals:
