@@ -49,6 +49,11 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
   //yxml_t x;
 }
 
+#define XMPP_EMEM -1
+#define XMPP_EXML -2
+#define XMPP_ECRYPTO -3
+#define XMPP_EPARTIAL -4
+
 #define XMPP_SASL_CHALLENGE 1
 #define XMPP_SASL_SUCCESS   2
 
@@ -97,7 +102,7 @@ struct xmppStream {
 // Skip all the way until the end of the element it has just entered
 // TODO: ret yxml_ret_t?
 // ret:
-//   < 0: respective yxml error
+//   < 0: XMPP error
 //   = 0: OK
 static int SkipUnknownXml(struct xmppStream *s) {
   int stack = 1;
@@ -113,19 +118,20 @@ static int SkipUnknownXml(struct xmppStream *s) {
       break;
     default:
       if (r < 0)
-        return r;
+        return XMPP_EXML;
     }
   }
-  return YXML_EEOF;
+  return XMPP_EPARTIAL;
 }
 
 // ret:
-//  < 0: yxml error
+//  < 0: XMPP error
 //  = 0: OK
 //  = 1: end
 // attribute name will be in s->x.attr
 // slc will contain the attr value
 // MUST be called directly after YXML_ELEMSTART
+// even for a self-closing element, it will not trigger in this function.
 static int ParseAttribute(struct xmppStream *s, struct xmppXmlSlice *slc) {
   int r;
   slc->p = NULL;
@@ -146,15 +152,16 @@ static int ParseAttribute(struct xmppStream *s, struct xmppXmlSlice *slc) {
       break;
     default:
       if (r < 0)
-        return r;
+        return XMPP_EXML;
     }
     if (slc->p)
       slc->rawn++;
   }
-  return YXML_EEOF;
+  return XMPP_EPARTIAL;
 }
 
 // opposite of inspect element ;)
+// elem can be expected element or NULL, in which case anything is OK
 static int ExpectElement(struct xmppStream *s) {
   int r;
   while (s->i < s->n) {
@@ -165,10 +172,10 @@ static int ExpectElement(struct xmppStream *s) {
       return 0;
     default:
       if (r < 0)
-        return r;
+        return XMPP_EXML;
     }
   }
-  return YXML_EEOF;
+  return XMPP_EPARTIAL;
 }
 
 // expects yxml state already entered stream:features
@@ -193,7 +200,12 @@ static int ReadStreamFeatures(struct xmppStream *s, int *f, const char *p, size_
   return 0;
 }
 
-// TODO: have new yxml state per stanza
+// TODO: have new yxml state per stanza, this is only because if a stanza is partial
+// we want to ignore it and let the user decide if it needs to get more data from server
+// and read it again, the yxml would be messed up for reading again
+// maybe this is not needed.
+// But right now if we want to correctly detect </stream:stream>, the new yxml state should
+// start with <stream:stream>
 enum xmppStanzaReadReturn xmppReadStanza(struct xmppStream *s, const char *p, size_t n) {
   enum {
     IQ,
@@ -512,6 +524,40 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   return 0;
 }
 
+// MAY ONLY be called after ParseAttribute returns 1
+// will read all the way to end of element
+static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
+  int r;
+  slc->p = NULL;
+  slc->n = 0;
+  slc->rawn = 0;
+  while (s->i < s->n) {
+    if (!slc->p) {
+      if (s->p[s->i - 1] == '>')
+        slc->p = s->p + s->i;
+    }
+    switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
+    case YXML_ELEMEND:
+      return 0;
+    case YXML_CONTENT:
+      if (!slc->p)
+        slc->p = s->p + s->i - 1;
+      slc->n += strlen(s->x.data);
+      break;
+    default:
+      if (r < 0)
+        return XMPP_EXML;
+    }
+    //slc->rawn++;
+  }
+  return XMPP_EPARTIAL;
+}
+
+static void GetChallenge(struct xmppStream *s, struct xmppXmlSlice *slc) {
+  if (ExpectElement(s))
+    return;
+}
+
 static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
   for (;*p;p++) {
     if (*p == '>') {
@@ -532,7 +578,7 @@ static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
 
 static struct xmppStream SetupXmppStream(const char *xml) {
   static char buf[1000];
-  struct xmppStream s;
+  struct xmppStream s = {0};
   yxml_init(&s.x, buf, sizeof(buf));
   s.p = xml;
   s.i = 0;
@@ -555,6 +601,11 @@ static void TestXml() {
   assert(xmppExpectStream(&s) == 0);
   assert(s.to.p && !strncmp(s.to.p, "juliet@im.example.com", s.to.rawn));
   assert(s.to.rawn == s.to.n);
+  s = SetupXmppStream("<something/>");
+  ExpectElement(&s);
+  struct xmppXmlSlice slc;
+  ParseAttribute(&s, &slc);
+  printf("NEXT %d\n", yxml_parse(&s.x, s.p[s.i++]));
 }
 
 static void TestSkipUnknownXml() {
@@ -622,9 +673,9 @@ static void TestConnection() {
 // minimum maximum stanza size = 10000
 int main() {
   puts("Starting tests");
-  //TestXml();
+  TestXml();
   //TestSasl();
-  TestConnection();
+  //TestConnection();
   puts("All tests passed");
   return 0;
 }
