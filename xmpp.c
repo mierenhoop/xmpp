@@ -32,18 +32,6 @@
 // ESP: https://github.com/espressif/esp-idf/blob/0479494e7abe5aef71393fba2e184b3a78ea488f/components/mbedtls/port/esp_hardware.c#L19
 
 
-//#ifndef NDEBUG
-//#define Assert(expr) do { \
-//  if (!(expr)) {\
-//    fprintf(stderr, "\x1b[31mAssertion failed \x1b[34m%s:%d: \x1b[33m%s\x1b[0m\n", __FILE__,  __LINE__, #expr); \
-//    exit(1); \
-//    } \
-//  } while (0)
-//
-//#else
-//#define Assert()
-//#endif
-
 // gets the length of the stanza, sees if stanza is complete
 // or is larger than max stanza size
 // gets length of content stuffs specific to stanza type
@@ -54,7 +42,7 @@ struct StanzaParser {
   int depth;
 };
 
-// if (s.p && (d = malloc(s.n))) xmppReadXmlSlice(d, s);
+// if (s.p && (d = malloc(s.n+1))) xmppReadXmlSlice(d, s);
 // TODO: have specific impl for this?
 void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
   //yxml_t x;
@@ -74,16 +62,50 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
 #define XMPP_STREAMFEATURE_SCRAMSHA1PLUS (1 << 3)
 #define XMPP_STREAMFEATURE_PLAIN (1 << 4)
 
-enum xmppStanzaType {
-  xmppStanzaStreamFeatures,
+
+#define XMPP_STANZA_EMPTY 0
+#define XMPP_STANZA_MESSAGE 1
+#define XMPP_STANZA_PRESENCE 2
+#define XMPP_STANZA_IQ 3
+#define XMPP_STANZA_STREAMFEATURES 4
+
+
+// Any of the child elements can be null.
+// We only support a single body, subject, etc. This deviates from the spec.
+// It will only read the first instance.
+struct xmppMessage {
+  struct xmppXmlSlice body, thread, treadparent, subject;
+};
+
+// 8.3.2
+#define XMPP_ERRORTYPE_AUTH 1
+#define XMPP_ERRORTYPE_CANCEL 2
+#define XMPP_ERRORTYPE_CONTINUE 3
+#define XMPP_ERRORTYPE_MODIFY 4
+#define XMPP_ERRORTYPE_WAIT 5
+
+#define XMPP_ERRORCONDITION_BAD_REQUEST
+#define XMPP_ERRORCONDITION_CONFLICT
+#define XMPP_ERRORCONDITION_FEATURE_NOT_IMPLEMENTED
+#define XMPP_ERRORCONDITION_FORBIDDEN
+#define XMPP_ERRORCONDITION_GONE
+// etc.. rfc6120 8.3.3
+
+struct xmppError {
+  int stanzakind;
+  int errortype;
+  int condition;
+  struct xmppXmlSlice text;
 };
 
 struct xmppStanza {
   int type; // iq/message/presence
   struct xmppXmlSlice id, from, to;
   union {
-    struct xmppXmlSlice challenge;
-    struct xmppXmlSlice success;
+    //struct xmppXmlSlice challenge;
+    //struct xmppXmlSlice success;
+    struct xmppMessage message;
+    struct xmppError error;
   };
 };
 
@@ -268,7 +290,7 @@ int xmppExpectStream(struct xmppStream *s) {
     return 1;
   puts("Element is stream");
   while (!(r = ParseAttribute(s, &attr))) {
-    printf("found attr %s %d %d\n", s->x.attr, attr.rawn, attr.n);
+    //printf("found attr %s %d %d\n", s->x.attr, attr.rawn, attr.n);
     if (!strcmp(s->x.attr, "id")) {
       memcpy(&s->id, &attr, sizeof(attr));
     } else if (!strcmp(s->x.attr, "from")) {
@@ -345,7 +367,7 @@ static char *SanitizeSaslUsername(char *d, const char *s) {
 
 // TODO: check for ctx->n or SafeStpCpy
 void xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user) {
-  memset(ctx, sizeof(ctx), 0);
+  memset(ctx, 0, sizeof(*ctx));
   ctx->p = p;
   ctx->n = n;
   p = stpcpy(p, "n,,n=");
@@ -360,14 +382,14 @@ void xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const c
   ctx->serverfirstmsg = p - ctx->p;
 }
 
-static char *EncodeBase64(char *d, char *e, char *s, size_t n) {
-  if (mbedtls_base64_encode(d, e-d, &n, s, n))
+static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
+  if (mbedtls_base64_encode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
     return e;
   return d+n;
 }
 
-static char *DecodeBase64(char *d, char *e, char *s, size_t n, bool nul) {
-  if (mbedtls_base64_decode(d, e-d, &n, s, n))
+static char *DecodeBase64(char *d, char *e, const char *s, size_t n, bool nul) {
+  if (mbedtls_base64_decode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
     return e;
   if (nul) {
   }
@@ -377,12 +399,12 @@ static char *DecodeBase64(char *d, char *e, char *s, size_t n, bool nul) {
 static char *EncodeXmlString(char *d, char *e, const char *s) {
   for (;*s && d < e; s++) {
     switch (*s) {
-    case '"': d = SafeStpCpy(d, e, "&quot;"); break;
-    case '\'': d = SafeStpCpy(d, e, "&apos;"); break;
-    case '&': d = SafeStpCpy(d, e, "&amp;"); break;
-    case '<': d = SafeStpCpy(d, e, "&lt;"); break;
-    case '>': d = SafeStpCpy(d, e, "&gt;"); break;
-    default:
+    break; case '"': d = SafeStpCpy(d, e, "&quot;");
+    break; case '\'': d = SafeStpCpy(d, e, "&apos;");
+    break; case '&': d = SafeStpCpy(d, e, "&amp;");
+    break; case '<': d = SafeStpCpy(d, e, "&lt;");
+    break; case '>': d = SafeStpCpy(d, e, "&gt;");
+    break; default:
       *d++ = *s;
       break;
     }
@@ -392,12 +414,32 @@ static char *EncodeXmlString(char *d, char *e, const char *s) {
 
 static char *FormatXml(char *d, char *e, const char *fmt, ...) {
   va_list ap;
+  bool skip = false;
+  size_t n;
+  const char *s;
   va_start(ap, fmt);
   for (; *fmt && d < e; fmt++) {
-    if (*fmt == '%')
-      d = EncodeXmlString(d, e, va_arg(ap, const char*));
-    else
-      *d++ = *fmt;
+    switch (*fmt) {
+    break; case '%':
+      fmt++;
+      switch (*fmt) {
+      break; case 's': // xml string
+        s = va_arg(ap, const char*);
+        if (!skip)
+          d = EncodeXmlString(d, e, s);
+      break; case 'c': // content TODO: different encoding than xml string?
+      break; case 'b': // base64
+        n = va_arg(ap, size_t);
+        s = va_arg(ap, const char*);
+        if (!skip)
+          d = EncodeBase64(d, e, s, n);
+      }
+    break; case '[': skip = !va_arg(ap, int); // actually bool
+    break; case ']': skip = false;
+    break; default:
+      if (!skip)
+        *d++ = *fmt;
+    }
   }
   va_end(ap);
   if (d < e)
@@ -405,24 +447,23 @@ static char *FormatXml(char *d, char *e, const char *fmt, ...) {
   return d;
 }
 
-char *xmppFormatStream(char *p, char *e, const char *from, const char *to) {
-  return FormatXml(p, e, "<?xml version='1.0'?>"
-      "<stream:stream xmlns='jabber:client'"
-      " version='1.0' xmlns:stream='http://etherx.jabber.org/streams'"
-      " from='%' to='%'>", from, to);
-}
+#define xmppFormatStream(p, e, from, to) FormatXml(p, e, \
+    "<?xml version='1.0'?>" \
+    "<stream:stream xmlns='jabber:client'" \
+    " version='1.0' xmlns:stream='http://etherx.jabber.org/streams'" \
+    " from='%s' to='%s'>", from, to);
+
+#define xmppFormatStartTls(p, e) FormatXml(p, e, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
 
 char *xmppFormatSaslInitialMessage(char *p, char *e, struct xmppSaslContext *ctx) {
-  p = SafeStpCpy(p, e, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>"); // TODO: have base64 encode in gormatXml?
-  p = EncodeBase64(p, e, ctx->p, ctx->serverfirstmsg-1);
-  return SafeStpCpy(p, e, "</auth>");
+  return FormatXml(p, e, 
+      "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>%b</auth>", ctx->serverfirstmsg-1, ctx->p);
 }
 
-char * xmppFormatSaslResponse(char *p, struct xmppSaslContext *ctx) {
-  size_t n;
-  p = stpcpy(p, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>");
-  mbedtls_base64_encode(p, 9001, &n, ctx->p+ctx->clientfinalmsg, ctx->clientfinalmsgend-ctx->clientfinalmsg); // IDK random values
-  return stpcpy(p + n, "</response>");
+char * xmppFormatSaslResponse(char *p, char *e, struct xmppSaslContext *ctx) {
+  return FormatXml(p, e,
+      "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>%b</response>", 
+      ctx->clientfinalmsgend-ctx->clientfinalmsg, ctx->p+ctx->clientfinalmsg);
 }
 
 // TODO: use a single buf? mbedtls decode base64 probably allows overlap
@@ -632,7 +673,7 @@ static void TestSasl() {
   const char *challenge =  "cj1meWtvK2QybGJiRmdPTlJ2OXFreGRhd0wzcmZjTkhZSlkxWlZ2V1ZzN2oscz1RU1hDUitRNnNlazhiZjkyLGk9NDA5Ng==";
   struct xmppXmlSlice c = { .p = challenge, .rawn = strlen(challenge) };
   printf("sasl: %d\n", xmppSolveSaslChallenge(&ctx, c, "pencil"));
-  xmppFormatSaslResponse(buffer, &ctx);
+  xmppFormatSaslResponse(buffer, bufe, &ctx);
   puts(buffer);
   memcpy(ctx.srvsig, "\xae\x61\x7d\xa6\xa5\x7c\x4b\xbb\x2e\x02\x86\x56\x8d\xae\x1d\x25\x19\x05\xb0\xa4", 20);
   c.p =  "dj1ybUY5cHFWOFM3c3VBb1pXamE0ZEpSa0ZzS1E9";
@@ -680,7 +721,6 @@ void thing() {
     assert(false);
   }
 
-  /* Hostname set here should match CN in server certificate */
   if ((ret = mbedtls_ssl_set_hostname(&ssl, "localhost")) != 0) {
     assert(false);
   }
@@ -716,12 +756,11 @@ void thing() {
   mbedtls_net_send(&server_fd, buf1, e-buf1);
   size_t n = mbedtls_net_recv(&server_fd, buf2, sizeof(buf2));
   buf2[n] = '\0';
-  printf("n = %d %s\n", n, buf2);
-  strcpy(buf1, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
+  printf("%s\n", buf2);
+  xmppFormatStartTls(buf1, buf1+sizeof(buf1));
   mbedtls_net_send(&server_fd, buf1, strlen(buf1));
   n = mbedtls_net_recv(&server_fd, buf2, sizeof(buf2));
   buf2[n] = '\0';
-  printf("n = %d %s\n", n, buf2);
 
 	while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
 		if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -740,7 +779,17 @@ void thing() {
   mbedtls_ssl_write(&ssl, buf1, e-buf1);
   n = mbedtls_ssl_read(&ssl, buf2, sizeof(buf2));
   buf2[n] = '\0';
-  printf("n = %d %s\n", n, buf2);
+  printf("%s\n", buf2);
+
+
+  // free stuff
+  mbedtls_ssl_close_notify(&ssl);
+  mbedtls_net_free(&server_fd);
+  mbedtls_x509_crt_free(&cacert);
+  mbedtls_ssl_free(&ssl);
+  mbedtls_ssl_config_free(&conf);
+  mbedtls_ctr_drbg_free(&ctr_drbg);
+  mbedtls_entropy_free(&entropy);
 }
 
 static void Do(int s) {
@@ -752,9 +801,9 @@ static void Do(int s) {
   e = xmppFormatSaslInitialMessage(out, out+sizeof(out), &ctx);
   Transfer(s);
   GetChallengeRealFast(in, &c);
-  printf("%p %d\n", c.p, c.rawn);
+  //printf("%p %d\n", c.p, c.rawn);
   xmppSolveSaslChallenge(&ctx, c, "adminpass");
-  e = xmppFormatSaslResponse(out, &ctx);
+  e = xmppFormatSaslResponse(out, out+sizeof(out), &ctx);
   Transfer(s);
   GetChallengeRealFast(in, &c);
   printf("Success? %s\n", xmppVerifySaslSuccess(&ctx, c) == 0 ? "yes" : "no");
@@ -779,7 +828,7 @@ int main() {
   //TestXml();
   thing();
   //TestSasl();
-  //TestConnection();
+  TestConnection();
   puts("All tests passed");
   return 0;
 }
@@ -791,6 +840,11 @@ https://github.com/espressif/esp-idf/blob/master/examples/protocols/smtp_client/
 struct xmppClient c;
 char req[10000], resp[10000];
 xmppInitiate(&c, from, to, features); // features can be SASLSCRAMSHA1|SASLPLAIN|TLS|MUSTTLS
+xmppFormatStream();
+write();
+
+read();
+xmppParseStream(); // parse stream and features
 
 // r could be one of 
 //  | PARTIAL(req buffer not complete, stanza not complete ending, so should read more bytes from stream)
