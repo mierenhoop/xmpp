@@ -12,3 +12,7 @@ Goals:
 Non-goals:
 - Implement the XMPP spec word-for-word.
 - Have an extension/plugin system, for additional features you must patch the library.
+
+Dependencies:
+- MbedTLS
+- C99 compiler

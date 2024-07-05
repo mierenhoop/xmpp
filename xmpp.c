@@ -31,6 +31,8 @@
 // https://github.com/Mbed-TLS/mbedtls/blob/2a674bd9ce4758dff0d18f4ac8b6da4419efc504/library/entropy.c#L48
 // ESP: https://github.com/espressif/esp-idf/blob/0479494e7abe5aef71393fba2e184b3a78ea488f/components/mbedtls/port/esp_hardware.c#L19
 
+#define Log(fmt, ...) printf(fmt "\n" __VA_OPT__(,) __VA_ARGS__)
+#define LogWarn(fmt, ...) fprintf(stderr, "\e[31mWarning:\e[0m " fmt "\n" __VA_OPT__(,)  __VA_ARGS__)
 
 // gets the length of the stanza, sees if stanza is complete
 // or is larger than max stanza size
@@ -195,6 +197,7 @@ static int ParseAttribute(struct xmppStream *s, struct xmppXmlSlice *slc) {
 
 // opposite of inspect element ;)
 // elem can be expected element or NULL, in which case anything is OK
+// returns 1 when end of parent element
 static int ExpectElement(struct xmppStream *s) {
   int r;
   while (s->i < s->n) {
@@ -203,6 +206,8 @@ static int ExpectElement(struct xmppStream *s) {
       break;
     case YXML_ELEMSTART:
       return 0;
+    case YXML_ELEMEND:
+      return 1;
     default:
       if (r < 0)
         return XMPP_EXML;
@@ -280,17 +285,17 @@ found:
   //}
 }
 
+// Read stream and features
+// Features ALWAYS come after server stream according to spec
+// If server too slow, user should read more.
 int xmppExpectStream(struct xmppStream *s) {
   struct xmppXmlSlice attr;
   int r;
   if ((r = ExpectElement(s)))
     return r;
-  puts("Found element!");
   if (strcmp(s->x.elem, "stream:stream"))
     return 1;
-  puts("Element is stream");
   while (!(r = ParseAttribute(s, &attr))) {
-    //printf("found attr %s %d %d\n", s->x.attr, attr.rawn, attr.n);
     if (!strcmp(s->x.attr, "id")) {
       memcpy(&s->id, &attr, sizeof(attr));
     } else if (!strcmp(s->x.attr, "from")) {
@@ -301,28 +306,17 @@ int xmppExpectStream(struct xmppStream *s) {
   }
   if (r < 0)
     return r;
-  puts("Success!");
+  if ((r = ExpectElement(s)))
+    return r;
+  if (strcmp(s->x.elem, "stream:features"))
+    return 1;
+  while (!(r = ExpectElement(s))) {
+    if ((r = SkipUnknownXml(s)))
+      return r;
+  }
+  if (r < 0)
+    return r;
   return 0;
-  //for (int i = 0; i < pn; i++) {
-  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
-  //  switch (r) {
-  //  case YXML_OK:
-  //  case YXML_CONTENT:
-  //    break;
-  //  case YXML_ELEMSTART:
-  //    if (!strcmp(s->x.elem, "stream:stream")) {
-  //      return;
-  //    } else {
-  //      puts("errrorrrr");
-  //      return;
-  //    }
-  //  case YXML_ATTRSTART:
-  //  case YXML_ATTREND:
-  //  case YXML_ATTRVAL:
-  //  default:
-  //    puts("stream error");
-  //  }
-  //}
 }
 
 static char *SafeStpCpy(char *d, char *e, char *s) {
@@ -460,7 +454,7 @@ char *xmppFormatSaslInitialMessage(char *p, char *e, struct xmppSaslContext *ctx
       "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>%b</auth>", ctx->serverfirstmsg-1, ctx->p);
 }
 
-char * xmppFormatSaslResponse(char *p, char *e, struct xmppSaslContext *ctx) {
+char *xmppFormatSaslResponse(char *p, char *e, struct xmppSaslContext *ctx) {
   return FormatXml(p, e,
       "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>%b</response>", 
       ctx->clientfinalmsgend-ctx->clientfinalmsg, ctx->p+ctx->clientfinalmsg);
@@ -487,21 +481,41 @@ void dumphex(const char *p, size_t n) {
 }
 
 static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
-  int ret;
+  int r;
   mbedtls_md_context_t sha_context;
   mbedtls_md_init(&sha_context);
-  if (!(ret = mbedtls_md_setup(&sha_context, mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 1)))
-    ret = mbedtls_pkcs5_pbkdf2_hmac(&sha_context, pwd, plen, salt, slen, itrs, 20, k);
+  if (!(r = mbedtls_md_setup(&sha_context, mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 1)))
+    r = mbedtls_pkcs5_pbkdf2_hmac(&sha_context, pwd, plen, salt, slen, itrs, 20, k);
   mbedtls_md_free(&sha_context);
-  return ret;
+  if (r != 0) {
+    LogWarn("MbedTLS PBKDF2-HMAC error: %s", mbedtls_high_level_strerr(r));
+    return 0;
+  }
+  return 1;
 }
 
 static int HMAC(char d[static 20], const char *p, size_t n, const char k[static 20]) {
-  return mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), k, 20, p, n, d);
+  int r = mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), k, 20, p, n, d);
+  if (r != 0) {
+    LogWarn("MbedTLS HMAC error: %s", mbedtls_high_level_strerr(r));
+    return 0;
+  }
+  return 1;
 }
 
 static int SHA1(char d[static 20], const char p[static 20]) {
-  return mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), p, 20, d);
+  int r = mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), p, 20, d);
+  if (r != 0) {
+    LogWarn("MbedTLS SHA1 error: %s", mbedtls_high_level_strerr(r));
+    return 0;
+  }
+  return 1;
+}
+
+static int XorSha1(char d[20], const char a[20], const char b[20]) {
+  for (int i = 0; i < 20; i++)
+    d[i] = a[i] ^ b[i];
+  return 1;
 }
 
 // TODO: this flowchart can be used to reuse buffers
@@ -525,18 +539,17 @@ static int SHA1(char d[static 20], const char p[static 20]) {
 //                clientproof   serversig
 //
 // TODO: check mbedtls return values
-static void calculate(struct xmppSaslContext *ctx, char clientproof[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
+static int calculate(struct xmppSaslContext *ctx, char clientproof[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
   char saltedpwd[20], clientkey[20],
-       storedkey[20], clientsig[20],
-       serverkey[20];
-  H(saltedpwd, pwd, plen, salt, slen, itrs);
-  HMAC(clientkey, "Client Key", 10, saltedpwd);
-  SHA1(storedkey, clientkey);
-  HMAC(clientsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, storedkey);
-  for (int i = 0; i < 20; i++)
-    clientproof[i] = clientkey[i] ^ clientsig[i];
-  HMAC(serverkey, "Server Key", 10, saltedpwd);
-  HMAC(ctx->srvsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, serverkey);
+  storedkey[20], clientsig[20],
+  serverkey[20];
+  return H(saltedpwd, pwd, plen, salt, slen, itrs)
+    && HMAC(clientkey, "Client Key", 10, saltedpwd)
+    && SHA1(storedkey, clientkey)
+    && HMAC(clientsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, storedkey)
+    && XorSha1(clientproof, clientkey, clientsig)
+    && HMAC(serverkey, "Server Key", 10, saltedpwd)
+    && HMAC(ctx->srvsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, serverkey);
 }
 
 // c = challenge base64
@@ -628,6 +641,10 @@ static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
 
 #ifdef XMPP_RUNTEST
 
+static char in[10000], out[10000], saslbuf[1000];
+static mbedtls_ssl_context ssl;
+static mbedtls_net_context server_fd;
+
 static struct xmppStream SetupXmppStream(const char *xml) {
   static char buf[1000];
   struct xmppStream s = {0};
@@ -649,6 +666,9 @@ static void TestXml() {
 			" xml:lang='en'"
 			" xmlns='jabber:client'"
 			" xmlns:stream='http://etherx.jabber.org/streams'>"
+      "<stream:features>"
+      "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls>"
+      "</stream:features>"
       );
   assert(xmppExpectStream(&s) == 0);
   assert(s.to.p && !strncmp(s.to.p, "juliet@im.example.com", s.to.rawn));
@@ -681,8 +701,7 @@ static void TestSasl() {
   printf("%d\n", xmppVerifySaslSuccess(&ctx, c));
 }
 
-static char in[10000], out[10000], saslbuf[1000], *e;
-static void Transfer(int s) {
+static void Transfer(int s, char *e) {
   printf("Sending %s\n", out);
   write(s, out, e-out);
   int r;
@@ -692,16 +711,36 @@ static void Transfer(int s) {
   }
 }
 
+// these macros are getting too crazy...
+// method either net or ssl
+// fn is xmppFormat* function
+// ... is args passed after format
+#define Send(method, ctx, fn, ...) do { \
+  char *end = fn(out, out+sizeof(out) __VA_OPT__(,) __VA_ARGS__); \
+  Log("Out: \e[32m%s\e[0m", out); \
+  mbedtls_##method(ctx, out, end - out); \
+} while (0)
+
+#define SendPlain(...) Send(net_send, &server_fd, __VA_ARGS__)
+#define SendSsl(...) Send(ssl_write, &ssl, __VA_ARGS__)
+
+#define Receive(method, ctx) do { \
+  size_t n = mbedtls_##method(ctx, in, sizeof(in)); \
+  in[n] = '\0'; \
+  Log("In:  \e[34m%s\e[0m", in); \
+} while (0)
+
+#define ReceivePlain() Receive(net_recv, &server_fd)
+#define ReceiveSsl() Receive(ssl_read, &ssl)
+
 void thing() {
   char *buf = NULL;
   int ret, len;
 
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
-  mbedtls_ssl_context ssl;
   mbedtls_x509_crt cacert;
   mbedtls_ssl_config conf;
-  mbedtls_net_context server_fd;
 
   mbedtls_ssl_init(&ssl);
   mbedtls_x509_crt_init(&cacert);
@@ -751,16 +790,11 @@ void thing() {
 
   puts("done everything");
 
-  static char buf1[1000], buf2[1000];
-  char *e = xmppFormatStream(buf1, buf1+sizeof(buf1), "admin@localhost", "localhost");
-  mbedtls_net_send(&server_fd, buf1, e-buf1);
-  size_t n = mbedtls_net_recv(&server_fd, buf2, sizeof(buf2));
-  buf2[n] = '\0';
-  printf("%s\n", buf2);
-  xmppFormatStartTls(buf1, buf1+sizeof(buf1));
-  mbedtls_net_send(&server_fd, buf1, strlen(buf1));
-  n = mbedtls_net_recv(&server_fd, buf2, sizeof(buf2));
-  buf2[n] = '\0';
+  char *e;
+  SendPlain(xmppFormatStream, "admin@localhost", "localhost");
+  ReceivePlain();
+  SendPlain(xmppFormatStartTls);
+  ReceivePlain();
 
 	while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
 		if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -775,12 +809,8 @@ void thing() {
 	} else {
     puts("cert Successssss");
 	}
-  e = xmppFormatStream(buf1, buf1+sizeof(buf1), "admin@localhost", "localhost");
-  mbedtls_ssl_write(&ssl, buf1, e-buf1);
-  n = mbedtls_ssl_read(&ssl, buf2, sizeof(buf2));
-  buf2[n] = '\0';
-  printf("%s\n", buf2);
-
+  SendSsl(xmppFormatStream, "admin@localhost", "localhost");
+  ReceiveSsl();
 
   // free stuff
   mbedtls_ssl_close_notify(&ssl);
@@ -795,16 +825,16 @@ void thing() {
 static void Do(int s) {
   struct xmppSaslContext ctx;
   struct xmppXmlSlice c;
-  e = xmppFormatStream(out, out+sizeof(out), "admin@localhost", "localhost");
-  Transfer(s);
+  char *e = xmppFormatStream(out, out+sizeof(out), "admin@localhost", "localhost");
+  Transfer(s, e);
   xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
   e = xmppFormatSaslInitialMessage(out, out+sizeof(out), &ctx);
-  Transfer(s);
+  Transfer(s, e);
   GetChallengeRealFast(in, &c);
   //printf("%p %d\n", c.p, c.rawn);
   xmppSolveSaslChallenge(&ctx, c, "adminpass");
   e = xmppFormatSaslResponse(out, out+sizeof(out), &ctx);
-  Transfer(s);
+  Transfer(s, e);
   GetChallengeRealFast(in, &c);
   printf("Success? %s\n", xmppVerifySaslSuccess(&ctx, c) == 0 ? "yes" : "no");
 }
@@ -825,10 +855,10 @@ static void TestConnection() {
 // minimum maximum stanza size = 10000
 int main() {
   puts("Starting tests");
-  //TestXml();
-  thing();
+  TestXml();
+  //thing();
   //TestSasl();
-  TestConnection();
+  //TestConnection();
   puts("All tests passed");
   return 0;
 }
