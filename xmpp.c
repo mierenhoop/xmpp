@@ -1,13 +1,10 @@
 #include <mbedtls/pkcs5.h>
 #include <mbedtls/base64.h>
-#include <mbedtls/platform.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/error.h>
-
-
 
 #include <stdio.h>
 #include <string.h>
@@ -131,6 +128,7 @@ struct xmppStream {
   yxml_t x;
   int i, n;
   const char *p;
+  int features;
   struct xmppXmlSlice from, to, id;
 };
 
@@ -155,6 +153,36 @@ static int SkipUnknownXml(struct xmppStream *s) {
       if (r < 0)
         return XMPP_EXML;
     }
+  }
+  return XMPP_EPARTIAL;
+}
+
+// MAY ONLY be called after ParseAttribute returns 1
+// will read all the way to end of element
+static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
+  int r;
+  slc->p = NULL;
+  slc->n = 0;
+  slc->rawn = 0;
+  while (s->i < s->n) {
+    if (!slc->p) {
+      if (s->p[s->i - 1] == '>')
+        slc->p = s->p + s->i;
+    }
+    switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
+    case YXML_ELEMEND:
+      return 0;
+    case YXML_CONTENT:
+      if (!slc->p)
+        slc->p = s->p + s->i - 1;
+      slc->n += strlen(s->x.data);
+      break;
+    default:
+      if (r < 0)
+        return XMPP_EXML;
+    }
+    // TODO: update rawn
+    //slc->rawn++;
   }
   return XMPP_EPARTIAL;
 }
@@ -250,39 +278,10 @@ enum xmppStanzaReadReturn xmppReadStanza(struct xmppStream *s, const char *p, si
     MESSAGE,
     PRESENCE,
   };
-  //struct xmppStanza st;
-  //int i;
-  //for (i = 0; i < n; i++) {
-  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
-  //  switch (r) {
-  //  case YXML_OK:
-  //  case YXML_CONTENT:
-  //    break;
-  //  case YXML_ELEMSTART:
-  //    if (!strcmp(s->x.elem, "iq")) {
-  //    } else if (!strcmp(s->x.elem, "message")) {
-  //    } else if (!strcmp(s->x.elem, "presence")) {
-  //    } else if (!strcmp(s->x.elem, "stream:features")) {
-  //    } else {
-  //      SkipUnknownXml(&s->x, p+i, n-i);
-  //      return xmppStanzaReadUnknown;
-  //    }
-  //    goto found;
-  //  case YXML_ELEMEND:
-  //    puts("stream end");
-  //    return xmppStanzaReadEndStream;
-  //  default:
-  //    puts("stream error");
-  //    return xmppStanzaReadError;
-  //  }
-  //}
+  int r;
+  if ((r = ExpectElement(s)))
+    return r;
   return xmppStanzaReadNothing;
-found:
-  //for (; i < n; i++) {
-  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
-  //  switch (r) {
-  //  }
-  //}
 }
 
 // Read stream and features
@@ -291,6 +290,7 @@ found:
 int xmppExpectStream(struct xmppStream *s) {
   struct xmppXmlSlice attr;
   int r;
+  s->features = 0;
   if ((r = ExpectElement(s)))
     return r;
   if (strcmp(s->x.elem, "stream:stream"))
@@ -311,6 +311,26 @@ int xmppExpectStream(struct xmppStream *s) {
   if (strcmp(s->x.elem, "stream:features"))
     return 1;
   while (!(r = ExpectElement(s))) {
+    if (!strcmp(s->x.elem, "starttls")) {
+      s->features |= XMPP_STREAMFEATURE_STARTTLS;
+    } else if (!strcmp(s->x.elem, "mechanisms")) {
+      while (!(r = ExpectElement(s))) { // TODO: check if elem is mechanism
+        struct xmppXmlSlice mech;
+        while (!(r = ParseAttribute(s, &attr))) {}
+        if (r < 0) return r;
+        if ((r = GetXmlContent(s, &mech)))
+          return r;
+        if (!strncmp(mech.p, "SCRAM-SHA-1", mech.n)) // TODO: mech.rawn
+          s->features |= XMPP_STREAMFEATURE_SCRAMSHA1;
+        else if (!strncmp(mech.p, "SCRAM-SHA-1-PLUS", mech.n)) // TODO: mech.rawn
+          s->features |= XMPP_STREAMFEATURE_SCRAMSHA1PLUS;
+        else if (!strncmp(mech.p, "PLAIN", mech.n)) // TODO: mech.rawn
+          s->features |= XMPP_STREAMFEATURE_PLAIN;
+      }
+      if (r < 0)
+        return r;
+      continue;
+    }
     if ((r = SkipUnknownXml(s)))
       return r;
   }
@@ -589,35 +609,6 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   return 0;
 }
 
-// MAY ONLY be called after ParseAttribute returns 1
-// will read all the way to end of element
-static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
-  int r;
-  slc->p = NULL;
-  slc->n = 0;
-  slc->rawn = 0;
-  while (s->i < s->n) {
-    if (!slc->p) {
-      if (s->p[s->i - 1] == '>')
-        slc->p = s->p + s->i;
-    }
-    switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
-    case YXML_ELEMEND:
-      return 0;
-    case YXML_CONTENT:
-      if (!slc->p)
-        slc->p = s->p + s->i - 1;
-      slc->n += strlen(s->x.data);
-      break;
-    default:
-      if (r < 0)
-        return XMPP_EXML;
-    }
-    //slc->rawn++;
-  }
-  return XMPP_EPARTIAL;
-}
-
 static void GetChallenge(struct xmppStream *s, struct xmppXmlSlice *slc) {
   if (ExpectElement(s))
     return;
@@ -638,12 +629,24 @@ static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
   }
 }
 
+int xmppCanTlsProceed(struct xmppStream *s) {
+  int r;
+  if ((r = ExpectElement(s))) // || (r = SkipUnknownXml()) to read entire elem?
+    return r;
+  if (!strcmp(s->x.elem, "proceed"))
+    return 0;
+  else if (!strcmp(s->x.elem, "failure"))
+    return 1;
+  else
+    return XMPP_EXML;
+}
 
 #ifdef XMPP_RUNTEST
 
-static char in[10000], out[10000], saslbuf[1000];
+static char in[10000], out[10000], saslbuf[1000], yxmlbuf[1000];
 static mbedtls_ssl_context ssl;
 static mbedtls_net_context server_fd;
+static struct xmppStream stream;
 
 static struct xmppStream SetupXmppStream(const char *xml) {
   static char buf[1000];
@@ -726,6 +729,10 @@ static void Transfer(int s, char *e) {
 
 #define Receive(method, ctx) do { \
   size_t n = mbedtls_##method(ctx, in, sizeof(in)); \
+  stream.p = in; \
+  stream.n = n; \
+  stream.i = 0; \
+  yxml_init(&stream.x, yxmlbuf, sizeof(yxmlbuf)); \
   in[n] = '\0'; \
   Log("In:  \e[34m%s\e[0m", in); \
 } while (0)
@@ -793,8 +800,11 @@ void thing() {
   char *e;
   SendPlain(xmppFormatStream, "admin@localhost", "localhost");
   ReceivePlain();
+  assert(xmppExpectStream(&stream) == 0);
+  assert(stream.features & XMPP_STREAMFEATURE_STARTTLS);
   SendPlain(xmppFormatStartTls);
   ReceivePlain();
+  assert(xmppCanTlsProceed(&stream) == 0);
 
 	while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
 		if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -811,6 +821,8 @@ void thing() {
 	}
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
+  assert(xmppExpectStream(&stream) == 0);
+  assert(stream.features & XMPP_STREAMFEATURE_SCRAMSHA1);
 
   // free stuff
   mbedtls_ssl_close_notify(&ssl);
@@ -855,8 +867,8 @@ static void TestConnection() {
 // minimum maximum stanza size = 10000
 int main() {
   puts("Starting tests");
-  TestXml();
-  //thing();
+  //TestXml();
+  thing();
   //TestSasl();
   //TestConnection();
   puts("All tests passed");
