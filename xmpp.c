@@ -161,6 +161,7 @@ static int SkipUnknownXml(struct xmppStream *s) {
 // will read all the way to end of element
 static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
   int r;
+  bool stop = false;
   slc->p = NULL;
   slc->n = 0;
   slc->rawn = 0;
@@ -169,11 +170,12 @@ static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
       if (s->p[s->i - 1] == '>')
         slc->p = s->p + s->i;
     }
+    if (s->p[s->i] == '<') stop = true; // TODO: this is stupid
     switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
     case YXML_ELEMEND:
       return 0;
     case YXML_CONTENT:
-      if (!slc->p)
+      if (!slc->p) // TODO: remove this...
         slc->p = s->p + s->i - 1;
       slc->n += strlen(s->x.data);
       break;
@@ -181,8 +183,8 @@ static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
       if (r < 0)
         return XMPP_EXML;
     }
-    // TODO: update rawn
-    //slc->rawn++;
+    if (slc->p && !stop)
+      slc->rawn++;
   }
   return XMPP_EPARTIAL;
 }
@@ -488,9 +490,9 @@ int xmppVerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice s) {
   char b1[30], b2[20];
   size_t n;
   if (mbedtls_base64_decode(b1, 30, &n, s.p, s.rawn)) // TODO: hard code 40 or use s.rawn?
-    return 0;
+    return XMPP_ECRYPTO;
   if (mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
-    return 0;
+    return XMPP_ECRYPTO;
   return !!memcmp(ctx->srvsig, b2, 20);
 }
 
@@ -498,6 +500,10 @@ void dumphex(const char *p, size_t n) {
   for (int i = 0; i < n; i++)
     printf("%02x", (unsigned char)p[i]);
   puts("");
+}
+
+void dumpxmlslice(struct xmppXmlSlice slc) {
+  printf("XML SLICE n %ld rawn %ld %.*s\n", slc.n, slc.rawn, (int)slc.n, slc.p);
 }
 
 static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
@@ -572,6 +578,7 @@ static int calculate(struct xmppSaslContext *ctx, char clientproof[static 20], c
     && HMAC(ctx->srvsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, serverkey);
 }
 
+// TODO: error handling
 // c = challenge base64
 // make sure pwd is all printable chars
 // return something if ctx->n is too small
@@ -629,6 +636,10 @@ static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
   }
 }
 
+// ret
+//  < 0: error
+//  = 0: yes
+//  > 0: no
 int xmppCanTlsProceed(struct xmppStream *s) {
   int r;
   if ((r = ExpectElement(s))) // || (r = SkipUnknownXml()) to read entire elem?
@@ -639,6 +650,40 @@ int xmppCanTlsProceed(struct xmppStream *s) {
     return 1;
   else
     return XMPP_EXML;
+}
+
+int xmppGetSaslChallenge(struct xmppStream *s, struct xmppXmlSlice *c) {
+  int r;
+  struct xmppXmlSlice attr;
+  if ((r = ExpectElement(s)))
+    return r;
+  if (strcmp(s->x.elem, "challenge"))
+    return XMPP_EXML;
+  // TODO: remove the need for this?
+  while (!(r = ParseAttribute(s, &attr))) {}
+  if (r < 0) return r;
+  return GetXmlContent(s, c);
+}
+
+// TODO: function body looks suspiciously like the above
+// consider refactoring
+// ret
+//  < 0: error
+//  = 0: success
+//  > 0: fail
+int xmppIsSaslSuccess(struct xmppStream *s, struct xmppSaslContext *ctx) {
+  int r;
+  struct xmppXmlSlice slc;
+  if ((r = ExpectElement(s)))
+    return r;
+  if (strcmp(s->x.elem, "success"))
+    return XMPP_EXML;
+  // TODO: remove the need for this?
+  while (!(r = ParseAttribute(s, &slc))) {}
+  if (r < 0) return r;
+  if ((r = GetXmlContent(s, &slc)))
+    return r;
+  return xmppVerifySaslSuccess(ctx, slc);
 }
 
 #ifdef XMPP_RUNTEST
@@ -752,52 +797,27 @@ void thing() {
   mbedtls_ssl_init(&ssl);
   mbedtls_x509_crt_init(&cacert);
   mbedtls_ctr_drbg_init(&ctr_drbg);
-
   mbedtls_ssl_config_init(&conf);
-
   mbedtls_entropy_init(&entropy);
-  if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
-          NULL, 0)) != 0) {
-    assert(false);
-  }
 
-  ret = mbedtls_x509_crt_parse(&cacert, cacert_pem, cacert_pem_len);
+  assert(mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0) == 0);
+  assert(mbedtls_x509_crt_parse(&cacert, cacert_pem, cacert_pem_len) >= 0);
 
-  if (ret < 0) {
-    assert(false);
-  }
-
-  if ((ret = mbedtls_ssl_set_hostname(&ssl, "localhost")) != 0) {
-    assert(false);
-  }
-
-  if ((ret = mbedtls_ssl_config_defaults(&conf,
+  assert(mbedtls_ssl_set_hostname(&ssl, "localhost") == 0);
+  assert(mbedtls_ssl_config_defaults(&conf,
           MBEDTLS_SSL_IS_CLIENT,
           MBEDTLS_SSL_TRANSPORT_STREAM,
-          MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
-    assert(false);
-  }
-
+          MBEDTLS_SSL_PRESET_DEFAULT) == 0);
   mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
   mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
   mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
-
-  if ((ret = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
-    assert(false);
-  }
+  assert(mbedtls_ssl_setup(&ssl, &conf) == 0);
 
   mbedtls_net_init(&server_fd);
-
-  if ((ret = mbedtls_net_connect(&server_fd, "localhost",
-          "5222", MBEDTLS_NET_PROTO_TCP)) != 0) {
-    assert(false);
-  }
-
+  assert(mbedtls_net_connect(&server_fd, "localhost",
+          "5222", MBEDTLS_NET_PROTO_TCP) == 0);
   mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
 
-  puts("done everything");
-
-  char *e;
   SendPlain(xmppFormatStream, "admin@localhost", "localhost");
   ReceivePlain();
   assert(xmppExpectStream(&stream) == 0);
@@ -824,7 +844,18 @@ void thing() {
   assert(xmppExpectStream(&stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_SCRAMSHA1);
 
-  // free stuff
+  struct xmppSaslContext ctx;
+  struct xmppXmlSlice challenge;
+  xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
+  SendSsl(xmppFormatSaslInitialMessage, &ctx);
+  ReceiveSsl();
+  assert(xmppGetSaslChallenge(&stream, &challenge) == 0);
+  dumpxmlslice(challenge);
+  xmppSolveSaslChallenge(&ctx, challenge, "adminpass");
+  SendSsl(xmppFormatSaslResponse, &ctx);
+  ReceiveSsl();
+  assert(xmppIsSaslSuccess(&stream, &ctx) == 0);
+
   mbedtls_ssl_close_notify(&ssl);
   mbedtls_net_free(&server_fd);
   mbedtls_x509_crt_free(&cacert);
