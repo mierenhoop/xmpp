@@ -28,8 +28,15 @@
 // https://github.com/Mbed-TLS/mbedtls/blob/2a674bd9ce4758dff0d18f4ac8b6da4419efc504/library/entropy.c#L48
 // ESP: https://github.com/espressif/esp-idf/blob/0479494e7abe5aef71393fba2e184b3a78ea488f/components/mbedtls/port/esp_hardware.c#L19
 
+#ifndef NDEBUG
 #define Log(fmt, ...) printf(fmt "\n" __VA_OPT__(,) __VA_ARGS__)
 #define LogWarn(fmt, ...) fprintf(stderr, "\e[31mWarning:\e[0m " fmt "\n" __VA_OPT__(,)  __VA_ARGS__)
+#else
+#define Log(fmt, ...) ((void)0)
+#define LogWarn(fmt, ...) ((void)0)
+#endif
+
+#define RetErr(err) (LogWarn("Returning error at line %d: %s", __LINE__, xmppErrToStr(err)), (err))
 
 // gets the length of the stanza, sees if stanza is complete
 // or is larger than max stanza size
@@ -51,6 +58,16 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
 #define XMPP_EXML -2
 #define XMPP_ECRYPTO -3
 #define XMPP_EPARTIAL -4
+
+const char *xmppErrToStr(int e) {
+  switch (e) {
+  case XMPP_EMEM: return "XMPP_EMEM";
+  case XMPP_EXML: return "XMPP_EXML";
+  case XMPP_ECRYPTO: return "XMPP_ECRYPTO";
+  case XMPP_EPARTIAL: return "XMPP_EPARTIAL";
+  }
+  return "[unknown error]";
+}
 
 #define XMPP_SASL_CHALLENGE 1
 #define XMPP_SASL_SUCCESS   2
@@ -133,14 +150,13 @@ struct xmppStream {
 };
 
 // Skip all the way until the end of the element it has just entered
-// TODO: ret yxml_ret_t?
 // ret:
 //   < 0: XMPP error
 //   = 0: OK
 static int SkipUnknownXml(struct xmppStream *s) {
   int stack = 1;
-  for (; s->i < s->n; s->i++) {
-    yxml_ret_t r = yxml_parse(&s->x, s->p[s->i]);
+  while (s->i < s->n) {
+    yxml_ret_t r = yxml_parse(&s->x, s->p[s->i++]);
     switch (r) {
     case YXML_ELEMSTART:
       stack++;
@@ -154,39 +170,7 @@ static int SkipUnknownXml(struct xmppStream *s) {
         return XMPP_EXML;
     }
   }
-  return XMPP_EPARTIAL;
-}
-
-// MAY ONLY be called after ParseAttribute returns 1
-// will read all the way to end of element
-static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
-  int r;
-  bool stop = false;
-  slc->p = NULL;
-  slc->n = 0;
-  slc->rawn = 0;
-  while (s->i < s->n) {
-    if (!slc->p) {
-      if (s->p[s->i - 1] == '>')
-        slc->p = s->p + s->i;
-    }
-    if (s->p[s->i] == '<') stop = true; // TODO: this is stupid
-    switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
-    case YXML_ELEMEND:
-      return 0;
-    case YXML_CONTENT:
-      if (!slc->p) // TODO: remove this...
-        slc->p = s->p + s->i - 1;
-      slc->n += strlen(s->x.data);
-      break;
-    default:
-      if (r < 0)
-        return XMPP_EXML;
-    }
-    if (slc->p && !stop)
-      slc->rawn++;
-  }
-  return XMPP_EPARTIAL;
+  return RetErr(XMPP_EPARTIAL);
 }
 
 // ret:
@@ -225,6 +209,42 @@ static int ParseAttribute(struct xmppStream *s, struct xmppXmlSlice *slc) {
   return XMPP_EPARTIAL;
 }
 
+// MAY ONLY be called after ParseAttribute returns 1
+// or right after ELEMSTART
+// will read all the way to end of element
+static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
+  int r;
+  bool stop = false;
+  struct xmppXmlSlice attr;
+  slc->p = NULL;
+  slc->n = 0;
+  slc->rawn = 0;
+  while (!(r = ParseAttribute(s, &attr))) {}
+  if (r < 0) return r;
+  while (s->i < s->n) {
+    if (!slc->p) {
+      if (s->p[s->i - 1] == '>')
+        slc->p = s->p + s->i;
+    }
+    if (s->p[s->i] == '<') stop = true; // TODO: this is stupid
+    switch ((r = yxml_parse(&s->x, s->p[s->i++]))) {
+    case YXML_ELEMEND:
+      return 0;
+    case YXML_CONTENT:
+      if (!slc->p) // TODO: remove this...
+        slc->p = s->p + s->i - 1;
+      slc->n += strlen(s->x.data);
+      break;
+    default:
+      if (r < 0)
+        return XMPP_EXML;
+    }
+    if (slc->p && !stop)
+      slc->rawn++;
+  }
+  return XMPP_EPARTIAL;
+}
+
 // opposite of inspect element ;)
 // elem can be expected element or NULL, in which case anything is OK
 // returns 1 when end of parent element
@@ -244,28 +264,6 @@ static int ExpectElement(struct xmppStream *s) {
     }
   }
   return XMPP_EPARTIAL;
-}
-
-// expects yxml state already entered stream:features
-static int ReadStreamFeatures(struct xmppStream *s, int *f, const char *p, size_t n) {
-  //int j;
-  //for (int i = 0; i < n; i++) {
-  //  yxml_ret_t r = yxml_parse(&s->x, p[i]);
-  //  switch (r) {
-  //  case YXML_ELEMSTART:
-  //    i++;
-  //    if ((j = SkipUnknownXml(&s->x, p+i, n-i)) < 0)
-  //      return j;
-  //    i += j;
-  //  case YXML_ELEMEND:
-  //    assert(!strcmp(s->x.elem, "stream:features"));
-  //    return i;
-  //  default:
-  //    if (r < 0)
-  //      return r;
-  //  }
-  //}
-  return 0;
 }
 
 // TODO: have new yxml state per stanza, this is only because if a stanza is partial
@@ -318,8 +316,6 @@ int xmppExpectStream(struct xmppStream *s) {
     } else if (!strcmp(s->x.elem, "mechanisms")) {
       while (!(r = ExpectElement(s))) { // TODO: check if elem is mechanism
         struct xmppXmlSlice mech;
-        while (!(r = ParseAttribute(s, &attr))) {}
-        if (r < 0) return r;
         if ((r = GetXmlContent(s, &mech)))
           return r;
         if (!strncmp(mech.p, "SCRAM-SHA-1", mech.n)) // TODO: mech.rawn
@@ -428,6 +424,11 @@ static char *EncodeXmlString(char *d, char *e, const char *s) {
   return d;
 }
 
+// Analogous to the typical printf formatting, except only the following applies:
+// - %s: Encoded XML attribute value string
+// - %b: Base64 string, first arg is len and second is raw data
+// TODO: the rest... are they really needed?
+// TODO: change sig to size_t FormatXml(char *d, size_t n, fmt, ...)?
 static char *FormatXml(char *d, char *e, const char *fmt, ...) {
   va_list ap;
   bool skip = false;
@@ -469,7 +470,8 @@ static char *FormatXml(char *d, char *e, const char *fmt, ...) {
     " version='1.0' xmlns:stream='http://etherx.jabber.org/streams'" \
     " from='%s' to='%s'>", from, to);
 
-#define xmppFormatStartTls(p, e) FormatXml(p, e, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+// For static XML we can directly call SafeStpCpy
+#define xmppFormatStartTls(p, e) SafeStpCpy(p, e, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
 
 char *xmppFormatSaslInitialMessage(char *p, char *e, struct xmppSaslContext *ctx) {
   return FormatXml(p, e, 
@@ -489,10 +491,9 @@ char *xmppFormatSaslResponse(char *p, char *e, struct xmppSaslContext *ctx) {
 int xmppVerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice s) {
   char b1[30], b2[20];
   size_t n;
-  if (mbedtls_base64_decode(b1, 30, &n, s.p, s.rawn)) // TODO: hard code 40 or use s.rawn?
-    return XMPP_ECRYPTO;
-  if (mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
-    return XMPP_ECRYPTO;
+  if (mbedtls_base64_decode(b1, 30, &n, s.p, s.rawn)
+   || mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
+    return XMPP_EXML;
   return !!memcmp(ctx->srvsig, b2, 20);
 }
 
@@ -590,7 +591,7 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   char *s, *i, *e = ctx->p+ctx->n;
   char *r = ctx->p+ctx->serverfirstmsg;
   if (mbedtls_base64_decode(r, e-r, &n, c.p, c.rawn))
-    return 1;
+    return XMPP_EMEM;
   size_t servernonce = ctx->serverfirstmsg + 2;
   if (strncmp(r, "r=", 2)
    || !(s = strstr(r+2, ",s="))
@@ -609,7 +610,8 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   ctx->authmsgend = r - ctx->p;
   mbedtls_base64_decode(r, 9001, &n, s+3, i-s-3); // IDK random value
   char clientproof[20];
-  calculate(ctx, clientproof, pwd, strlen(pwd), r, n, itrs);
+  if (!calculate(ctx, clientproof, pwd, strlen(pwd), r, n, itrs))
+    return XMPP_ECRYPTO;
   r = stpcpy(r, ",p=");
   mbedtls_base64_encode(r, 9001, &n, clientproof, 20); // IDK random value
   ctx->clientfinalmsgend = (r-ctx->p)+n;
@@ -642,14 +644,13 @@ static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
 //  > 0: no
 int xmppCanTlsProceed(struct xmppStream *s) {
   int r;
-  if ((r = ExpectElement(s))) // || (r = SkipUnknownXml()) to read entire elem?
+  if ((r = ExpectElement(s))) // TODO: || (r = SkipUnknownXml(s))) not needed
     return r;
   if (!strcmp(s->x.elem, "proceed"))
     return 0;
   else if (!strcmp(s->x.elem, "failure"))
     return 1;
-  else
-    return XMPP_EXML;
+  return XMPP_EXML;
 }
 
 int xmppGetSaslChallenge(struct xmppStream *s, struct xmppXmlSlice *c) {
@@ -659,9 +660,6 @@ int xmppGetSaslChallenge(struct xmppStream *s, struct xmppXmlSlice *c) {
     return r;
   if (strcmp(s->x.elem, "challenge"))
     return XMPP_EXML;
-  // TODO: remove the need for this?
-  while (!(r = ParseAttribute(s, &attr))) {}
-  if (r < 0) return r;
   return GetXmlContent(s, c);
 }
 
@@ -678,13 +676,31 @@ int xmppIsSaslSuccess(struct xmppStream *s, struct xmppSaslContext *ctx) {
     return r;
   if (strcmp(s->x.elem, "success"))
     return XMPP_EXML;
-  // TODO: remove the need for this?
-  while (!(r = ParseAttribute(s, &slc))) {}
-  if (r < 0) return r;
   if ((r = GetXmlContent(s, &slc)))
     return r;
   return xmppVerifySaslSuccess(ctx, slc);
 }
+
+// p is beginning of response buffer
+// n is size of all response data
+// s is end of last stanza, start of possible second stanza
+// returns end of last resonse data
+static void MoveStanza(char *p, size_t n, size_t s) {
+  memmove(p, p + s, n - s);
+  return n - s;
+}
+
+// XEP-0199: XMPP Ping
+
+#define xmppFormatIq(p, e, from, to, id, fmt, ...) FormatXml(p, e, "<iq" \
+    " type='get'" \
+    " from='%s'" \
+    " to='%s'" \
+    " id='%s'>" fmt "</iq>", \
+    from, to, id \
+    __VA_OPT__(,) __VA_ARGS__)
+
+#define xmppFormatPing(p, e, from, to, id) xmppFormatIq(p, e, from, to, id, "<ping xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
 
 #ifdef XMPP_RUNTEST
 

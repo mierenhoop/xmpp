@@ -1,5 +1,12 @@
+Uses:
+- Instant messenger for the paranoid.
+- Iot.
+- Easy integration of Iot device with existing XMPP software.
+- Pub-Sub client for e.g. RSS.
+- Integrating chat into a video game.
+
 Goals:
-- Run on embedded (support for ESP-IDF (ESP32) & pico-sdk (Raspberry Pi Pico)).
+- Run on embedded (support for ESP-IDF (ESP32) & pico-sdk (Raspberry Pi Pico [W])).
 - Support non-embedded too.
 - Be compatible with the major XMPP servers (Prosody).
 - Don't allow unusual or malicious data sent from a server.
