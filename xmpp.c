@@ -48,7 +48,7 @@ struct StanzaParser {
   int depth;
 };
 
-// if (s.p && (d = malloc(s.n+1))) xmppReadXmlSlice(d, s);
+// if (s.p && (d = calloc(s.n+1))) xmppReadXmlSlice(d, s);
 // TODO: have specific impl for this?
 void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
   //yxml_t x;
@@ -84,6 +84,9 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STANZA_PRESENCE 2
 #define XMPP_STANZA_IQ 3
 #define XMPP_STANZA_STREAMFEATURES 4
+#define XMPP_STANZA_BINDJID 5
+#define XMPP_STANZA_SMACKSENABLED 6
+#define XMPP_STANZA_ACK 7
 
 
 // Any of the child elements can be null.
@@ -114,6 +117,11 @@ struct xmppError {
   struct xmppXmlSlice text;
 };
 
+struct xmppSmacksEnabled {
+  int max;
+  bool resume;
+};
+
 struct xmppStanza {
   int type; // iq/message/presence
   struct xmppXmlSlice id, from, to;
@@ -122,6 +130,9 @@ struct xmppStanza {
     //struct xmppXmlSlice success;
     struct xmppMessage message;
     struct xmppError error;
+    struct xmppXmlSlice bindjid;
+    struct xmppSmacksEnabled smacksenabled;
+    int ack;
   };
 };
 
@@ -424,15 +435,36 @@ static char *EncodeXmlString(char *d, char *e, const char *s) {
   return d;
 }
 
+// TODO: maybe add more features like padding
+static char *Itoa(char *d, char *e, int i) {
+  char buf[16];
+  int mult = 1;
+  int n = 0;
+  if (i < 0)
+    mult = -1;
+  while (i && n < sizeof(buf)) {
+    buf[n++] = '0' + (i % 10) * mult;
+    i /= 10;
+  }
+  if (mult == -1 && n < sizeof(buf))
+    buf[n++] = '-';
+  while (n-- && d < e) {
+    *d++ = buf[n];
+  }
+  return d;
+}
+
 // Analogous to the typical printf formatting, except only the following applies:
 // - %s: Encoded XML attribute value string
 // - %b: Base64 string, first arg is len and second is raw data
+// - %d: unsigned integer
 // TODO: the rest... are they really needed?
 // TODO: change sig to size_t FormatXml(char *d, size_t n, fmt, ...)?
 static char *FormatXml(char *d, char *e, const char *fmt, ...) {
   va_list ap;
   bool skip = false;
   size_t n;
+  int i;
   const char *s;
   va_start(ap, fmt);
   for (; *fmt && d < e; fmt++) {
@@ -440,6 +472,10 @@ static char *FormatXml(char *d, char *e, const char *fmt, ...) {
     break; case '%':
       fmt++;
       switch (*fmt) {
+      break; case 'd':
+        i = va_arg(ap, int);
+        if (!skip)
+          d = Itoa(d, e, i);
       break; case 's': // xml string
         s = va_arg(ap, const char*);
         if (!skip)
@@ -690,8 +726,6 @@ static void MoveStanza(char *p, size_t n, size_t s) {
   return n - s;
 }
 
-// XEP-0199: XMPP Ping
-
 #define xmppFormatIq(p, e, from, to, id, fmt, ...) FormatXml(p, e, "<iq" \
     " type='get'" \
     " from='%s'" \
@@ -700,7 +734,26 @@ static void MoveStanza(char *p, size_t n, size_t s) {
     from, to, id \
     __VA_OPT__(,) __VA_ARGS__)
 
+// TODO: better way to do this?
+// res: string or NULL if you want the server to generate it
+#define xmppFormatBindResource(p, e, from, to, id, res) \
+  xmppFormatIq(p, e, from, to, id, \
+      "<bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]", \
+      !res, !!res, res)
+
+// XEP-0199: XMPP Ping
+
 #define xmppFormatPing(p, e, from, to, id) xmppFormatIq(p, e, from, to, id, "<ping xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+
+// XEP-0030: Service Discovery
+
+#define xmppFormatDisco(p, e, from, to, id) xmppFormatIq(p, e, from, to, id, "<query xmlns='http://jabber.org/protocol/disco#info'/>")
+
+// XEP-0198: Stream Management
+
+#define xmppFormatAckEnable(p, e) SafeStpCpy(p, e, "<enable xmlns='urn:xmpp:sm:3'/>")
+#define xmppFormatAckRequest(p, e) SafeStpCpy(p, e, "<r xmlns='urn:xmpp:sm:3'/>")
+#define xmppFormatAckAnswer(p, e, h) FormatXml(p, e, "<a xmlns='urn:xmpp:sm:3' h='%d'/>", h)
 
 #ifdef XMPP_RUNTEST
 
@@ -871,6 +924,15 @@ void thing() {
   SendSsl(xmppFormatSaslResponse, &ctx);
   ReceiveSsl();
   assert(xmppIsSaslSuccess(&stream, &ctx) == 0);
+
+  SendSsl(xmppFormatStream, "admin@localhost", "localhost");
+  ReceiveSsl();
+  assert(xmppExpectStream(&stream) == 0);
+  SendSsl(xmppFormatBindResource, "admin@localhost", "localhost", "bind1", NULL);
+  ReceiveSsl();
+
+  xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
+  Log("%s %d\n", out, INT_MAX);
 
   mbedtls_ssl_close_notify(&ssl);
   mbedtls_net_free(&server_fd);
