@@ -50,8 +50,31 @@ struct StanzaParser {
 
 // if (s.p && (d = calloc(s.n+1))) xmppReadXmlSlice(d, s);
 // TODO: have specific impl for this?
+// TODO: we can skip the whole prefix initialization since that is
+// static. just memcpy the internal state to the struct.
 void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
-  //yxml_t x;
+  static const char attrprefix[] = "<x e='";
+  static const char contprefix[] = "<x>";
+  char buf[16];
+  int i;
+  yxml_t x;
+  yxml_init(&x, buf, sizeof(buf));
+  int target = s.isattr ? YXML_ATTRVAL : YXML_CONTENT;
+  const char *prefix = s.isattr ? attrprefix : contprefix;
+  size_t n = s.isattr ? sizeof(attrprefix)-1 : sizeof(contprefix)-1;
+  for (i = 0; i < n; i++) {
+    yxml_parse(&x, prefix[i]);
+  }
+  for (i = 0; i < s.rawn; i++) {
+    // with parsing input validation has already succeeded so there is
+    // no reason to check for errors again.
+    if (yxml_parse(&x, s.p[i]) == target)
+      d = stpcpy(d, x.data);
+  }
+  if (s.isattr) {
+    if (yxml_parse(&x, '\'') == YXML_ATTRVAL)
+      d = stpcpy(d, x.data);
+  }
 }
 
 #define XMPP_EMEM -1
@@ -148,7 +171,9 @@ static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
   return true;
 }
 
-// TODO: rename to struct Parser?
+#define HasOverflowed(p, e) ((p) == (e))
+
+// TODO: extract out to separate struct Parser
 // TODO: don't use yxml, but in-house parser,
 // dozens of LOC can be removed because XMPP only allows subset of XML
 // and the usage here is usecase specific.
@@ -158,6 +183,7 @@ struct xmppStream {
   const char *p;
   int features;
   struct xmppXmlSlice from, to, id;
+  int sentacks, recvacks;
 };
 
 // Skip all the way until the end of the element it has just entered
@@ -197,6 +223,7 @@ static int ParseAttribute(struct xmppStream *s, struct xmppXmlSlice *slc) {
   slc->p = NULL;
   slc->n = 0;
   slc->rawn = 0;
+  slc->isattr = true;
   while (1) { // hacky way to check end of attr list
     if (!slc->p && (s->p[s->i-1] == '>' || s->p[s->i-1] == '/'))
       return 1;
@@ -230,6 +257,7 @@ static int GetXmlContent(struct xmppStream *s, struct xmppXmlSlice *slc) {
   slc->p = NULL;
   slc->n = 0;
   slc->rawn = 0;
+  slc->isattr = false;
   while (!(r = ParseAttribute(s, &attr))) {}
   if (r < 0) return r;
   while (s->i < s->n) {
@@ -717,11 +745,15 @@ int xmppIsSaslSuccess(struct xmppStream *s, struct xmppSaslContext *ctx) {
   return xmppVerifySaslSuccess(ctx, slc);
 }
 
+// use this function when the in buffer has been filled, you've read
+// some previous stanzas and now the stanza at the end couldn't be
+// fully read, so you move it all the way forward and read the
+// remaining parts (+ more stanzas).
 // p is beginning of response buffer
 // n is size of all response data
 // s is end of last stanza, start of possible second stanza
 // returns end of last resonse data
-static void MoveStanza(char *p, size_t n, size_t s) {
+static size_t MoveStanza(char *p, size_t n, size_t s) {
   memmove(p, p + s, n - s);
   return n - s;
 }
@@ -752,6 +784,7 @@ static void MoveStanza(char *p, size_t n, size_t s) {
 // XEP-0198: Stream Management
 
 #define xmppFormatAckEnable(p, e) SafeStpCpy(p, e, "<enable xmlns='urn:xmpp:sm:3'/>")
+#define xmppFormatAckResume(p, e, h, previd) FormatXml(p, e, "<resume xmlns='urn:xmpp:sm:3' h='%d' previd='%s'/>", h, previd)
 #define xmppFormatAckRequest(p, e) SafeStpCpy(p, e, "<r xmlns='urn:xmpp:sm:3'/>")
 #define xmppFormatAckAnswer(p, e, h) FormatXml(p, e, "<a xmlns='urn:xmpp:sm:3' h='%d'/>", h)
 
@@ -770,6 +803,13 @@ static struct xmppStream SetupXmppStream(const char *xml) {
   s.i = 0;
   s.n = strlen(xml);
   return s;
+}
+
+static char *CloneXmlSlice(struct xmppXmlSlice slc) {
+  char *d = NULL;
+  if (slc.p && (d = calloc(slc.n+1, 1)))
+    xmppReadXmlSlice(d, slc);
+  return d;
 }
 
 static void TestXml() {
@@ -931,8 +971,8 @@ void thing() {
   SendSsl(xmppFormatBindResource, "admin@localhost", "localhost", "bind1", NULL);
   ReceiveSsl();
 
-  xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
-  Log("%s %d\n", out, INT_MAX);
+  //xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
+  //Log("%s %d\n", out, INT_MAX);
 
   mbedtls_ssl_close_notify(&ssl);
   mbedtls_net_free(&server_fd);
