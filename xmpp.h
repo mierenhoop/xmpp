@@ -37,10 +37,10 @@ struct xmppSaslContext {
   char srvsig[20];
 };
 
-void xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user);
-char *xmppFormatSaslInitialMessage(char *p, char *e, struct xmppSaslContext *ctx);
-int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, const char *pwd);
-char *xmppFormatSaslResponse(char *p, char *e, struct xmppSaslContext *ctx);
-int xmppVerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice s);
+//void xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user);
+//char *xmppFormatSaslInitialMessage(char *p, char *e, struct xmppSaslContext *ctx);
+//int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, const char *pwd);
+//char *xmppFormatSaslResponse(char *p, char *e, struct xmppSaslContext *ctx);
+//int xmppVerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice s);
 
 #endif
