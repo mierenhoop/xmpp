@@ -160,19 +160,11 @@ struct xmppStanza {
   };
 };
 
-enum xmppStanzaReadReturn {
-  xmppStanzaReadError = -1,
-  xmppStanzaReadNothing = 0,
-  xmppStanzaReadOk,
-  xmppStanzaReadEndStream,
-  xmppStanzaReadUnknown,
-};
-
 static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
   return true;
 }
 
-#define HasOverflowed(p, e) ((p) == (e))
+#define HasOverflowed(p, e) ((p) >= (e))
 
 // TODO: extract out to separate struct Parser
 // TODO: don't use yxml, but in-house parser,
@@ -311,7 +303,7 @@ static int FindElement(const char *elem, size_t n, const char *opt) {
 
 // opposite of inspect element ;)
 // returns 1 when end of parent element
-static int ExpectElement(struct xmppParser *p) { //, const char *opt) {
+static int ParseElement(struct xmppParser *p) { //, const char *opt) {
   int r;
   while (p->i < p->n) {
     switch ((r = yxml_parse(&p->x, p->p[p->i++]))) {
@@ -340,7 +332,7 @@ static int SliceToI(struct xmppXmlSlice s) {
   return neg ? -v : v;
 }
 
-static int ReadAck(struct xmppParser *p, struct xmppStanza *st) {
+static int ReadAckAnswer(struct xmppParser *p, struct xmppStanza *st) {
   struct xmppXmlSlice attr;
   int r;
   st->type = XMPP_STANZA_ACKANSWER;
@@ -361,23 +353,39 @@ int xmppReadStanza(struct xmppParser *p, struct xmppStanza *st) {
   // As with xmppReadXmlSlice, we might be able to init yxml with memset
   static const char prefix[] = "<stream:stream>";
   int i, r;
-  struct xmppXmlSlice attr;
+  struct xmppXmlSlice attr, cont;
   for (i = 0; i < sizeof(prefix)-1; i++) {
     yxml_parse(&p->x, prefix[i]);
   }
   memset(st, 0, sizeof(*st));
-  if ((r = ExpectElement(p)))
+  if ((r = ParseElement(p)) <= 0)
     return r < 0 ? r : XMPP_EXML;
   if (!strcmp(p->x.elem, "iq")) st->type = XMPP_STANZA_IQ;
-  else if (!strcmp(p->x.elem, "a")) return ReadAck(p, st);
+  else if (!strcmp(p->x.elem, "a")) return ReadAckAnswer(p, st);
   else if (!strcmp(p->x.elem, "r")) {
     st->type = XMPP_STANZA_ACKREQUEST;
     return SkipUnknownXml(p);
   }
-  //while ((r = ParseAttribute(s, &attr)) > 0) {
-  //  if (!strcmp(s->x.attr)
-  //}
-  return xmppStanzaReadNothing;
+  while ((r = ParseAttribute(p, &attr)) > 0) {
+    if (!strcmp(p->x.attr, "id")) {
+      memcpy(&st->id, &attr, sizeof(attr));
+    } else if (!strcmp(p->x.attr, "from")) {
+      memcpy(&st->from, &attr, sizeof(attr));
+    } else if (!strcmp(p->x.attr, "to")) {
+      memcpy(&st->to, &attr, sizeof(attr));
+    }
+  }
+  if ((r = ParseElement(p)) <= 0)
+    return r;
+  if (st->type == XMPP_STANZA_IQ && !strcmp(p->x.elem, "bind")) {
+    if ((r = ParseElement(p)) <= 0 || strcmp(p->x.elem, "jid"))
+      return r < 0 ? r : XMPP_EXML;
+    if ((r = GetXmlContent(p, &cont)))
+      return r;
+    st->type = XMPP_STANZA_BINDJID;
+    memcpy(&st->bindjid, &cont, sizeof(cont));
+  }
+  return 0;
 }
 
 // Read stream and features
@@ -387,7 +395,7 @@ int xmppExpectStream(struct xmppParser *p, struct xmppStream *s) {
   struct xmppXmlSlice attr;
   int r;
   s->features = 0;
-  if ((r = ExpectElement(p)) <= 0 || strcmp(p->x.elem, "stream:stream"))
+  if ((r = ParseElement(p)) <= 0 || strcmp(p->x.elem, "stream:stream"))
     return r < 0 ? r : XMPP_EXML;
   while ((r = ParseAttribute(p, &attr)) > 0) {
     if (!strcmp(p->x.attr, "id")) {
@@ -400,13 +408,13 @@ int xmppExpectStream(struct xmppParser *p, struct xmppStream *s) {
   }
   if (r < 0)
     return r;
-  if ((r = ExpectElement(p)) <= 0 || strcmp(p->x.elem, "stream:features"))
+  if ((r = ParseElement(p)) <= 0 || strcmp(p->x.elem, "stream:features"))
     return r < 0 ? r : XMPP_EXML;
-  while ((r = ExpectElement(p)) > 0) {
+  while ((r = ParseElement(p)) > 0) {
     if (!strcmp(p->x.elem, "starttls")) {
       s->features |= XMPP_STREAMFEATURE_STARTTLS;
     } else if (!strcmp(p->x.elem, "mechanisms")) {
-      while ((r = ExpectElement(p)) > 0) { // TODO: check if elem is mechanism
+      while ((r = ParseElement(p)) > 0) { // TODO: check if elem is mechanism
         struct xmppXmlSlice mech;
         if ((r = GetXmlContent(p, &mech)))
           return r;
@@ -438,28 +446,34 @@ static char *SafeStpCpy(char *d, char *e, char *s) {
 // n = number of random bytes
 // p should be at least twice as big
 // doesn't add nul byte
-// TODO: use mbedtls random for compat?
+// TODO: use mbedtls random for compat? esp-idf does support getrandom...
 // TODO: make this more performant
 // char *FillRandomHex(char *p, char *e)
-static void FillRandomHex(char *p, size_t n) {
+static char *FillRandomHex(char *p, char *e, size_t n) {
   char b[3];
-  getrandom(p, n, 0); // TODO: check error
+  size_t nn = n;
+  if (e - p < n*2)
+    return e;
+  if (getrandom(p, n, 0) != n)
+    return e;
   while (n--) {
+    // TODO: don't use sprintf
     sprintf(b, "%02x", (unsigned char)p[n]);
     memcpy(p + n*2, b, 2);
   }
+  return p + nn*2;
 }
 
 // TODO: check if this conforms to sasl spec
 // and also check for d buf size
-static char *SanitizeSaslUsername(char *d, const char *s) {
-  for (;*s;s++) {
+static char *SanitizeSaslUsername(char *d, char *e, const char *s) {
+  for (;*s && d < e;s++) {
     switch (*s) {
     case '=':
-      d = stpcpy(d, "=3D");
+      d = SafeStpCpy(d, e, "=3D");
       break;
     case ',':
-      d = stpcpy(d, "=2C");
+      d = SafeStpCpy(d, e, "=2C");
       break;
     default:
       *d++ = *s;
@@ -469,21 +483,26 @@ static char *SanitizeSaslUsername(char *d, const char *s) {
   return d;
 }
 
-// TODO: check for ctx->n or SafeStpCpy
-void xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user) {
+// ret
+//  = 0: success
+//  < 0: XMPP_E*
+int xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user) {
+  char *e = p + n;
   memset(ctx, 0, sizeof(*ctx));
   ctx->p = p;
   ctx->n = n;
-  p = stpcpy(p, "n,,n=");
+  p = SafeStpCpy(p, e, "n,,n=");
   ctx->initialmsg = 3;
-  p = SanitizeSaslUsername(p, user);
-  p = stpcpy(p, ",r=");
-  p = stpcpy(p, "fyko+d2lbbFgONRv9qkxdawL"); // for testing
+  p = SanitizeSaslUsername(p, e, user);
+  p = SafeStpCpy(p, e, ",r=");
+  //p = SafeStpCpy(p, e, "fyko+d2lbbFgONRv9qkxdawL"); // for testing
   //FillRandomHex(p, 32);
   //p += 64;
+  p = FillRandomHex(p, e, 32);
   ctx->fsm = xmppSaslInitialized;
-  *p++ = ',';
+  p = SafeStpCpy(p, e, ",");
   ctx->serverfirstmsg = p - ctx->p;
+  return HasOverflowed(p, e) ? XMPP_EMEM : 0;
 }
 
 static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
@@ -492,11 +511,9 @@ static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
   return d+n;
 }
 
-static char *DecodeBase64(char *d, char *e, const char *s, size_t n, bool nul) {
+static char *DecodeBase64(char *d, char *e, const char *s, size_t n) {
   if (mbedtls_base64_decode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
     return e;
-  if (nul) {
-  }
   return d+n;
 }
 
@@ -682,8 +699,7 @@ static int XorSha1(char d[20], const char a[20], const char b[20]) {
 //                     |            |
 //                clientproof   serversig
 //
-// TODO: check mbedtls return values
-static int calculate(struct xmppSaslContext *ctx, char clientproof[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
+static int CalculateScramSha1(struct xmppSaslContext *ctx, char clientproof[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
   char saltedpwd[20], clientkey[20],
   storedkey[20], clientsig[20],
   serverkey[20];
@@ -697,6 +713,7 @@ static int calculate(struct xmppSaslContext *ctx, char clientproof[static 20], c
 }
 
 // TODO: error handling
+// expects xmppInitSaslContext to be successfully called with the same ctx
 // c = challenge base64
 // make sure pwd is all printable chars
 // return something if ctx->n is too small
@@ -708,46 +725,31 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   char *s, *i, *e = ctx->p+ctx->n;
   char *r = ctx->p+ctx->serverfirstmsg;
   if (mbedtls_base64_decode(r, e-r, &n, c.p, c.rawn))
-    return XMPP_EMEM;
+    return XMPP_EXML;
   size_t servernonce = ctx->serverfirstmsg + 2;
   if (strncmp(r, "r=", 2)
    || !(s = strstr(r+2, ",s="))
    || !(i = strstr(s+3, ",i=")))
-    return 1;
+    return XMPP_EXML;
   size_t saltb64 = s-ctx->p + 3;
   itrs = atoi(i+3);
-  if (itrs == 0 || itrs > 0xffffff) // errorrrrr, or MAX_ITRS
-    return 1;
+  if (itrs == 0 || itrs > 0xffffff)
+    return XMPP_EXML;
   r += n;
   ctx->clientfinalmsg = r - ctx->p + 1;
-  r = stpcpy(r, ",c=biws,r=");
+  r = SafeStpCpy(r, e, ",c=biws,r=");
   size_t nb = saltb64 - servernonce - 3;
   memcpy(r, ctx->p+servernonce, nb);
   r += nb;
   ctx->authmsgend = r - ctx->p;
   mbedtls_base64_decode(r, 9001, &n, s+3, i-s-3); // IDK random value
   char clientproof[20];
-  if (!calculate(ctx, clientproof, pwd, strlen(pwd), r, n, itrs))
+  if (!CalculateScramSha1(ctx, clientproof, pwd, strlen(pwd), r, n, itrs))
     return XMPP_ECRYPTO;
   r = stpcpy(r, ",p=");
   mbedtls_base64_encode(r, 9001, &n, clientproof, 20); // IDK random value
   ctx->clientfinalmsgend = (r-ctx->p)+n;
-  return 0;
-}
-
-static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
-  for (;*p;p++) {
-    if (*p == '>') {
-      s->p = p+1;
-      break;
-    }
-  }
-  for (;*p;p++) {
-    if (*p == '<') {
-      s->n = s->rawn = p - s->p;
-      break;
-    }
-  }
+  return HasOverflowed(r, e) ? XMPP_EMEM : 0;
 }
 
 // TODO: incorporate the following ~three functions in xmppReadStanza?
@@ -758,7 +760,7 @@ static void GetChallengeRealFast(const char *p, struct xmppXmlSlice *s) {
 //  > 0: no
 int xmppCanTlsProceed(struct xmppParser *s) {
   int r;
-  if ((r = ExpectElement(s)) <= 0) // TODO: || (r = SkipUnknownXml(s))) not needed
+  if ((r = ParseElement(s)) <= 0) // TODO: || (r = SkipUnknownXml(s))) not needed
     return r < 0 ? r : XMPP_EXML;
   if (!strcmp(s->x.elem, "proceed"))
     return 0;
@@ -770,7 +772,7 @@ int xmppCanTlsProceed(struct xmppParser *s) {
 int xmppGetSaslChallenge(struct xmppParser *s, struct xmppXmlSlice *c) {
   int r;
   struct xmppXmlSlice attr;
-  if ((r = ExpectElement(s)) <= 0)
+  if ((r = ParseElement(s)) <= 0)
     return r < 0 ? r : XMPP_EXML;
   if (strcmp(s->x.elem, "challenge"))
     return XMPP_EXML;
@@ -786,7 +788,7 @@ int xmppGetSaslChallenge(struct xmppParser *s, struct xmppXmlSlice *c) {
 int xmppIsSaslSuccess(struct xmppParser *s, struct xmppSaslContext *ctx) {
   int r;
   struct xmppXmlSlice slc;
-  if ((r = ExpectElement(s)) <= 0)
+  if ((r = ParseElement(s)) <= 0)
     return r < 0 ? r : XMPP_EXML;
   if (strcmp(s->x.elem, "success"))
     return XMPP_EXML;
@@ -893,27 +895,6 @@ static void TestXml() {
   assert(FindElement("procee", 6, "p=proceed f=failure c=procee") == 'c');
 }
 
-static void TestSkipUnknownXml() {
-}
-
-static void TestSasl() {
-  static char buffer[xmppMinMaxStanzaSize+1], buffer2[1000];
-  char *bufe = buffer + sizeof(buffer);
-  struct xmppSaslContext ctx;
-  xmppInitSaslContext(&ctx, buffer2, sizeof(buffer2), "user");
-  xmppFormatSaslInitialMessage(buffer, bufe, &ctx);
-  printf("initial: %s\n", buffer);
-  const char *challenge =  "cj1meWtvK2QybGJiRmdPTlJ2OXFreGRhd0wzcmZjTkhZSlkxWlZ2V1ZzN2oscz1RU1hDUitRNnNlazhiZjkyLGk9NDA5Ng==";
-  struct xmppXmlSlice c = { .p = challenge, .rawn = strlen(challenge) };
-  printf("sasl: %d\n", xmppSolveSaslChallenge(&ctx, c, "pencil"));
-  xmppFormatSaslResponse(buffer, bufe, &ctx);
-  puts(buffer);
-  memcpy(ctx.srvsig, "\xae\x61\x7d\xa6\xa5\x7c\x4b\xbb\x2e\x02\x86\x56\x8d\xae\x1d\x25\x19\x05\xb0\xa4", 20);
-  c.p =  "dj1ybUY5cHFWOFM3c3VBb1pXamE0ZEpSa0ZzS1E9";
-  c.rawn = strlen(c.p);
-  printf("%d\n", xmppVerifySaslSuccess(&ctx, c));
-}
-
 static void Transfer(int s, char *e) {
   printf("Sending %s\n", out);
   write(s, out, e-out);
@@ -950,7 +931,7 @@ static void Transfer(int s, char *e) {
 #define ReceivePlain() Receive(net_recv, &server_fd)
 #define ReceiveSsl() Receive(ssl_read, &ssl)
 
-void thing() {
+static void TestTls() {
   char *buf = NULL;
   int ret, len;
   struct xmppStream stream;
@@ -1016,7 +997,6 @@ void thing() {
   SendSsl(xmppFormatSaslInitialMessage, &ctx);
   ReceiveSsl();
   assert(xmppGetSaslChallenge(&parser, &challenge) == 0);
-  dumpxmlslice(challenge);
   xmppSolveSaslChallenge(&ctx, challenge, "adminpass");
   SendSsl(xmppFormatSaslResponse, &ctx);
   ReceiveSsl();
@@ -1027,6 +1007,9 @@ void thing() {
   assert(xmppExpectStream(&parser, &stream) == 0);
   SendSsl(xmppFormatBindResource, "admin@localhost", "localhost", "bind1", NULL);
   ReceiveSsl();
+  struct xmppStanza st;
+  assert(xmppReadStanza(&parser, &st) == 0);
+  assert(st.type == XMPP_STANZA_BINDJID);
 
   //xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
   //Log("%s %d\n", out, INT_MAX);
@@ -1040,43 +1023,11 @@ void thing() {
   mbedtls_entropy_free(&entropy);
 }
 
-static void Do(int s) {
-  struct xmppSaslContext ctx;
-  struct xmppXmlSlice c;
-  char *e = xmppFormatStream(out, out+sizeof(out), "admin@localhost", "localhost");
-  Transfer(s, e);
-  xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
-  e = xmppFormatSaslInitialMessage(out, out+sizeof(out), &ctx);
-  Transfer(s, e);
-  GetChallengeRealFast(in, &c);
-  //printf("%p %d\n", c.p, c.rawn);
-  xmppSolveSaslChallenge(&ctx, c, "adminpass");
-  e = xmppFormatSaslResponse(out, out+sizeof(out), &ctx);
-  Transfer(s, e);
-  GetChallengeRealFast(in, &c);
-  printf("Success? %s\n", xmppVerifySaslSuccess(&ctx, c) == 0 ? "yes" : "no");
-}
-
-static void TestConnection() {
-  int s = socket(AF_INET, SOCK_STREAM, 0);
-  struct sockaddr_in sa = {0};
-  sa.sin_family = AF_INET;
-  sa.sin_port = htons(5222);
-  puts("Connecting");
-  if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) < 0)
-    perror("connection failed");
-  puts("Connected");
-  Do(s);
-  close(s);
-}
-
 // minimum maximum stanza size = 10000
 int main() {
   puts("Starting tests");
-  //TestXml();
-  thing();
-  //TestSasl();
-  //TestConnection();
+  TestXml();
+  TestTls();
   puts("All tests passed");
   return 0;
 }

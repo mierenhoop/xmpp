@@ -1,6 +1,5 @@
 LDFLAGS= -lmbedtls -lmbedcrypto -lmbedx509
 CFLAGS+= -Wall -Wno-unused -Wno-pointer-sign
-CFLAGS+= -fdiagnostics-color=always
 
 all: o/test
 
