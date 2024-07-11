@@ -38,16 +38,6 @@
 
 #define RetErr(err) (LogWarn("Returning error at line %d: %s", __LINE__, xmppErrToStr(err)), (err))
 
-// gets the length of the stanza, sees if stanza is complete
-// or is larger than max stanza size
-// gets length of content stuffs specific to stanza type
-// also store pointer offsets of content or attr strings
-// maybe mutate original xml?
-struct StanzaParser {
-  // yxml_t
-  int depth;
-};
-
 // if (s.p && (d = calloc(s.n+1))) xmppReadXmlSlice(d, s);
 // TODO: have specific impl for this?
 // TODO: we can skip the whole prefix initialization since that is
@@ -77,9 +67,13 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
   }
 }
 
+// The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.
 #define XMPP_EMEM -1
+// Some input from the input buffer is either malformed XML or does not follow the XMPP specification.
 #define XMPP_EXML -2
+// MbedTls cryptography-related functions failed. (Could also be failed malloc done by MbedTls)
 #define XMPP_ECRYPTO -3
+// The input buffer end with an incomplete stanza.
 #define XMPP_EPARTIAL -4
 
 const char *xmppErrToStr(int e) {
@@ -100,6 +94,7 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STREAMFEATURE_SCRAMSHA1 (1 << 2)
 #define XMPP_STREAMFEATURE_SCRAMSHA1PLUS (1 << 3)
 #define XMPP_STREAMFEATURE_PLAIN (1 << 4)
+#define XMPP_STREAMFEATURE_SMACKS (1 << 5)
 
 
 #define XMPP_STANZA_EMPTY 0
@@ -142,7 +137,7 @@ struct xmppError {
 };
 
 struct xmppSmacksEnabled {
-  int max;
+  struct xmppXmlSlice id;
   bool resume;
 };
 
@@ -177,12 +172,24 @@ struct xmppParser {
 };
 
 struct xmppStream {
-  struct xmppXmlSlice from, to, id;
+  struct xmppXmlSlice from, to, id; // TODO: these values don't live long enough
   int features;
+  int lastdisco;
 };
 
 struct xmppClient {
   int sentacks, recvacks;
+};
+
+// full  domain      resource    end
+// v     v           v           v
+// admin@example.com/someresource
+// full buffer is at the end, because might some header definition
+// change the size for different compilation units, accessing other
+// field members will not be invalid.
+struct Jid {
+  size_t domain, resource, end;
+  char full[3072]; // TODO: definition MAX_JID_SIZE?
 };
 
 // Skip all the way until the end of the element it has just entered
@@ -365,6 +372,17 @@ int xmppReadStanza(struct xmppParser *p, struct xmppStanza *st) {
   else if (!strcmp(p->x.elem, "r")) {
     st->type = XMPP_STANZA_ACKREQUEST;
     return SkipUnknownXml(p);
+  } else if (!strcmp(p->x.elem, "enabled")) {
+    st->type = XMPP_STANZA_SMACKSENABLED;
+    while ((r = ParseAttribute(p, &attr)) > 0) {
+      if (!strcmp(p->x.attr, "id")) {
+        memcpy(&st->smacksenabled.id, &attr, sizeof(attr));
+      } else if (!strcmp(p->x.attr, "resume")) {
+        st->smacksenabled.resume = !strncmp(attr.p, "true", attr.rawn)
+          || !strncmp(attr.p, "1", attr.rawn);
+      }
+    }
+    return r < 0 ? r : SkipUnknownXml(p);
   }
   while ((r = ParseAttribute(p, &attr)) > 0) {
     if (!strcmp(p->x.attr, "id")) {
@@ -428,6 +446,11 @@ int xmppExpectStream(struct xmppParser *p, struct xmppStream *s) {
       if (r < 0)
         return r;
       continue;
+    } else if (!strcmp(p->x.elem, "sm")) {
+      if ((r = ParseAttribute(p, &attr)) <= 0 || strcmp(p->x.attr, "xmlns"))
+        return r < 0 ? r : XMPP_EXML;
+      if (!strcmp(attr.p, "urn:xmpp:sm:3"))
+        s->features |= XMPP_STREAMFEATURE_SMACKS;
     }
     if ((r = SkipUnknownXml(p)))
       return r;
@@ -555,7 +578,7 @@ static char *Itoa(char *d, char *e, int i) {
 // Analogous to the typical printf formatting, except only the following applies:
 // - %s: Encoded XML attribute value string
 // - %b: Base64 string, first arg is len and second is raw data
-// - %d: unsigned integer
+// - %d: integer
 // TODO: the rest... are they really needed?
 // TODO: change sig to size_t FormatXml(char *d, size_t n, fmt, ...)?
 static char *FormatXml(char *d, char *e, const char *fmt, ...) {
@@ -810,8 +833,8 @@ static size_t MoveStanza(char *p, size_t n, size_t s) {
   return n - s;
 }
 
-#define xmppFormatIq(p, e, from, to, id, fmt, ...) FormatXml(p, e, "<iq" \
-    " type='get'" \
+#define xmppFormatIq(p, e, type, from, to, id, fmt, ...) FormatXml(p, e, "<iq" \
+    " type='" type "'" \
     " from='%s'" \
     " to='%s'" \
     " id='%s'>" fmt "</iq>", \
@@ -820,25 +843,27 @@ static size_t MoveStanza(char *p, size_t n, size_t s) {
 
 // TODO: better way to do this?
 // res: string or NULL if you want the server to generate it
-#define xmppFormatBindResource(p, e, from, to, id, res) \
-  xmppFormatIq(p, e, from, to, id, \
-      "<bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]", \
-      !res, !!res, res)
+#define xmppFormatBindResource(p, e, id, res) \
+  FormatXml(p, e, \
+      "<iq id='%s' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
+      id, !res, !!res, res)
 
 // XEP-0199: XMPP Ping
 
-#define xmppFormatPing(p, e, from, to, id) xmppFormatIq(p, e, from, to, id, "<ping xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+#define xmppFormatPing(p, e, from, to, id) xmppFormatIq(p, e, "get", from, to, id, "<ping xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
 
 // XEP-0030: Service Discovery
 
-#define xmppFormatDisco(p, e, from, to, id) xmppFormatIq(p, e, from, to, id, "<query xmlns='http://jabber.org/protocol/disco#info'/>")
+#define xmppFormatDisco(p, e, from, to, id) xmppFormatIq(p, e, "get", from, to, id, "<query xmlns='http://jabber.org/protocol/disco#info'/>")
 
 // XEP-0198: Stream Management
 
-#define xmppFormatAckEnable(p, e) SafeStpCpy(p, e, "<enable xmlns='urn:xmpp:sm:3'/>")
+#define xmppFormatAckEnable(p, e, resume) FormatXml(p, e, "<enable xmlns='urn:xmpp:sm:3'[ resume='true']/>", resume)
 #define xmppFormatAckResume(p, e, h, previd) FormatXml(p, e, "<resume xmlns='urn:xmpp:sm:3' h='%d' previd='%s'/>", h, previd)
 #define xmppFormatAckRequest(p, e) SafeStpCpy(p, e, "<r xmlns='urn:xmpp:sm:3'/>")
 #define xmppFormatAckAnswer(p, e, h) FormatXml(p, e, "<a xmlns='urn:xmpp:sm:3' h='%d'/>", h)
+
+#define xmppFormatMessage(p, e, from, to, id, body) FormatXml(p, e, "<message from='%s' to='%s'[ id='%s']><body>%s</body></message>", from, to, !!id, id, body)
 
 #ifdef XMPP_RUNTEST
 
@@ -846,6 +871,7 @@ static char in[10000], out[10000], saslbuf[1000], yxmlbuf[1000];
 static mbedtls_ssl_context ssl;
 static mbedtls_net_context server_fd;
 static struct xmppParser parser;
+static struct Jid jid;
 
 static struct xmppParser SetupXmppParser(const char *xml) {
   static char buf[1000];
@@ -931,10 +957,19 @@ static void Transfer(int s, char *e) {
 #define ReceivePlain() Receive(net_recv, &server_fd)
 #define ReceiveSsl() Receive(ssl_read, &ssl)
 
+static void SetupJid() {
+  strcpy(jid.full, "admin@localhost/resource");
+  jid.domain = strchr(jid.full, '@')+1 - jid.full;
+  jid.resource = strchr(jid.full, '/')+1 - jid.full;
+  jid.end = strlen(jid.full);
+}
+
 static void TestTls() {
   char *buf = NULL;
   int ret, len;
   struct xmppStream stream;
+
+  SetupJid();
 
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
@@ -1005,11 +1040,17 @@ static void TestTls() {
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
   assert(xmppExpectStream(&parser, &stream) == 0);
-  SendSsl(xmppFormatBindResource, "admin@localhost", "localhost", "bind1", NULL);
+  SendSsl(xmppFormatBindResource, "bind1", "resource");
   ReceiveSsl();
   struct xmppStanza st;
   assert(xmppReadStanza(&parser, &st) == 0);
   assert(st.type == XMPP_STANZA_BINDJID);
+
+  SendSsl(xmppFormatDisco, "admin@localhost/resource", "localhost", "disco1");
+  ReceiveSsl();
+  SendSsl(xmppFormatMessage, "admin@localhost/resource", "admin@localhost", "msg1", "Hello world!");
+  SendSsl(xmppFormatAckEnable, true);
+  ReceiveSsl();
 
   //xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
   //Log("%s %d\n", out, INT_MAX);

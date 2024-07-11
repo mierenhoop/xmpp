@@ -11,6 +11,8 @@
 
 #define XMPP_ERR_CORRUPT (-1)
 
+// TODO: make isattr an enum which could be either an attribute value,
+// content or a slice of XML elements.
 // isattr ? attr : content
 // p can be null!
 struct xmppXmlSlice {
