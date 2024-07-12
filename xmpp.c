@@ -16,11 +16,14 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <setjmp.h>
 
 #include "xmpp.h"
 #include "yxml.h"
 
 #include "cacert.h"
+
+#define XMPP_CONFIG_MAX_JID_SIZE 3072
 
 // https://sans-io.readthedocs.io/
 
@@ -104,7 +107,8 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STANZA_STREAMFEATURES 4
 #define XMPP_STANZA_BINDJID 5
 #define XMPP_STANZA_SMACKSENABLED 6
-#define XMPP_STANZA_ACKREQUEST 7
+// server can't send ack request
+//#define XMPP_STANZA_ACKREQUEST 7
 #define XMPP_STANZA_ACKANSWER 8
 
 
@@ -155,6 +159,12 @@ struct xmppStanza {
   };
 };
 
+struct xmppListIterator {
+  int type;
+  const char *p;
+  size_t i, rawn;
+};
+
 static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
   return true;
 }
@@ -167,6 +177,7 @@ static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
 // and the usage here is usecase specific.
 struct xmppParser {
   yxml_t x;
+  jmp_buf jb;
   int i, n;
   const char *p;
 };
@@ -174,11 +185,11 @@ struct xmppParser {
 struct xmppStream {
   struct xmppXmlSlice from, to, id; // TODO: these values don't live long enough
   int features;
-  int lastdisco;
 };
 
 struct xmppClient {
   int sentacks, recvacks;
+  int lastdisco;
 };
 
 // full  domain      resource    end
@@ -189,7 +200,7 @@ struct xmppClient {
 // field members will not be invalid.
 struct Jid {
   size_t domain, resource, end;
-  char full[3072]; // TODO: definition MAX_JID_SIZE?
+  char full[XMPP_CONFIG_MAX_JID_SIZE];
 };
 
 // Skip all the way until the end of the element it has just entered
@@ -334,7 +345,7 @@ static int SliceToI(struct xmppXmlSlice s) {
   for (int i = 0; i < s.rawn; i++) {
     if (s.p[i] < '0' || s.p[i] > '9')
       return 0;
-    v = v * 10 + s.p[i];
+    v = v * 10 + (s.p[i] - '0');
   }
   return neg ? -v : v;
 }
@@ -344,19 +355,22 @@ static int ReadAckAnswer(struct xmppParser *p, struct xmppStanza *st) {
   int r;
   st->type = XMPP_STANZA_ACKANSWER;
   while ((r = ParseAttribute(p, &attr)) > 0) {
-    if (!strcmp(p->x.elem, "h"))
+    if (!strcmp(p->x.attr, "h"))
       st->ack = SliceToI(attr);
   }
   return r < 0 ? r : SkipUnknownXml(p);
 }
 
+// TODO: do a first pass for checking XML validity and possibly
+// existance of multiple stanzas. Then we don't have to check and early
+// return everywhere. Another options would be using setjmp/longjmp.
 // TODO: have new yxml state per stanza, this is only because if a stanza is partial
 // we want to ignore it and let the user decide if it needs to get more data from server
 // and read it again, the yxml would be messed up for reading again
 // maybe this is not needed.
 // But right now if we want to correctly detect </stream:stream>, the new yxml state should
 // start with <stream:stream>
-int xmppReadStanza(struct xmppParser *p, struct xmppStanza *st) {
+int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
   // As with xmppReadXmlSlice, we might be able to init yxml with memset
   static const char prefix[] = "<stream:stream>";
   int i, r;
@@ -365,14 +379,16 @@ int xmppReadStanza(struct xmppParser *p, struct xmppStanza *st) {
     yxml_parse(&p->x, prefix[i]);
   }
   memset(st, 0, sizeof(*st));
+  if ((r = setjmp(p->jb)))
+    return r;
   if ((r = ParseElement(p)) <= 0)
     return r < 0 ? r : XMPP_EXML;
   if (!strcmp(p->x.elem, "iq")) st->type = XMPP_STANZA_IQ;
   else if (!strcmp(p->x.elem, "a")) return ReadAckAnswer(p, st);
-  else if (!strcmp(p->x.elem, "r")) {
+  /*else if (!strcmp(p->x.elem, "r")) {
     st->type = XMPP_STANZA_ACKREQUEST;
     return SkipUnknownXml(p);
-  } else if (!strcmp(p->x.elem, "enabled")) {
+  } */else if (!strcmp(p->x.elem, "enabled")) {
     st->type = XMPP_STANZA_SMACKSENABLED;
     while ((r = ParseAttribute(p, &attr)) > 0) {
       if (!strcmp(p->x.attr, "id")) {
@@ -393,7 +409,7 @@ int xmppReadStanza(struct xmppParser *p, struct xmppStanza *st) {
       memcpy(&st->to, &attr, sizeof(attr));
     }
   }
-  if ((r = ParseElement(p)) <= 0)
+  if (r < 0 || (r = ParseElement(p)) <= 0)
     return r;
   if (st->type == XMPP_STANZA_IQ && !strcmp(p->x.elem, "bind")) {
     if ((r = ParseElement(p)) <= 0 || strcmp(p->x.elem, "jid"))
@@ -409,9 +425,11 @@ int xmppReadStanza(struct xmppParser *p, struct xmppStanza *st) {
 // Read stream and features
 // Features ALWAYS come after server stream according to spec
 // If server too slow, user should read more.
-int xmppExpectStream(struct xmppParser *p, struct xmppStream *s) {
+int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
   struct xmppXmlSlice attr;
   int r;
+  if ((r = setjmp(p->jb)))
+    return r;
   s->features = 0;
   if ((r = ParseElement(p)) <= 0 || strcmp(p->x.elem, "stream:stream"))
     return r < 0 ? r : XMPP_EXML;
@@ -775,7 +793,7 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   return HasOverflowed(r, e) ? XMPP_EMEM : 0;
 }
 
-// TODO: incorporate the following ~three functions in xmppReadStanza?
+// TODO: incorporate the following ~three functions in xmppParseStanza?
 
 // ret
 //  < 0: error
@@ -865,6 +883,23 @@ static size_t MoveStanza(char *p, size_t n, size_t s) {
 
 #define xmppFormatMessage(p, e, from, to, id, body) FormatXml(p, e, "<message from='%s' to='%s'[ id='%s']><body>%s</body></message>", from, to, !!id, id, body)
 
+// should be called after data has been read in the buffer from the
+// network or the user of this library has written some stanza in the
+// out buffer. No data should be read from the network until READ_MORE
+// is returned. This function only be called after TLS and SASL
+// negotiation has been completed.
+// ret:
+//  SEND
+//  READ_MORE (default)
+//  ERROR
+//  GOT_MESSAGE
+static int xmppIterate(struct xmppStream *s, char *out, size_t outn, const char *in, size_t inn) {
+  struct xmppStanza st;
+  // yxml_init(&parser.x, yxmlbuf, sizeof(yxmlbuf));
+  //int r = xmppParseStanza(s, &st);
+  return 0;
+}
+
 #ifdef XMPP_RUNTEST
 
 static char in[10000], out[10000], saslbuf[1000], yxmlbuf[1000];
@@ -906,7 +941,7 @@ static void TestXml() {
       "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'><required/></starttls>"
       "</stream:features>"
       );
-  assert(xmppExpectStream(&p, &str) == 0);
+  assert(xmppParseStream(&p, &str) == 0);
   assert(str.to.p && !strncmp(str.to.p, "juliet@im.example.com", str.to.rawn));
   assert(str.to.rawn == str.to.n);
   assert(FindElement("proceed", 7, "p=proceed f=failure") == 'p');
@@ -937,7 +972,7 @@ static void Transfer(int s, char *e) {
 // ... is args passed after format
 #define Send(method, ctx, fn, ...) do { \
   char *end = fn(out, out+sizeof(out) __VA_OPT__(,) __VA_ARGS__); \
-  Log("Out: \e[32m%s\e[0m", out); \
+  Log("Out: \e[32m%.*s\e[0m", (int)(end-out), out); \
   mbedtls_##method(ctx, out, end - out); \
 } while (0)
 
@@ -1002,7 +1037,7 @@ static void TestTls() {
 
   SendPlain(xmppFormatStream, "admin@localhost", "localhost");
   ReceivePlain();
-  assert(xmppExpectStream(&parser, &stream) == 0);
+  assert(xmppParseStream(&parser, &stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_STARTTLS);
   SendPlain(xmppFormatStartTls);
   ReceivePlain();
@@ -1023,7 +1058,7 @@ static void TestTls() {
 	}
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
-  assert(xmppExpectStream(&parser, &stream) == 0);
+  assert(xmppParseStream(&parser, &stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_SCRAMSHA1);
 
   struct xmppSaslContext ctx;
@@ -1039,18 +1074,22 @@ static void TestTls() {
 
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
-  assert(xmppExpectStream(&parser, &stream) == 0);
+  assert(xmppParseStream(&parser, &stream) == 0);
   SendSsl(xmppFormatBindResource, "bind1", "resource");
   ReceiveSsl();
   struct xmppStanza st;
-  assert(xmppReadStanza(&parser, &st) == 0);
+  assert(xmppParseStanza(&parser, &st) == 0);
   assert(st.type == XMPP_STANZA_BINDJID);
 
   SendSsl(xmppFormatDisco, "admin@localhost/resource", "localhost", "disco1");
   ReceiveSsl();
-  SendSsl(xmppFormatMessage, "admin@localhost/resource", "admin@localhost", "msg1", "Hello world!");
   SendSsl(xmppFormatAckEnable, true);
   ReceiveSsl();
+  SendSsl(xmppFormatMessage, "admin@localhost/resource", "admin@localhost", "msg1", "Hello world!");
+  SendSsl(xmppFormatAckRequest);
+  ReceiveSsl();
+  xmppParseStanza(&parser, &st);
+  assert(st.ack == 1);
 
   //xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
   //Log("%s %d\n", out, INT_MAX);

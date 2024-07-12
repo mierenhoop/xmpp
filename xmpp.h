@@ -18,7 +18,7 @@
 struct xmppXmlSlice {
   bool isattr;
   const char *p;
-  size_t n, rawn;
+  size_t n, rawn; // TODO: n -> realn, rawn -> n
 };
 
 // p is a buffer allocated by a parent as heap or static
