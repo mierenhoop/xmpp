@@ -371,13 +371,8 @@ static int ReadAckAnswer(struct xmppParser *p, struct xmppStanza *st) {
 // But right now if we want to correctly detect </stream:stream>, the new yxml state should
 // start with <stream:stream>
 int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
-  // As with xmppReadXmlSlice, we might be able to init yxml with memset
-  static const char prefix[] = "<stream:stream>";
   int i, r;
   struct xmppXmlSlice attr, cont;
-  for (i = 0; i < sizeof(prefix)-1; i++) {
-    yxml_parse(&p->x, prefix[i]);
-  }
   memset(st, 0, sizeof(*st));
   if ((r = setjmp(p->jb)))
     return r;
@@ -846,10 +841,10 @@ int xmppIsSaslSuccess(struct xmppParser *s, struct xmppSaslContext *ctx) {
 // n is size of all response data
 // s is end of last stanza, start of possible second stanza
 // returns end of last resonse data
-static size_t MoveStanza(char *p, size_t n, size_t s) {
-  memmove(p, p + s, n - s);
-  return n - s;
-}
+//static size_t MoveStanza(struct xmppParser *p) {
+//  memmove(p, p + s, n - s);
+//  return n - s;
+//}
 
 #define xmppFormatIq(p, e, type, from, to, id, fmt, ...) FormatXml(p, e, "<iq" \
     " type='" type "'" \
@@ -883,20 +878,24 @@ static size_t MoveStanza(char *p, size_t n, size_t s) {
 
 #define xmppFormatMessage(p, e, from, to, id, body) FormatXml(p, e, "<message from='%s' to='%s'[ id='%s']><body>%s</body></message>", from, to, !!id, id, body)
 
+#define XMPP_ITER_OK   0
+#define XMPP_ITER_RECV 1
+#define XMPP_ITER_SEND 2
+
+static void xmppInitParser(struct xmppParser *p, char *xbuf, size_t xbufn) {
+  memset(p, 0, sizeof(*p));
+  yxml_init(&p->x, xbuf, xbufn);
+}
+
 // should be called after data has been read in the buffer from the
 // network or the user of this library has written some stanza in the
-// out buffer. No data should be read from the network until READ_MORE
+// out buffer. No data should be read from the network until RECV
 // is returned. This function only be called after TLS and SASL
 // negotiation has been completed.
 // ret:
-//  SEND
-//  READ_MORE (default)
-//  ERROR
-//  GOT_MESSAGE
-static int xmppIterate(struct xmppStream *s, char *out, size_t outn, const char *in, size_t inn) {
+//  XMPP_ITER_*
+static int xmppIterate(struct xmppStream *s, char *out, size_t outn, char *in, size_t inn) {
   struct xmppStanza st;
-  // yxml_init(&parser.x, yxmlbuf, sizeof(yxmlbuf));
-  //int r = xmppParseStanza(s, &st);
   return 0;
 }
 
@@ -984,7 +983,6 @@ static void Transfer(int s, char *e) {
   parser.p = in; \
   parser.n = n; \
   parser.i = 0; \
-  yxml_init(&parser.x, yxmlbuf, sizeof(yxmlbuf)); \
   in[n] = '\0'; \
   Log("In:  \e[34m%s\e[0m", in); \
 } while (0)
@@ -1035,6 +1033,8 @@ static void TestTls() {
           "5222", MBEDTLS_NET_PROTO_TCP) == 0);
   mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
 
+  xmppInitParser(&parser, yxmlbuf, sizeof(yxmlbuf));
+
   SendPlain(xmppFormatStream, "admin@localhost", "localhost");
   ReceivePlain();
   assert(xmppParseStream(&parser, &stream) == 0);
@@ -1056,6 +1056,8 @@ static void TestTls() {
 	} else {
     puts("cert Successssss");
 	}
+  xmppInitParser(&parser, yxmlbuf, sizeof(yxmlbuf));
+
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
   assert(xmppParseStream(&parser, &stream) == 0);
@@ -1071,6 +1073,8 @@ static void TestTls() {
   SendSsl(xmppFormatSaslResponse, &ctx);
   ReceiveSsl();
   assert(xmppIsSaslSuccess(&parser, &ctx) == 0);
+
+  xmppInitParser(&parser, yxmlbuf, sizeof(yxmlbuf));
 
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
