@@ -23,7 +23,16 @@
 
 #include "cacert.h"
 
-#define XMPP_CONFIG_MAX_JID_SIZE 3072
+// RFC 6122 2.1
+#define XMPP_CONFIG_MAX_JID_SIZE 3071
+
+// RFC 6120 13.12
+// If a stanza exceeds this size, we either give a stanza or stream
+// error or ignore the stanza.
+#define XMPP_CONFIG_MAX_STANZA_SIZE 10000
+
+// XEP-0198 5
+#define XMPP_CONFIG_MAX_SMACKID_SIZE 4000
 
 // https://sans-io.readthedocs.io/
 
@@ -171,25 +180,19 @@ static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
 
 #define HasOverflowed(p, e) ((p) >= (e))
 
-// TODO: extract out to separate struct Parser
 // TODO: don't use yxml, but in-house parser,
 // dozens of LOC can be removed because XMPP only allows subset of XML
 // and the usage here is usecase specific.
 struct xmppParser {
   yxml_t x;
   jmp_buf jb;
-  int i, n;
-  const char *p;
+  size_t i, n;
+  char *p;
 };
 
 struct xmppStream {
   struct xmppXmlSlice from, to, id; // TODO: these values don't live long enough
   int features;
-};
-
-struct xmppClient {
-  int sentacks, recvacks;
-  int lastdisco;
 };
 
 // full  domain      resource    end
@@ -200,7 +203,21 @@ struct xmppClient {
 // field members will not be invalid.
 struct Jid {
   size_t domain, resource, end;
-  char full[XMPP_CONFIG_MAX_JID_SIZE];
+  char full[XMPP_CONFIG_MAX_JID_SIZE+1];
+};
+
+struct xmppClient {
+  struct Jid jid;
+  char smackid[XMPP_CONFIG_MAX_SMACKID_SIZE],
+      in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
+  size_t inn, outn, smackidn;
+  struct xmppParser p;
+  int state;
+  int actualsent;
+  int sentacks, recvacks;
+  int lastdisco, lastping;
+  bool disablesmack, disabledisco, enablereceipts;
+  bool cansmackresume;
 };
 
 // Skip all the way until the end of the element it has just entered
@@ -374,6 +391,7 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
   int i, r;
   struct xmppXmlSlice attr, cont;
   memset(st, 0, sizeof(*st));
+  // TODO: put back the initialization of stream:stream
   if ((r = setjmp(p->jb)))
     return r;
   if ((r = ParseElement(p)) <= 0)
@@ -841,10 +859,10 @@ int xmppIsSaslSuccess(struct xmppParser *s, struct xmppSaslContext *ctx) {
 // n is size of all response data
 // s is end of last stanza, start of possible second stanza
 // returns end of last resonse data
-//static size_t MoveStanza(struct xmppParser *p) {
-//  memmove(p, p + s, n - s);
-//  return n - s;
-//}
+static void MoveStanza(struct xmppParser *p) {
+  memmove(p->p, p->p + p->i, p->n - p->i);
+  p->i = 0;
+}
 
 #define xmppFormatIq(p, e, type, from, to, id, fmt, ...) FormatXml(p, e, "<iq" \
     " type='" type "'" \
@@ -887,6 +905,13 @@ static void xmppInitParser(struct xmppParser *p, char *xbuf, size_t xbufn) {
   yxml_init(&p->x, xbuf, xbufn);
 }
 
+static void SendDisco(struct xmppClient *c) {
+  int disco = c->lastdisco + 1;
+  FormatXml(c->out+c->outn, c->out+sizeof(c->out), "<iq type='get' from='%s' to='%s' id='disco%d'><query xmlns='http://jabber.org/protocol/disco#info'/></iq>", c->jid.full, "localhost", disco);
+  c->lastdisco = disco;
+  c->actualsent++;
+}
+
 // should be called after data has been read in the buffer from the
 // network or the user of this library has written some stanza in the
 // out buffer. No data should be read from the network until RECV
@@ -894,8 +919,25 @@ static void xmppInitParser(struct xmppParser *p, char *xbuf, size_t xbufn) {
 // negotiation has been completed.
 // ret:
 //  XMPP_ITER_*
-static int xmppIterate(struct xmppStream *s, char *out, size_t outn, char *in, size_t inn) {
+static int xmppIterate(struct xmppClient *c, char *out, size_t outn, char *in, size_t inn) {
   struct xmppStanza st;
+  if (c->state == XMPP_ITER_OK) {
+    MoveStanza(&c->p);
+    return c->state = XMPP_ITER_RECV;
+  }
+  switch (xmppParseStanza(&c->p, &st)) {
+  case 0:
+    break;
+  case XMPP_EXML:
+    // TODO: end stream
+    return 0;
+  }
+  switch (st.type) {
+  case XMPP_STANZA_EMPTY:
+    break;
+  case XMPP_STANZA_IQ: // probably a ping
+    break;
+  }
   return 0;
 }
 
@@ -904,14 +946,14 @@ static int xmppIterate(struct xmppStream *s, char *out, size_t outn, char *in, s
 static char in[10000], out[10000], saslbuf[1000], yxmlbuf[1000];
 static mbedtls_ssl_context ssl;
 static mbedtls_net_context server_fd;
-static struct xmppParser parser;
-static struct Jid jid;
+static struct xmppClient client;
 
 static struct xmppParser SetupXmppParser(const char *xml) {
   static char buf[1000];
   struct xmppParser p = {0};
   yxml_init(&p.x, buf, sizeof(buf));
-  p.p = xml;
+  p.p = in;
+  strcpy(p.p, xml);
   p.i = 0;
   p.n = strlen(xml);
   return p;
@@ -955,16 +997,6 @@ static void TestXml() {
   assert(FindElement("procee", 6, "p=proceed f=failure c=procee") == 'c');
 }
 
-static void Transfer(int s, char *e) {
-  printf("Sending %s\n", out);
-  write(s, out, e-out);
-  int r;
-  if ((r = read(s, in, sizeof(in))) > 0) {
-    in[r] = '\0';
-    printf("Got response %d %s\n", r, in);
-  }
-}
-
 // these macros are getting too crazy...
 // method either net or ssl
 // fn is xmppFormat* function
@@ -980,9 +1012,9 @@ static void Transfer(int s, char *e) {
 
 #define Receive(method, ctx) do { \
   size_t n = mbedtls_##method(ctx, in, sizeof(in)); \
-  parser.p = in; \
-  parser.n = n; \
-  parser.i = 0; \
+  client.p.p = in; \
+  client.p.n = n; \
+  client.p.i = 0; \
   in[n] = '\0'; \
   Log("In:  \e[34m%s\e[0m", in); \
 } while (0)
@@ -990,11 +1022,11 @@ static void Transfer(int s, char *e) {
 #define ReceivePlain() Receive(net_recv, &server_fd)
 #define ReceiveSsl() Receive(ssl_read, &ssl)
 
-static void SetupJid() {
-  strcpy(jid.full, "admin@localhost/resource");
-  jid.domain = strchr(jid.full, '@')+1 - jid.full;
-  jid.resource = strchr(jid.full, '/')+1 - jid.full;
-  jid.end = strlen(jid.full);
+static void SetupJid(struct Jid *jid) {
+  strcpy(jid->full, "admin@localhost/resource");
+  jid->domain = strchr(jid->full, '@')+1 - jid->full;
+  jid->resource = strchr(jid->full, '/')+1 - jid->full;
+  jid->end = strlen(jid->full);
 }
 
 static void TestTls() {
@@ -1002,7 +1034,7 @@ static void TestTls() {
   int ret, len;
   struct xmppStream stream;
 
-  SetupJid();
+  SetupJid(&client.jid);
 
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
@@ -1033,15 +1065,15 @@ static void TestTls() {
           "5222", MBEDTLS_NET_PROTO_TCP) == 0);
   mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
 
-  xmppInitParser(&parser, yxmlbuf, sizeof(yxmlbuf));
+  xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
 
   SendPlain(xmppFormatStream, "admin@localhost", "localhost");
   ReceivePlain();
-  assert(xmppParseStream(&parser, &stream) == 0);
+  assert(xmppParseStream(&client.p, &stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_STARTTLS);
   SendPlain(xmppFormatStartTls);
   ReceivePlain();
-  assert(xmppCanTlsProceed(&parser) == 0);
+  assert(xmppCanTlsProceed(&client.p) == 0);
 
 	while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
 		if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -1056,11 +1088,11 @@ static void TestTls() {
 	} else {
     puts("cert Successssss");
 	}
-  xmppInitParser(&parser, yxmlbuf, sizeof(yxmlbuf));
+  xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
 
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
-  assert(xmppParseStream(&parser, &stream) == 0);
+  assert(xmppParseStream(&client.p, &stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_SCRAMSHA1);
 
   struct xmppSaslContext ctx;
@@ -1068,21 +1100,21 @@ static void TestTls() {
   xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
   SendSsl(xmppFormatSaslInitialMessage, &ctx);
   ReceiveSsl();
-  assert(xmppGetSaslChallenge(&parser, &challenge) == 0);
+  assert(xmppGetSaslChallenge(&client.p, &challenge) == 0);
   xmppSolveSaslChallenge(&ctx, challenge, "adminpass");
   SendSsl(xmppFormatSaslResponse, &ctx);
   ReceiveSsl();
-  assert(xmppIsSaslSuccess(&parser, &ctx) == 0);
+  assert(xmppIsSaslSuccess(&client.p, &ctx) == 0);
 
-  xmppInitParser(&parser, yxmlbuf, sizeof(yxmlbuf));
+  xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
 
   SendSsl(xmppFormatStream, "admin@localhost", "localhost");
   ReceiveSsl();
-  assert(xmppParseStream(&parser, &stream) == 0);
+  assert(xmppParseStream(&client.p, &stream) == 0);
   SendSsl(xmppFormatBindResource, "bind1", "resource");
   ReceiveSsl();
   struct xmppStanza st;
-  assert(xmppParseStanza(&parser, &st) == 0);
+  assert(xmppParseStanza(&client.p, &st) == 0);
   assert(st.type == XMPP_STANZA_BINDJID);
 
   SendSsl(xmppFormatDisco, "admin@localhost/resource", "localhost", "disco1");
@@ -1092,7 +1124,7 @@ static void TestTls() {
   SendSsl(xmppFormatMessage, "admin@localhost/resource", "admin@localhost", "msg1", "Hello world!");
   SendSsl(xmppFormatAckRequest);
   ReceiveSsl();
-  xmppParseStanza(&parser, &st);
+  xmppParseStanza(&client.p, &st);
   assert(st.ack == 1);
 
   //xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);

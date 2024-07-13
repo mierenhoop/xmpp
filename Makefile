@@ -10,13 +10,28 @@ o/main: | o
 	$(CC) -I. -DXMPP_RUNTEST -o o/main yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
 
 o/test: | o
-	mkdir -p o
 	$(CC) -I. -DXMPP_RUNTEST -o o/test yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
+
+o/im: | o
+	$(CC) -I. -o o/im examples/im.c $(CFLAGS) $(LDFLAGS) -lsqlite3
 
 test: o/test
 	./o/test
 
-.PHONY: all o/main o/test test
+prosody:
+	docker-compose -f test/docker-compose.yml up -d
+
+stop-prosody:
+	docker-compose -f test/docker-compose.yml rm -f
+
+# append a nul byte
+o/localhost.crt:
+	sudo cat /var/lib/prosody/localhost.crt | awk '{print $0}END{printf "%s", "\0"}' > $@
+
+o/cacert.h: o/localhost.crt
+	xxd -i o/localhost.crt > $@
+
+.PHONY: all o/main o/test test prosody
 
 clean:
 	rm -rf o
