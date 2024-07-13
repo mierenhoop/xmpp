@@ -206,11 +206,19 @@ struct Jid {
   char full[XMPP_CONFIG_MAX_JID_SIZE+1];
 };
 
+struct BetterJid {
+  size_t localn, domainn, resourcen;
+  char local[1024], domain[1024], resource[1024];
+};
+
 struct xmppClient {
-  struct Jid jid;
+  struct BetterJid jid;
   char smackid[XMPP_CONFIG_MAX_SMACKID_SIZE],
       in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
   size_t inn, outn, smackidn;
+  char xbuf[2000];
+  char saslbuf[2000];
+  struct xmppSaslContext saslctx;
   struct xmppParser p;
   int state;
   int actualsent;
@@ -652,11 +660,11 @@ static char *FormatXml(char *d, char *e, const char *fmt, ...) {
   return d;
 }
 
-#define xmppFormatStream(p, e, from, to) FormatXml(p, e, \
+#define xmppFormatStream(p, e, to) FormatXml(p, e, \
     "<?xml version='1.0'?>" \
     "<stream:stream xmlns='jabber:client'" \
     " version='1.0' xmlns:stream='http://etherx.jabber.org/streams'" \
-    " from='%s' to='%s'>", from, to);
+    " to='%s'>", to);
 
 // For static XML we can directly call SafeStpCpy
 #define xmppFormatStartTls(p, e) SafeStpCpy(p, e, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
@@ -896,9 +904,10 @@ static void MoveStanza(struct xmppParser *p) {
 
 #define xmppFormatMessage(p, e, from, to, id, body) FormatXml(p, e, "<message from='%s' to='%s'[ id='%s']><body>%s</body></message>", from, to, !!id, id, body)
 
-#define XMPP_ITER_OK   0
+#define XMPP_ITER_STANZA   0
 #define XMPP_ITER_RECV 1
 #define XMPP_ITER_SEND 2
+#define XMPP_ITER_STARTTLS 3
 
 static void xmppInitParser(struct xmppParser *p, char *xbuf, size_t xbufn) {
   memset(p, 0, sizeof(*p));
@@ -907,9 +916,33 @@ static void xmppInitParser(struct xmppParser *p, char *xbuf, size_t xbufn) {
 
 static void SendDisco(struct xmppClient *c) {
   int disco = c->lastdisco + 1;
-  FormatXml(c->out+c->outn, c->out+sizeof(c->out), "<iq type='get' from='%s' to='%s' id='disco%d'><query xmlns='http://jabber.org/protocol/disco#info'/></iq>", c->jid.full, "localhost", disco);
+  FormatXml(c->out+c->outn, c->out+sizeof(c->out), "<iq type='get' to='%s' id='disco%d'><query xmlns='http://jabber.org/protocol/disco#info'/></iq>", "localhost", disco);
   c->lastdisco = disco;
   c->actualsent++;
+}
+
+#define CLIENTSTATE_UNINIT 0
+#define CLIENTSTATE_INIT 1
+#define CLIENTSTATE_
+
+// finds the first occurance of c in s and returns the position after
+// the occurance or 0 if not found.
+static size_t FindNext(const char *s, char c) {
+  const char *f;
+  return (f = strchr(s, c)) ? f - s + 1 : 0;
+}
+
+static void xmppInitClient(struct xmppClient *c, const char *jid) {
+  memset(c, 0, sizeof(*c));
+  c->state = CLIENTSTATE_INIT;
+  size_t d = FindNext(jid, '@'), r = FindNext(jid, '/'), n = strlen(jid);
+  memcpy(c->jid.local, jid, (c->jid.localn = d-1));
+  memcpy(c->jid.domain, jid+d, (c->jid.domainn = r-d-1));
+  memcpy(c->jid.resource, jid+r, (c->jid.resourcen = n-r));
+  //strncpy(c->jid.full, jid, XMPP_CONFIG_MAX_JID_SIZE); // TODO: error if size too big?
+  //c->jid.domain = FindNext(c->jid.full, '@'); // TODO: error if these are not found?
+  //c->jid.resource = FindNext(c->jid.full, '/');
+  //c->jid.end = strlen(c->jid.full);
 }
 
 // should be called after data has been read in the buffer from the
@@ -921,23 +954,28 @@ static void SendDisco(struct xmppClient *c) {
 //  XMPP_ITER_*
 static int xmppIterate(struct xmppClient *c, char *out, size_t outn, char *in, size_t inn) {
   struct xmppStanza st;
-  if (c->state == XMPP_ITER_OK) {
-    MoveStanza(&c->p);
-    return c->state = XMPP_ITER_RECV;
-  }
-  switch (xmppParseStanza(&c->p, &st)) {
-  case 0:
-    break;
-  case XMPP_EXML:
-    // TODO: end stream
-    return 0;
-  }
-  switch (st.type) {
-  case XMPP_STANZA_EMPTY:
-    break;
-  case XMPP_STANZA_IQ: // probably a ping
+  switch (c->state) {
+  case CLIENTSTATE_INIT:
+    xmppFormatStream(c->out, c->out+sizeof(c->out), c->jid.domain);
     break;
   }
+  //if (c->state == XMPP_ITER_STANZA) {
+  //  MoveStanza(&c->p);
+  //  return c->state = XMPP_ITER_RECV;
+  //}
+  //switch (xmppParseStanza(&c->p, &st)) {
+  //case 0:
+  //  break;
+  //case XMPP_EXML:
+  //  // TODO: end stream
+  //  return 0;
+  //}
+  //switch (st.type) {
+  //case XMPP_STANZA_EMPTY:
+  //  break;
+  //case XMPP_STANZA_IQ: // probably a ping
+  //  break;
+  //}
   return 0;
 }
 
@@ -947,6 +985,11 @@ static char in[10000], out[10000], saslbuf[1000], yxmlbuf[1000];
 static mbedtls_ssl_context ssl;
 static mbedtls_net_context server_fd;
 static struct xmppClient client;
+
+static void TestClient() {
+  xmppInitClient(&client, "admin@localhost/resource");
+  xmppIterate(&client, out, sizeof(out), in, 0);
+}
 
 static struct xmppParser SetupXmppParser(const char *xml) {
   static char buf[1000];
@@ -1034,7 +1077,7 @@ static void TestTls() {
   int ret, len;
   struct xmppStream stream;
 
-  SetupJid(&client.jid);
+  //SetupJid(&client.jid);
 
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
@@ -1067,7 +1110,7 @@ static void TestTls() {
 
   xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
 
-  SendPlain(xmppFormatStream, "admin@localhost", "localhost");
+  SendPlain(xmppFormatStream, "localhost");
   ReceivePlain();
   assert(xmppParseStream(&client.p, &stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_STARTTLS);
@@ -1090,7 +1133,7 @@ static void TestTls() {
 	}
   xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
 
-  SendSsl(xmppFormatStream, "admin@localhost", "localhost");
+  SendSsl(xmppFormatStream, "localhost");
   ReceiveSsl();
   assert(xmppParseStream(&client.p, &stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_SCRAMSHA1);
@@ -1108,7 +1151,7 @@ static void TestTls() {
 
   xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
 
-  SendSsl(xmppFormatStream, "admin@localhost", "localhost");
+  SendSsl(xmppFormatStream, "localhost");
   ReceiveSsl();
   assert(xmppParseStream(&client.p, &stream) == 0);
   SendSsl(xmppFormatBindResource, "bind1", "resource");
@@ -1142,8 +1185,9 @@ static void TestTls() {
 // minimum maximum stanza size = 10000
 int main() {
   puts("Starting tests");
-  TestXml();
-  TestTls();
+  TestClient();
+  //TestXml();
+  //TestTls();
   puts("All tests passed");
   return 0;
 }

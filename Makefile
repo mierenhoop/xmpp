@@ -1,7 +1,7 @@
 LDFLAGS= -lmbedtls -lmbedcrypto -lmbedx509
 CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign
 
-all: o/test
+all: o/test o/im
 
 o:
 	mkdir -p o
@@ -13,10 +13,13 @@ o/test: | o
 	$(CC) -I. -DXMPP_RUNTEST -o o/test yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
 
 o/im: | o
-	$(CC) -I. -o o/im examples/im.c $(CFLAGS) $(LDFLAGS) -lsqlite3
+	$(CC) -I. -o o/im examples/im.c $(CFLAGS) $(LDFLAGS) -lsqlite3 -lreadline
 
 test: o/test
 	./o/test
+
+runim: o/im
+	./o/im
 
 prosody:
 	docker-compose -f test/docker-compose.yml up -d
@@ -31,7 +34,7 @@ o/localhost.crt:
 o/cacert.h: o/localhost.crt
 	xxd -i o/localhost.crt > $@
 
-.PHONY: all o/main o/test test prosody
+.PHONY: all o/main o/test test prosody o/im runim
 
 clean:
 	rm -rf o
