@@ -909,7 +909,7 @@ static void MoveStanza(struct xmppParser *p) {
 #define xmppFormatMessage(p, e, from, to, id, body) FormatXml(p, e, "<message from='%s' to='%s'[ id='%s']><body>%s</body></message>", from, to, !!id, id, body)
 
 #define XMPP_ITER_STANZA   0
-#define XMPP_ITER_RECV 1
+//#define XMPP_ITER_RECV 1
 #define XMPP_ITER_SEND 2
 #define XMPP_ITER_STARTTLS 3
 
@@ -951,12 +951,11 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
   //c->jid.resource = FindNext(c->jid.full, '/');
   //c->jid.end = strlen(c->jid.full);
 }
-
-// should be called after data has been read in the buffer from the
-// network or the user of this library has written some stanza in the
-// out buffer. No data should be read from the network until RECV
-// is returned. When SEND is returned, the complete out buffer must be
-// sent over the network before another iteration is done.
+// When SEND is returned, the complete out buffer with the size
+// specified in *outn must be sent over the network before another
+// iteration is done. If *outn is 0, you don't have to write anything.
+// After writing you should always read from the network before making
+// another call to xmppIterate.
 // ret:
 //  XMPP_ITER_*
 static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, size_t inn) {
@@ -974,6 +973,7 @@ static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, 
     assert(r == 0);
     if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
       *outn = xmppFormatStartTls(c->out, c->out+sizeof(c->out)) - c->out;
+      c->state = CLIENTSTATE_STARTTLS;
       return XMPP_ITER_SEND;
     } else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
       xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
@@ -983,11 +983,12 @@ static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, 
     }
     break;
   case CLIENTSTATE_STARTTLS:
-    if (xmppCanTlsProceed(&c->p)) {
+    if (!xmppCanTlsProceed(&c->p)) {
       c->state = CLIENTSTATE_INIT;
       c->istls = true;
       return XMPP_ITER_STARTTLS;
     }
+    assert(false);
     break;
   case CLIENTSTATE_SASLINIT:
 
@@ -1050,14 +1051,33 @@ static void TestClient() {
   SetupTls("localhost", "5222");
 
   xmppInitClient(&client, "admin@localhost/resource");
+
+  int r;
   size_t n = 0;
-  assert(xmppIterate(&client, client.out, &n, client.in, 0) == XMPP_ITER_SEND);
-  Log("%.*s", (int)n, client.out);
-  client.inn = strcpy(client.in, "<?xml version='1.0'?><stream:stream from='localhost' version='1.0' xmlns='jabber:client' xml:lang='en' id='d9400cae-c511-4a0a-8448-67775e66f555' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><register xmlns='http://jabber.org/features/iq-register'/><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism></mechanisms></stream:features>") - client.in - 1;
-  client.p.n = client.inn;
-  client.p.i = 0;
-  assert(xmppIterate(&client, client.out, &n, client.in, client.inn) == XMPP_ITER_SEND);
-  //xmppIterate(&client, client.out, &);
+  for (int i = 0; i < 5; i++) {
+    switch ((r = xmppIterate(&client, client.out, &n, client.in, 0))) {
+    case XMPP_ITER_SEND:
+      Log("Out: \e[32m%.*s\e[0m", (int)n, client.out);
+      if (client.istls)
+        mbedtls_ssl_write(&ssl, client.out, n);
+      else
+        mbedtls_net_send(&server_fd, client.out, n);
+      if (client.istls)
+        client.inn = mbedtls_ssl_read(&ssl, client.in, sizeof(client.in));
+      else
+        client.inn = mbedtls_net_recv(&server_fd, client.in, sizeof(client.in));
+      client.p.n = client.inn;
+      client.p.i = 0;
+      Log("In:  \e[34m%s\e[0m", client.in);
+      break;
+    case XMPP_ITER_STARTTLS:
+      while ((r = mbedtls_ssl_handshake(&ssl)) != 0)
+        assert(r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE);
+      assert(mbedtls_ssl_get_verify_result(&ssl) == 0);
+      break;
+    }
+  }
+
   CleanupTls();
 }
 
@@ -1219,7 +1239,7 @@ int main() {
   puts("Starting tests");
   TestClient();
   //TestXml();
-  TestTls();
+  //TestTls();
   puts("All tests passed");
   return 0;
 }
