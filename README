@@ -28,6 +28,25 @@ Non-goals:
 - Have an extension/plugin system, for additional features you must
   patch the library.
 
+XMPP Compliance:
+
+RFC-6120 (Core): Partial.
+RFC-7590 (TLS): Partial, full planned.
+XEP-0368 (Direct TLS): Undecided.
+XEP-0030 (Service Discovery): Partial, full not planned.
+XEP-0115 (Entity Capabilities): Partial planned.
+XEP-0163 (Personal Eventing Protocol): Undecided.
+XEP-0245 (The /me Command): Full planned.
+XEP-0084 (User Avatar): Undecided.
+XEP-0054 (vcard-temp): Undecided.
+XEP-0280 (Message Carbons): Full planned.
+XEP-0191 (Blocking Command): Full planned.
+XEP-0045 (Multi-User Chat): Planned.
+XEP-0249 (Direct MUC Invitations): Full planned.
+XEP-0198 (Stream Management): Partial, full planned.
+XEP-0184 (Message Delivery Receipts): Full planned.
+XEP-0363 (HTTP File Upload): Not planned.
+
 Dependencies:
 - MbedTLS
 - C99 compiler

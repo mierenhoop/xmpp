@@ -34,6 +34,8 @@
 // XEP-0198 5
 #define XMPP_CONFIG_MAX_SMACKID_SIZE 4000
 
+#define XMPP_CONFIG_MAX_SASLSCRAM1_ITERS 10000
+
 // https://sans-io.readthedocs.io/
 
 // mbedtls random source
@@ -185,6 +187,7 @@ static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
 // and the usage here is usecase specific.
 struct xmppParser {
   yxml_t x;
+  char xbuf[2000];
   jmp_buf jb;
   size_t i, n;
   char *p;
@@ -216,11 +219,11 @@ struct xmppClient {
   char smackid[XMPP_CONFIG_MAX_SMACKID_SIZE],
       in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
   size_t inn, outn, smackidn;
-  char xbuf[2000];
   char saslbuf[2000];
   struct xmppSaslContext saslctx;
   struct xmppParser p;
   int state;
+  bool istls, issasl;
   int actualsent;
   int sentacks, recvacks;
   int lastdisco, lastping;
@@ -449,6 +452,7 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
 int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
   struct xmppXmlSlice attr;
   int r;
+  yxml_init(&p->x, p->xbuf, sizeof(p->xbuf));
   if ((r = setjmp(p->jb)))
     return r;
   s->features = 0;
@@ -795,7 +799,7 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
     return XMPP_EXML;
   size_t saltb64 = s-ctx->p + 3;
   itrs = atoi(i+3);
-  if (itrs == 0 || itrs > 0xffffff)
+  if (itrs == 0 || itrs > XMPP_CONFIG_MAX_SASLSCRAM1_ITERS)
     return XMPP_EXML;
   r += n;
   ctx->clientfinalmsg = r - ctx->p + 1;
@@ -884,7 +888,7 @@ static void MoveStanza(struct xmppParser *p) {
 // res: string or NULL if you want the server to generate it
 #define xmppFormatBindResource(p, e, id, res) \
   FormatXml(p, e, \
-      "<iq id='%s' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
+      "<iq id='bind%d' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
       id, !res, !!res, res)
 
 // XEP-0199: XMPP Ping
@@ -909,9 +913,9 @@ static void MoveStanza(struct xmppParser *p) {
 #define XMPP_ITER_SEND 2
 #define XMPP_ITER_STARTTLS 3
 
-static void xmppInitParser(struct xmppParser *p, char *xbuf, size_t xbufn) {
-  memset(p, 0, sizeof(*p));
-  yxml_init(&p->x, xbuf, xbufn);
+// returned when SASL negotiation starts, xmppSupplyPassword will perform the SASL calculations. To strengthen security, the password is not stored in plaintext inside the xmppClient, also after calling said function, the buffer in the `pwd` argument should be zero'd.
+#define XMPP_ITER_GIVEPWD 4
+static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) {
 }
 
 static void SendDisco(struct xmppClient *c) {
@@ -923,7 +927,9 @@ static void SendDisco(struct xmppClient *c) {
 
 #define CLIENTSTATE_UNINIT 0
 #define CLIENTSTATE_INIT 1
-#define CLIENTSTATE_
+#define CLIENTSTATE_STREAMSENT 2
+#define CLIENTSTATE_STARTTLS 3
+#define CLIENTSTATE_SASLINIT 4
 
 // finds the first occurance of c in s and returns the position after
 // the occurance or 0 if not found.
@@ -935,6 +941,7 @@ static size_t FindNext(const char *s, char c) {
 static void xmppInitClient(struct xmppClient *c, const char *jid) {
   memset(c, 0, sizeof(*c));
   c->state = CLIENTSTATE_INIT;
+  c->p.p = c->in;
   size_t d = FindNext(jid, '@'), r = FindNext(jid, '/'), n = strlen(jid);
   memcpy(c->jid.local, jid, (c->jid.localn = d-1));
   memcpy(c->jid.domain, jid+d, (c->jid.domainn = r-d-1));
@@ -948,54 +955,117 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
 // should be called after data has been read in the buffer from the
 // network or the user of this library has written some stanza in the
 // out buffer. No data should be read from the network until RECV
-// is returned. This function only be called after TLS and SASL
-// negotiation has been completed.
+// is returned. When SEND is returned, the complete out buffer must be
+// sent over the network before another iteration is done.
 // ret:
 //  XMPP_ITER_*
-static int xmppIterate(struct xmppClient *c, char *out, size_t outn, char *in, size_t inn) {
+static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, size_t inn) {
   struct xmppStanza st;
+  struct xmppStream stream; // TODO: merge this with stanza
+  char *e;
   switch (c->state) {
   case CLIENTSTATE_INIT:
-    xmppFormatStream(c->out, c->out+sizeof(c->out), c->jid.domain);
+    e = xmppFormatStream(c->out, c->out+sizeof(c->out), c->jid.domain);
+    *outn = e - c->out;
+    c->state = CLIENTSTATE_STREAMSENT;
+    return XMPP_ITER_SEND;
+  case CLIENTSTATE_STREAMSENT:
+    int r = xmppParseStream(&c->p, &stream);
+    assert(r == 0);
+    if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
+      *outn = xmppFormatStartTls(c->out, c->out+sizeof(c->out)) - c->out;
+      return XMPP_ITER_SEND;
+    } else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
+      xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
+      *outn = xmppFormatSaslInitialMessage(c->out, c->out+sizeof(c->out), &c->saslctx) - c->out;
+      c->state = CLIENTSTATE_SASLINIT;
+      return XMPP_ITER_SEND;
+    }
+    break;
+  case CLIENTSTATE_STARTTLS:
+    if (xmppCanTlsProceed(&c->p)) {
+      c->state = CLIENTSTATE_INIT;
+      c->istls = true;
+      return XMPP_ITER_STARTTLS;
+    }
+    break;
+  case CLIENTSTATE_SASLINIT:
+
     break;
   }
-  //if (c->state == XMPP_ITER_STANZA) {
-  //  MoveStanza(&c->p);
-  //  return c->state = XMPP_ITER_RECV;
-  //}
-  //switch (xmppParseStanza(&c->p, &st)) {
-  //case 0:
-  //  break;
-  //case XMPP_EXML:
-  //  // TODO: end stream
-  //  return 0;
-  //}
-  //switch (st.type) {
-  //case XMPP_STANZA_EMPTY:
-  //  break;
-  //case XMPP_STANZA_IQ: // probably a ping
-  //  break;
-  //}
   return 0;
 }
 
 #ifdef XMPP_RUNTEST
 
-static char in[10000], out[10000], saslbuf[1000], yxmlbuf[1000];
 static mbedtls_ssl_context ssl;
 static mbedtls_net_context server_fd;
+static mbedtls_entropy_context entropy;
+static mbedtls_ctr_drbg_context ctr_drbg;
+static mbedtls_x509_crt cacert;
+static mbedtls_ssl_config conf;
+
 static struct xmppClient client;
 
+static void SetupTls(const char *domain, const char *port) {
+  mbedtls_ssl_init(&ssl);
+  mbedtls_x509_crt_init(&cacert);
+  mbedtls_ctr_drbg_init(&ctr_drbg);
+  mbedtls_ssl_config_init(&conf);
+  mbedtls_entropy_init(&entropy);
+
+  assert(mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func,
+                               &entropy, NULL, 0) == 0);
+  assert(mbedtls_x509_crt_parse(&cacert, cacert_pem, cacert_pem_len) >=
+         0);
+
+  assert(mbedtls_ssl_set_hostname(&ssl, domain) == 0);
+  assert(mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT,
+                                     MBEDTLS_SSL_TRANSPORT_STREAM,
+                                     MBEDTLS_SSL_PRESET_DEFAULT) == 0);
+  mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+  mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
+  mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
+  assert(mbedtls_ssl_setup(&ssl, &conf) == 0);
+
+  mbedtls_net_init(&server_fd);
+  assert(mbedtls_net_connect(&server_fd, domain, port,
+                             MBEDTLS_NET_PROTO_TCP) == 0);
+  mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send,
+                      mbedtls_net_recv, NULL);
+}
+
+static void CleanupTls() {
+  mbedtls_ssl_close_notify(&ssl);
+  mbedtls_net_free(&server_fd);
+  mbedtls_x509_crt_free(&cacert);
+  mbedtls_ssl_free(&ssl);
+  mbedtls_ssl_config_free(&conf);
+  mbedtls_ctr_drbg_free(&ctr_drbg);
+  mbedtls_entropy_free(&entropy);
+}
+
+
 static void TestClient() {
+  SetupTls("localhost", "5222");
+
   xmppInitClient(&client, "admin@localhost/resource");
-  xmppIterate(&client, out, sizeof(out), in, 0);
+  size_t n = 0;
+  assert(xmppIterate(&client, client.out, &n, client.in, 0) == XMPP_ITER_SEND);
+  Log("%.*s", (int)n, client.out);
+  client.inn = strcpy(client.in, "<?xml version='1.0'?><stream:stream from='localhost' version='1.0' xmlns='jabber:client' xml:lang='en' id='d9400cae-c511-4a0a-8448-67775e66f555' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><register xmlns='http://jabber.org/features/iq-register'/><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism></mechanisms></stream:features>") - client.in - 1;
+  client.p.n = client.inn;
+  client.p.i = 0;
+  assert(xmppIterate(&client, client.out, &n, client.in, client.inn) == XMPP_ITER_SEND);
+  //xmppIterate(&client, client.out, &);
+  CleanupTls();
 }
 
 static struct xmppParser SetupXmppParser(const char *xml) {
   static char buf[1000];
   struct xmppParser p = {0};
   yxml_init(&p.x, buf, sizeof(buf));
-  p.p = in;
+  p.p = client.in;
   strcpy(p.p, xml);
   p.i = 0;
   p.n = strlen(xml);
@@ -1045,21 +1115,21 @@ static void TestXml() {
 // fn is xmppFormat* function
 // ... is args passed after format
 #define Send(method, ctx, fn, ...) do { \
-  char *end = fn(out, out+sizeof(out) __VA_OPT__(,) __VA_ARGS__); \
-  Log("Out: \e[32m%.*s\e[0m", (int)(end-out), out); \
-  mbedtls_##method(ctx, out, end - out); \
+  char *end = fn(client.out, client.out+sizeof(client.out) __VA_OPT__(,) __VA_ARGS__); \
+  Log("Out: \e[32m%.*s\e[0m", (int)(end-client.out), client.out); \
+  mbedtls_##method(ctx, client.out, end - client.out); \
 } while (0)
 
 #define SendPlain(...) Send(net_send, &server_fd, __VA_ARGS__)
 #define SendSsl(...) Send(ssl_write, &ssl, __VA_ARGS__)
 
 #define Receive(method, ctx) do { \
-  size_t n = mbedtls_##method(ctx, in, sizeof(in)); \
-  client.p.p = in; \
+  size_t n = mbedtls_##method(ctx, client.in, sizeof(client.in)); \
+  client.p.p = client.in; \
   client.p.n = n; \
   client.p.i = 0; \
-  in[n] = '\0'; \
-  Log("In:  \e[34m%s\e[0m", in); \
+  client.in[n] = '\0'; \
+  Log("In:  \e[34m%s\e[0m", client.in); \
 } while (0)
 
 #define ReceivePlain() Receive(net_recv, &server_fd)
@@ -1079,36 +1149,7 @@ static void TestTls() {
 
   //SetupJid(&client.jid);
 
-  mbedtls_entropy_context entropy;
-  mbedtls_ctr_drbg_context ctr_drbg;
-  mbedtls_x509_crt cacert;
-  mbedtls_ssl_config conf;
-
-  mbedtls_ssl_init(&ssl);
-  mbedtls_x509_crt_init(&cacert);
-  mbedtls_ctr_drbg_init(&ctr_drbg);
-  mbedtls_ssl_config_init(&conf);
-  mbedtls_entropy_init(&entropy);
-
-  assert(mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, NULL, 0) == 0);
-  assert(mbedtls_x509_crt_parse(&cacert, cacert_pem, cacert_pem_len) >= 0);
-
-  assert(mbedtls_ssl_set_hostname(&ssl, "localhost") == 0);
-  assert(mbedtls_ssl_config_defaults(&conf,
-          MBEDTLS_SSL_IS_CLIENT,
-          MBEDTLS_SSL_TRANSPORT_STREAM,
-          MBEDTLS_SSL_PRESET_DEFAULT) == 0);
-  mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
-  mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
-  mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
-  assert(mbedtls_ssl_setup(&ssl, &conf) == 0);
-
-  mbedtls_net_init(&server_fd);
-  assert(mbedtls_net_connect(&server_fd, "localhost",
-          "5222", MBEDTLS_NET_PROTO_TCP) == 0);
-  mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, NULL);
-
-  xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
+  SetupTls("localhost", "5222");
 
   SendPlain(xmppFormatStream, "localhost");
   ReceivePlain();
@@ -1131,7 +1172,6 @@ static void TestTls() {
 	} else {
     puts("cert Successssss");
 	}
-  xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
 
   SendSsl(xmppFormatStream, "localhost");
   ReceiveSsl();
@@ -1140,7 +1180,7 @@ static void TestTls() {
 
   struct xmppSaslContext ctx;
   struct xmppXmlSlice challenge;
-  xmppInitSaslContext(&ctx, saslbuf, sizeof(saslbuf), "admin");
+  xmppInitSaslContext(&ctx, client.saslbuf, sizeof(client.saslbuf), "admin");
   SendSsl(xmppFormatSaslInitialMessage, &ctx);
   ReceiveSsl();
   assert(xmppGetSaslChallenge(&client.p, &challenge) == 0);
@@ -1149,12 +1189,10 @@ static void TestTls() {
   ReceiveSsl();
   assert(xmppIsSaslSuccess(&client.p, &ctx) == 0);
 
-  xmppInitParser(&client.p, yxmlbuf, sizeof(yxmlbuf));
-
   SendSsl(xmppFormatStream, "localhost");
   ReceiveSsl();
   assert(xmppParseStream(&client.p, &stream) == 0);
-  SendSsl(xmppFormatBindResource, "bind1", "resource");
+  SendSsl(xmppFormatBindResource, 1, "resource");
   ReceiveSsl();
   struct xmppStanza st;
   assert(xmppParseStanza(&client.p, &st) == 0);
@@ -1173,13 +1211,7 @@ static void TestTls() {
   //xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
   //Log("%s %d\n", out, INT_MAX);
 
-  mbedtls_ssl_close_notify(&ssl);
-  mbedtls_net_free(&server_fd);
-  mbedtls_x509_crt_free(&cacert);
-  mbedtls_ssl_free(&ssl);
-  mbedtls_ssl_config_free(&conf);
-  mbedtls_ctr_drbg_free(&ctr_drbg);
-  mbedtls_entropy_free(&entropy);
+  CleanupTls();
 }
 
 // minimum maximum stanza size = 10000
@@ -1187,7 +1219,7 @@ int main() {
   puts("Starting tests");
   TestClient();
   //TestXml();
-  //TestTls();
+  TestTls();
   puts("All tests passed");
   return 0;
 }
