@@ -118,9 +118,12 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STANZA_STREAMFEATURES 4
 #define XMPP_STANZA_BINDJID 5
 #define XMPP_STANZA_SMACKSENABLED 6
+#define XMPP_STANZA_STARTTLSPROCEED 7
 // server can't send ack request
 //#define XMPP_STANZA_ACKREQUEST 7
 #define XMPP_STANZA_ACKANSWER 8
+#define XMPP_STANZA_SASLSUCCESS 9
+#define XMPP_STANZA_SASLCHALLENGE 10
 
 
 // Any of the child elements can be null.
@@ -160,8 +163,8 @@ struct xmppStanza {
   int type; // iq/message/presence
   struct xmppXmlSlice id, from, to;
   union {
-    //struct xmppXmlSlice challenge;
-    //struct xmppXmlSlice success;
+    struct xmppXmlSlice saslchallenge;
+    struct xmppXmlSlice saslsuccess;
     struct xmppMessage message;
     struct xmppError error;
     struct xmppXmlSlice bindjid;
@@ -194,7 +197,7 @@ struct xmppParser {
 };
 
 struct xmppStream {
-  struct xmppXmlSlice from, to, id; // TODO: these values don't live long enough
+  struct xmppXmlSlice from, to, id;
   int features;
 };
 
@@ -220,8 +223,8 @@ struct xmppClient {
       in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
   size_t inn, outn, smackidn;
   char saslbuf[2000];
-  struct xmppXmlSlice challenge; // TODO: merge this into stanza and put stanza in this struct
   struct xmppSaslContext saslctx;
+  struct xmppStanza stanza;
   struct xmppParser p;
   int state;
   bool istls, issasl;
@@ -424,6 +427,22 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
       }
     }
     return r < 0 ? r : SkipUnknownXml(p);
+  } else if (!strcmp(p->x.elem, "proceed")) {
+    st->type = XMPP_STANZA_STARTTLSPROCEED;
+    return SkipUnknownXml(p);
+  } else if (!strcmp(p->x.elem, "failure")) { // TODO: happens for both SASL and TLS
+    //st->type = XMPP_STANZA_STARTTLSFAILURE;
+    return SkipUnknownXml(p);
+  } else if (!strcmp(p->x.elem, "success")) {
+    st->type = XMPP_STANZA_SASLSUCCESS;
+    r = GetXmlContent(p, &cont);
+    memcpy(&st->saslsuccess, &cont, sizeof(cont));
+    return r;
+  } else if (!strcmp(p->x.elem, "challenge")) {
+    st->type = XMPP_STANZA_SASLCHALLENGE;
+    r = GetXmlContent(p, &cont);
+    memcpy(&st->saslchallenge, &cont, sizeof(cont));
+    return r;
   }
   while ((r = ParseAttribute(p, &attr)) > 0) {
     if (!strcmp(p->x.attr, "id")) {
@@ -821,51 +840,6 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   return HasOverflowed(r, e) ? XMPP_EMEM : 0;
 }
 
-// TODO: incorporate the following ~three functions in xmppParseStanza?
-
-// ret
-//  < 0: error
-//  = 0: yes
-//  > 0: no
-int xmppCanTlsProceed(struct xmppParser *s) {
-  int r;
-  if ((r = ParseElement(s)) <= 0) // TODO: || (r = SkipUnknownXml(s))) not needed
-    return r < 0 ? r : XMPP_EXML;
-  if (!strcmp(s->x.elem, "proceed"))
-    return 0;
-  else if (!strcmp(s->x.elem, "failure"))
-    return 1;
-  return XMPP_EXML;
-}
-
-int xmppGetSaslChallenge(struct xmppParser *s, struct xmppXmlSlice *c) {
-  int r;
-  struct xmppXmlSlice attr;
-  if ((r = ParseElement(s)) <= 0)
-    return r < 0 ? r : XMPP_EXML;
-  if (strcmp(s->x.elem, "challenge"))
-    return XMPP_EXML;
-  return GetXmlContent(s, c);
-}
-
-// TODO: function body looks suspiciously like the above
-// consider refactoring
-// ret
-//  < 0: error
-//  = 0: success
-//  > 0: fail
-int xmppIsSaslSuccess(struct xmppParser *s, struct xmppSaslContext *ctx) {
-  int r;
-  struct xmppXmlSlice slc;
-  if ((r = ParseElement(s)) <= 0)
-    return r < 0 ? r : XMPP_EXML;
-  if (strcmp(s->x.elem, "success"))
-    return XMPP_EXML;
-  if ((r = GetXmlContent(s, &slc)))
-    return r;
-  return xmppVerifySaslSuccess(ctx, slc);
-}
-
 // use this function when the in buffer has been filled, you've read
 // some previous stanzas and now the stanza at the end couldn't be
 // fully read, so you move it all the way forward and read the
@@ -911,15 +885,21 @@ static void MoveStanza(struct xmppParser *p) {
 
 #define xmppFormatMessage(p, e, from, to, id, body) FormatXml(p, e, "<message from='%s' to='%s'[ id='%s']><body>%s</body></message>", from, to, !!id, id, body)
 
+// Nothing should be done, make another call to xmppIterate.
 #define XMPP_ITER_OK 0
+// A stanza was read.
 #define XMPP_ITER_STANZA   1
 //#define XMPP_ITER_RECV 1
+// Data should be sent and received.
 // TODO: rename to TRANSFER or NET
 #define XMPP_ITER_SEND 2
+// TLS handshake must be done now.
 #define XMPP_ITER_STARTTLS 3
+// Stream negotation has completed, you can now send and receive stanzas.
+#define XMPP_ITER_ACCEPTSTANZA 4
 
 // returned when SASL negotiation starts, xmppSupplyPassword will perform the SASL calculations. To strengthen security, the password is not stored in plaintext inside the xmppClient, also after calling said function, the buffer in the `pwd` argument should be zero'd.
-#define XMPP_ITER_GIVEPWD 4
+#define XMPP_ITER_GIVEPWD 5
 
 static void SendDisco(struct xmppClient *c) {
   int disco = c->lastdisco + 1;
@@ -941,7 +921,7 @@ static void SendDisco(struct xmppClient *c) {
 
 static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) {
   assert(c->state == CLIENTSTATE_SASLPWD);
-  xmppSolveSaslChallenge(&c->saslctx, c->challenge, pwd);
+  xmppSolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
   c->state = CLIENTSTATE_SASLRESPONSE;
 }
 
@@ -975,7 +955,7 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
 // ret:
 //  XMPP_ITER_*
 static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, size_t inn) {
-  struct xmppStanza st;
+  struct xmppStanza *st = &c->stanza;
   struct xmppStream stream; // TODO: merge this with stanza
   char *e;
   switch (c->state) {
@@ -1003,14 +983,21 @@ static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, 
     }
     return XMPP_ITER_OK;
   case CLIENTSTATE_STARTTLS:
-    if (!xmppCanTlsProceed(&c->p)) {
+    xmppParseStanza(&c->p, st);
+    if (st->type == XMPP_STANZA_STARTTLSPROCEED) {
       c->state = CLIENTSTATE_INIT;
       c->istls = true;
       return XMPP_ITER_STARTTLS;
     }
+    //if (!xmppCanTlsProceed(&c->p)) {
+    //  c->state = CLIENTSTATE_INIT;
+    //  c->istls = true;
+    //  return XMPP_ITER_STARTTLS;
+    //}
     break;
   case CLIENTSTATE_SASLINIT:
-    assert(xmppGetSaslChallenge(&c->p, &c->challenge) == 0);
+    xmppParseStanza(&c->p, st);
+    assert(st->type == XMPP_STANZA_SASLCHALLENGE);
     c->state = CLIENTSTATE_SASLPWD;
     return XMPP_ITER_GIVEPWD;
   case CLIENTSTATE_SASLRESPONSE:
@@ -1018,18 +1005,20 @@ static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, 
     c->state = CLIENTSTATE_SASLRESULT;
     return XMPP_ITER_SEND;
   case CLIENTSTATE_SASLRESULT:
-    assert(xmppIsSaslSuccess(&c->p, &c->saslctx) == 0);
-    c->issasl = true; // TODO: make this a flag which specifies which type of sasl is done.
+    xmppParseStanza(&c->p, st);
+    assert(st->type == XMPP_STANZA_SASLSUCCESS);
+    assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
+    c->issasl = true; // TODO: make this a flag which specifies which type of sasl is done. Or have a flag with enabledfeatures
     c->state = CLIENTSTATE_INIT;
     return XMPP_ITER_OK;
   case CLIENTSTATE_BIND:
     *outn = 0;
-    assert(xmppParseStanza(&c->p, &st) == 0);
-    assert(st.type == XMPP_STANZA_BINDJID);
+    assert(xmppParseStanza(&c->p, st) == 0);
+    assert(st->type == XMPP_STANZA_BINDJID);
     c->state = CLIENTSTATE_ACCEPTSTANZA;
-    return XMPP_ITER_OK;
+    return XMPP_ITER_ACCEPTSTANZA;
   case CLIENTSTATE_ACCEPTSTANZA:
-    return XMPP_ITER_OK;
+    return XMPP_ITER_ACCEPTSTANZA;
   }
   assert(false);
   return 0;
@@ -1207,6 +1196,7 @@ static void TestTls() {
   char *buf = NULL;
   int ret, len;
   struct xmppStream stream;
+  struct xmppStanza st;
 
   //SetupJid(&client.jid);
 
@@ -1218,7 +1208,7 @@ static void TestTls() {
   assert(stream.features & XMPP_STREAMFEATURE_STARTTLS);
   SendPlain(xmppFormatStartTls);
   ReceivePlain();
-  assert(xmppCanTlsProceed(&client.p) == 0);
+  assert(xmppParseStanza(&client.p, &st) == 0 && st.type == XMPP_STANZA_STARTTLSPROCEED);
 
 	while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
 		if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -1239,23 +1229,22 @@ static void TestTls() {
   assert(xmppParseStream(&client.p, &stream) == 0);
   assert(stream.features & XMPP_STREAMFEATURE_SCRAMSHA1);
 
-  struct xmppSaslContext ctx;
   struct xmppXmlSlice challenge;
-  xmppInitSaslContext(&ctx, client.saslbuf, sizeof(client.saslbuf), "admin");
-  SendSsl(xmppFormatSaslInitialMessage, &ctx);
+  xmppInitSaslContext(&client.saslctx, client.saslbuf, sizeof(client.saslbuf), "admin");
+  SendSsl(xmppFormatSaslInitialMessage, &client.saslctx);
   ReceiveSsl();
-  assert(xmppGetSaslChallenge(&client.p, &challenge) == 0);
-  xmppSolveSaslChallenge(&ctx, challenge, "adminpass");
-  SendSsl(xmppFormatSaslResponse, &ctx);
+  assert(xmppParseStanza(&client.p, &st) == 0 && st.type == XMPP_STANZA_SASLCHALLENGE);
+  assert(xmppSolveSaslChallenge(&client.saslctx, st.saslchallenge, "adminpass") == 0);
+  SendSsl(xmppFormatSaslResponse, &client.saslctx);
   ReceiveSsl();
-  assert(xmppIsSaslSuccess(&client.p, &ctx) == 0);
+  assert(xmppParseStanza(&client.p, &st) == 0 && st.type == XMPP_STANZA_SASLSUCCESS);
+  assert(xmppVerifySaslSuccess(&client.saslctx, st.saslsuccess) == 0);
 
   SendSsl(xmppFormatStream, "localhost");
   ReceiveSsl();
   assert(xmppParseStream(&client.p, &stream) == 0);
   SendSsl(xmppFormatBindResource, 1, "resource");
   ReceiveSsl();
-  struct xmppStanza st;
   assert(xmppParseStanza(&client.p, &st) == 0);
   assert(st.type == XMPP_STANZA_BINDJID);
 
@@ -1280,7 +1269,7 @@ int main() {
   puts("Starting tests");
   TestClient();
   //TestXml();
-  //TestTls();
+  TestTls();
   puts("All tests passed");
   return 0;
 }
