@@ -22,17 +22,10 @@ runim: o/im
 	./o/im
 
 prosody:
-	docker-compose -f test/docker-compose.yml up -d
+	docker-compose -f test/docker-compose.yml up -d --build
 
 stop-prosody:
-	docker-compose -f test/docker-compose.yml rm -f
-
-# append a nul byte
-o/localhost.crt:
-	sudo cat /var/lib/prosody/localhost.crt | awk '{print $0}END{printf "%s", "\0"}' > $@
-
-o/cacert.h: o/localhost.crt
-	xxd -i o/localhost.crt > $@
+	docker-compose -f test/docker-compose.yml down
 
 .PHONY: all o/main o/test test prosody o/im runim
 

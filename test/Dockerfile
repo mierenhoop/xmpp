@@ -3,7 +3,9 @@ run apt-get update && \
     apt-get install -y prosody && \
     apt-get clean
 copy prosody.cfg.lua /etc/prosody/
-run echo -e "\n\n\n" | prosodyctl cert generate localhost
+copy localhost.* /var/lib/prosody/
 expose 5222
 workdir /var/lib/prosody
+user prosody
+run prosodyctl register admin localhost adminpass
 cmd /usr/bin/prosody -F

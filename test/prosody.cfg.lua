@@ -101,7 +101,7 @@ modules_disabled = {
 --   Please, don't change this option since /run/prosody/
 --   is one of the few directories Prosody is allowed to write to
 --
-pidfile = "/run/prosody/prosody.pid";
+pidfile = "/var/lib/prosody/prosody.pid";
 
 -- Server-to-server authentication
 -- Require valid certificates for server-to-server connections?

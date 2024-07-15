@@ -50,3 +50,8 @@ XEP-0363 (HTTP File Upload): Not planned.
 Dependencies:
 - MbedTLS
 - C99 compiler
+- docker-compose (for testing)
+
+Running the tests:
+ $ make prosody
+ $ make test

@@ -4,5 +4,3 @@ services:
     ports:
       - "5222:5222"
     stop_signal: SIGKILL # TODO: change this
-    volumes:
-      - ../o/prosody:/var/lib/prosody
