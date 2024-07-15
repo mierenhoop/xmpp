@@ -220,6 +220,7 @@ struct xmppClient {
       in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
   size_t inn, outn, smackidn;
   char saslbuf[2000];
+  struct xmppXmlSlice challenge; // TODO: merge this into stanza and put stanza in this struct
   struct xmppSaslContext saslctx;
   struct xmppParser p;
   int state;
@@ -494,6 +495,8 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
         return r < 0 ? r : XMPP_EXML;
       if (!strcmp(attr.p, "urn:xmpp:sm:3"))
         s->features |= XMPP_STREAMFEATURE_SMACKS;
+    } else if (!strcmp(p->x.elem, "bind")) {
+      s->features |= XMPP_STREAMFEATURE_BIND;
     }
     if ((r = SkipUnknownXml(p)))
       return r;
@@ -908,15 +911,15 @@ static void MoveStanza(struct xmppParser *p) {
 
 #define xmppFormatMessage(p, e, from, to, id, body) FormatXml(p, e, "<message from='%s' to='%s'[ id='%s']><body>%s</body></message>", from, to, !!id, id, body)
 
-#define XMPP_ITER_STANZA   0
+#define XMPP_ITER_OK 0
+#define XMPP_ITER_STANZA   1
 //#define XMPP_ITER_RECV 1
+// TODO: rename to TRANSFER or NET
 #define XMPP_ITER_SEND 2
 #define XMPP_ITER_STARTTLS 3
 
 // returned when SASL negotiation starts, xmppSupplyPassword will perform the SASL calculations. To strengthen security, the password is not stored in plaintext inside the xmppClient, also after calling said function, the buffer in the `pwd` argument should be zero'd.
 #define XMPP_ITER_GIVEPWD 4
-static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) {
-}
 
 static void SendDisco(struct xmppClient *c) {
   int disco = c->lastdisco + 1;
@@ -930,6 +933,17 @@ static void SendDisco(struct xmppClient *c) {
 #define CLIENTSTATE_STREAMSENT 2
 #define CLIENTSTATE_STARTTLS 3
 #define CLIENTSTATE_SASLINIT 4
+#define CLIENTSTATE_SASLPWD 5
+#define CLIENTSTATE_SASLRESPONSE 6
+#define CLIENTSTATE_SASLRESULT 7
+#define CLIENTSTATE_BIND 8
+#define CLIENTSTATE_ACCEPTSTANZA 9
+
+static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) {
+  assert(c->state == CLIENTSTATE_SASLPWD);
+  xmppSolveSaslChallenge(&c->saslctx, c->challenge, pwd);
+  c->state = CLIENTSTATE_SASLRESPONSE;
+}
 
 // finds the first occurance of c in s and returns the position after
 // the occurance or 0 if not found.
@@ -955,7 +969,9 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
 // specified in *outn must be sent over the network before another
 // iteration is done. If *outn is 0, you don't have to write anything.
 // After writing you should always read from the network before making
-// another call to xmppIterate.
+// another call to xmppIterate. If there was no SEND response you should
+// never change the in buffer, you may only reallocate the in buffer
+// just before or after reading from the network.
 // ret:
 //  XMPP_ITER_*
 static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, size_t inn) {
@@ -980,20 +996,42 @@ static int xmppIterate(struct xmppClient *c, char *out, size_t *outn, char *in, 
       *outn = xmppFormatSaslInitialMessage(c->out, c->out+sizeof(c->out), &c->saslctx) - c->out;
       c->state = CLIENTSTATE_SASLINIT;
       return XMPP_ITER_SEND;
+    } else if (stream.features & XMPP_STREAMFEATURE_BIND) {
+      *outn = xmppFormatBindResource(c->out, c->out+sizeof(c->out), 1, c->jid.resource) - c->out;
+      c->state = CLIENTSTATE_BIND;
+      return XMPP_ITER_SEND;
     }
-    break;
+    return XMPP_ITER_OK;
   case CLIENTSTATE_STARTTLS:
     if (!xmppCanTlsProceed(&c->p)) {
       c->state = CLIENTSTATE_INIT;
       c->istls = true;
       return XMPP_ITER_STARTTLS;
     }
-    assert(false);
     break;
   case CLIENTSTATE_SASLINIT:
-
-    break;
+    assert(xmppGetSaslChallenge(&c->p, &c->challenge) == 0);
+    c->state = CLIENTSTATE_SASLPWD;
+    return XMPP_ITER_GIVEPWD;
+  case CLIENTSTATE_SASLRESPONSE:
+    *outn = xmppFormatSaslResponse(c->out, c->out+sizeof(c->out), &c->saslctx) - c->out;
+    c->state = CLIENTSTATE_SASLRESULT;
+    return XMPP_ITER_SEND;
+  case CLIENTSTATE_SASLRESULT:
+    assert(xmppIsSaslSuccess(&c->p, &c->saslctx) == 0);
+    c->issasl = true; // TODO: make this a flag which specifies which type of sasl is done.
+    c->state = CLIENTSTATE_INIT;
+    return XMPP_ITER_OK;
+  case CLIENTSTATE_BIND:
+    *outn = 0;
+    assert(xmppParseStanza(&c->p, &st) == 0);
+    assert(st.type == XMPP_STANZA_BINDJID);
+    c->state = CLIENTSTATE_ACCEPTSTANZA;
+    return XMPP_ITER_OK;
+  case CLIENTSTATE_ACCEPTSTANZA:
+    return XMPP_ITER_OK;
   }
+  assert(false);
   return 0;
 }
 
@@ -1054,7 +1092,7 @@ static void TestClient() {
 
   int r;
   size_t n = 0;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 13; i++) {
     switch ((r = xmppIterate(&client, client.out, &n, client.in, 0))) {
     case XMPP_ITER_SEND:
       Log("Out: \e[32m%.*s\e[0m", (int)n, client.out);
@@ -1068,12 +1106,15 @@ static void TestClient() {
         client.inn = mbedtls_net_recv(&server_fd, client.in, sizeof(client.in));
       client.p.n = client.inn;
       client.p.i = 0;
-      Log("In:  \e[34m%s\e[0m", client.in);
+      Log("In:  \e[34m%.*s\e[0m", (int)client.inn, client.in);
       break;
     case XMPP_ITER_STARTTLS:
       while ((r = mbedtls_ssl_handshake(&ssl)) != 0)
         assert(r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE);
       assert(mbedtls_ssl_get_verify_result(&ssl) == 0);
+      break;
+    case XMPP_ITER_GIVEPWD:
+      xmppSupplyPassword(&client, "adminpass", 9);
       break;
     }
   }
