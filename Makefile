@@ -1,5 +1,5 @@
 LDFLAGS= -lmbedtls -lmbedcrypto -lmbedx509
-CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign
+CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign -fmax-errors=4
 
 all: o/test o/im
 

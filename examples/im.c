@@ -1,5 +1,3 @@
-#include <readline/history.h>
-#include <readline/readline.h>
 #include <sqlite3.h>
 
 #include <mbedtls/base64.h>
@@ -14,6 +12,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
 
 #define DB_FILE "o/im.db"
 
@@ -72,20 +71,20 @@ static void InitializeConn(const char *server, const char *port) {
 // TODO: make this the main thread/proc and put all complete message
 // strings in a pipe for the thread/fork which handles all xmpp state.
 static void Loop() {
-  char *line, *msgbody;
-  while ((line = readline("> "))) {
+  char *line = NULL, *msgbody;
+  size_t n;
+  while (getline(&line, &n, stdin) != -1) {
     // if (!strncmp(line, "/msg ", 5)) {
     //   msgbody = line+5;
     //   AddMessage(msgbody, 0);
     // }
-    if (line[0]) {
+    if (line[0] != '\n') {
       AddMessage(line, 0);
       mbedtls_net_send(&conn.server_fd, line, strlen(line));
       puts("message sent!");
     }
-    free(line);
   }
-  puts("Readline stopped");
+  free(line);
 }
 
 int main() {
