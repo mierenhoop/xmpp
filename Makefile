@@ -1,19 +1,19 @@
 LDFLAGS= -lmbedtls -lmbedcrypto -lmbedx509
-CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign -fmax-errors=4
+CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign -fmax-errors=4 -I.
 
 all: o/test o/im
 
 o:
 	mkdir -p o
 
-o/main: | o
-	$(CC) -I. -DXMPP_RUNTEST -o o/main yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
+o/xmpp.o: xmpp.c | o
+	$(CC) -c -o $@ $(CFLAGS) xmpp.c
 
-o/test: | o
-	$(CC) -I. -DXMPP_RUNTEST -o o/test yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
+o/test: o/xmpp.o
+	$(CC) -DXMPP_RUNTEST -o o/test yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
 
-o/im: | o
-	$(CC) -I. -o o/im examples/im.c $(CFLAGS) $(LDFLAGS) -lsqlite3 -lreadline
+o/im: o/xmpp.o
+	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -lsqlite3 -lreadline
 
 test: o/test
 	./o/test
@@ -27,7 +27,7 @@ prosody:
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
-.PHONY: all o/main o/test test prosody o/im runim
+.PHONY: all o/test test prosody o/im runim
 
 clean:
 	rm -rf o

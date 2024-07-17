@@ -55,3 +55,6 @@ Dependencies:
 Running the tests:
  $ make prosody
  $ make test
+
+Run the im (instant messenger) example:
+ $ make runim
