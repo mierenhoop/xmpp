@@ -4,6 +4,12 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#define XMPP_SLICE_XML  0
+#define XMPP_SLICE_ATTR 1
+#define XMPP_SLICE_CONT 2
+// for XEP-0047
+#define XMPP_SLICE_B64  3
+
 // TODO: make isattr an enum which could be either an attribute value,
 // content or a slice of XML elements.
 // isattr ? attr : content

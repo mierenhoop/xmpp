@@ -127,6 +127,18 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STANZA_SASLSUCCESS 9
 #define XMPP_STANZA_SASLCHALLENGE 10
 
+#define XMPP_FAILURE_ABORTED                (1 << 0)
+#define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
+#define XMPP_FAILURE_CREDENTIALS_EXPIRED    (1 << 2)
+#define XMPP_FAILURE_ENCRYPTION_REQUIRED    (1 << 3)
+#define XMPP_FAILURE_INCORRECT_ENCODING     (1 << 4)
+#define XMPP_FAILURE_INVALID_AUTHZID        (1 << 5)
+#define XMPP_FAILURE_INVALID_MECHANISM      (1 << 6)
+#define XMPP_FAILURE_MALFORMED_REQUEST      (1 << 7)
+#define XMPP_FAILURE_MECHANISM_TOO_WEAK     (1 << 8)
+#define XMPP_FAILURE_NOT_AUTHORIZED         (1 << 9)
+#define XMPP_FAILURE_TEMPORARY_AUTH_FAILURE (1 << 10)
+
 
 // Any of the child elements can be null.
 // We only support a single body, subject, etc. This deviates from the spec.
@@ -161,10 +173,22 @@ struct xmppSmacksEnabled {
   bool resume;
 };
 
+struct xmppFailure {
+  int reasons;
+  struct xmppXmlSlice text;
+};
+
+// XML stanza transformed into a C structure.
+// type = XMPP_STANZA_*
+// The associated field is as follows:
+//  type = XMPP_STANZA_FAILURE, field = failure
+//  type = XMPP_STANZA_BINDJID, field = bindjid
+//  etc.
 struct xmppStanza {
-  int type; // iq/message/presence
+  int type;
   struct xmppXmlSlice id, from, to;
   union {
+    struct xmppFailure failure;
     struct xmppXmlSlice saslchallenge;
     struct xmppXmlSlice saslsuccess;
     struct xmppMessage message;
@@ -378,7 +402,7 @@ static int FindElement(const char *elem, size_t n, const char *opt) {
   return '?';
 }
 
-// returns 1 when end of parent element
+// returns 0 when end of parent element
 static int ParseElement(struct xmppParser *p) { //, const char *opt) {
   int r;
   while (p->i < p->n) {
@@ -459,8 +483,28 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
     SkipUnknownXml(p);
     return 0;
   } else if (!strcmp(p->x.elem, "failure")) { // TODO: happens for both SASL and TLS
-    //st->type = XMPP_STANZA_STARTTLSFAILURE;
-    SkipUnknownXml(p);
+    while (ParseElement(p)) {
+      if (!strcmp(p->x.elem, "text"))
+        GetXmlContent(p, &st->failure.text);
+#define X(xmlname, enumname) \
+      else if (!strcmp(p->x.elem, #xmlname))  \
+        st->failure.reasons |= XMPP_FAILURE_##enumname;
+      // TODO: should we do all of this or the most common ones? or we can
+      // store the error name in a XmlSlice.
+      X(aborted, ABORTED)
+      X(account-disabled, ACCOUNT_DISABLED)
+      X(credentials-expired, CREDENTIALS_EXPIRED)
+      X(encryption-required, ENCRYPTION_REQUIRED)
+      X(incorrect-encoding, INCORRECT_ENCODING)
+      X(invalid-authzid, INVALID_AUTHZID)
+      X(invalid-mechanism, INVALID_MECHANISM)
+      X(malformed-request, MALFORMED_REQUEST)
+      X(mechanism-too-weak, MECHANISM_TOO_WEAK)
+      X(not-authorized, NOT_AUTHORIZED)
+      X(temporary-auth-failure, TEMPORARY_AUTH_FAILURE)
+#undef X
+      SkipUnknownXml(p);
+    }
     return 0;
   } else if (!strcmp(p->x.elem, "success")) {
     st->type = XMPP_STANZA_SASLSUCCESS;
@@ -487,8 +531,23 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
       longjmp(p->jb, XMPP_EXML);
     GetXmlContent(p, &st->bindjid);
     st->type = XMPP_STANZA_BINDJID;
+    SkipUnknownXml(p);
   }
+  SkipUnknownXml(p);
   return 0;
+}
+
+static void ParseOptionalRequired(struct xmppParser *p, struct xmppStream *s, int flag) {
+  s->features |= flag;
+  while (ParseElement(p)) {
+    if (!strcmp(p->x.elem, "optional"))
+      s->optionalfeatures |= flag;
+    else if (!strcmp(p->x.elem, "required"))
+      s->requiredfeatures |= flag;
+    else
+      longjmp(p->jb, XMPP_EXML);
+    SkipUnknownXml(p);
+  }
 }
 
 // Read stream and features
@@ -499,12 +558,12 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
   int r;
   int i = p->i;
   yxml_init(&p->x, p->xbuf, sizeof(p->xbuf));
+  memset(s, 0, sizeof(*s));
   if ((r = setjmp(p->jb))) {
     memset(s, 0, sizeof(*s));
     p->i = i;
     return r;
   }
-  s->features = 0;
   if (!ParseElement(p) || strcmp(p->x.elem, "stream:stream"))
     longjmp(p->jb, XMPP_EXML);
   while (ParseAttribute(p, &attr)) {
@@ -539,9 +598,10 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
       if (!ParseAttribute(p, &attr) || strcmp(p->x.attr, "xmlns"))
         longjmp(p->jb, XMPP_EXML);
       if (!strcmp(attr.p, "urn:xmpp:sm:3"))
-        s->features |= XMPP_STREAMFEATURE_SMACKS;
+        ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_SMACKS);
     } else if (!strcmp(p->x.elem, "bind")) {
-      s->features |= XMPP_STREAMFEATURE_BIND;
+      ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_BIND);
+      continue;
     }
     SkipUnknownXml(p);
   }
@@ -555,24 +615,20 @@ static char *SafeStpCpy(char *d, char *e, char *s) {
 }
 
 // n = number of random bytes
-// p should be at least twice as big
+// e - p >= n*2
 // doesn't add nul byte
 // TODO: use mbedtls random for compat? esp-idf does support getrandom...
-// TODO: make this more performant
-// char *FillRandomHex(char *p, char *e)
 static char *FillRandomHex(char *p, char *e, size_t n) {
-  char b[3];
-  size_t nn = n;
-  if (e - p < n*2)
+  size_t nn = n*2;
+  if (e - p < nn)
     return e;
   if (getrandom(p, n, 0) != n)
     return e;
-  while (n--) {
-    // TODO: don't use sprintf
-    sprintf(b, "%02x", (unsigned char)p[n]);
-    memcpy(p + n*2, b, 2);
+  for (int i = nn-1; i >= 0; i--) {
+    int nibble = (p[i/2] >> (!(i&1)*4)) & 0xf;
+    p[i] = "0123456789ABCDEF"[nibble];
   }
-  return p + nn*2;
+  return p + nn;
 }
 
 // TODO: check if this conforms to sasl spec
@@ -596,7 +652,7 @@ static char *SanitizeSaslUsername(char *d, char *e, const char *s) {
 
 // ret
 //  = 0: success
-//  < 0: XMPP_E*
+//  < 0: XMPP_EMEM
 int xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user) {
   char *e = p + n;
   memset(ctx, 0, sizeof(*ctx));
@@ -606,9 +662,6 @@ int xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const ch
   ctx->initialmsg = 3;
   p = SanitizeSaslUsername(p, e, user);
   p = SafeStpCpy(p, e, ",r=");
-  //p = SafeStpCpy(p, e, "fyko+d2lbbFgONRv9qkxdawL"); // for testing
-  //FillRandomHex(p, 32);
-  //p += 64;
   p = FillRandomHex(p, e, 32);
   p = SafeStpCpy(p, e, ",");
   ctx->serverfirstmsg = p - ctx->p;
@@ -676,7 +729,7 @@ static int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
   bool skip = false;
   int i;
   const char *s;
-  char *d = c->p, *e = c->p + c->c;
+  char *d = c->p + c->n, *e = c->p + c->c;
   va_start(ap, fmt);
   for (; *fmt && d < e; fmt++) {
     switch (*fmt) {
@@ -831,7 +884,7 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
   assert(ctx->state >= XMPP_SASL_INITIALIZED);
   size_t n;
   int itrs = 0;
-  char *s, *i, *e = ctx->p+ctx->n;
+  char *s, *i, *e = ctx->p+ctx->n - 1; // keep the nul
   char *r = ctx->p+ctx->serverfirstmsg;
   if (mbedtls_base64_decode(r, e-r, &n, c.p, c.rawn))
     return XMPP_EXML;
@@ -922,6 +975,8 @@ static void MoveStanza(struct xmppParser *p) {
 // returned when SASL negotiation starts, xmppSupplyPassword will perform the SASL calculations. To strengthen security, the password is not stored in plaintext inside the xmppClient, also after calling said function, the buffer in the `pwd` argument should be zero'd.
 #define XMPP_ITER_GIVEPWD 5
 
+#define XMPP_ITER_RECV 6
+
 /*static void SendDisco(struct xmppClient *c) {
   int disco = c->lastdisco + 1;
   FormatXml(c->out+c->outn, c->out+sizeof(c->out), "<iq type='get' to='%s' id='disco%d'><query xmlns='http://jabber.org/protocol/disco#info'/></iq>", "localhost", disco);
@@ -943,6 +998,7 @@ static void MoveStanza(struct xmppParser *p) {
 
 static void SendMessage(struct xmppClient *c, const char *to, const char *body) {
   xmppFormatMessage(&c->comp, to, 1, body);
+  xmppFormatAckRequest(&c->comp);
   c->state = CLIENTSTATE_SENDSTANZA;
 }
 
@@ -950,7 +1006,8 @@ static void SendMessage(struct xmppClient *c, const char *to, const char *body) 
 static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) {
   assert(c->state == CLIENTSTATE_SASLPWD);
   xmppSolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
-  c->state = CLIENTSTATE_SASLRESPONSE;
+  xmppFormatSaslResponse(&c->comp, &c->saslctx);
+  c->state = CLIENTSTATE_SASLRESULT;
 }
 
 // finds the first occurance of c in s and returns the position after
@@ -985,17 +1042,20 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
 static int xmppIterate(struct xmppClient *c) {
   struct xmppStanza *st = &c->stanza;
   struct xmppStream stream;
-  // TODO: always return SEND if the out buffer is not returned, do not
+  int r;
+  // always return SEND if the out buffer is not returned, do not
   // try caching to avoid prematurely filling up the entire buffer. Let
   // the OS/network stack handle caching.
-  if (!c->isnegotiationdone) {
-    switch (c->state) {
-    case CLIENTSTATE_INIT:
+  if (c->comp.n > 0)
+    return XMPP_ITER_SEND;
+  if (c->state == CLIENTSTATE_INIT) {
       xmppFormatStream(&c->comp, c->jid.domain);
       c->state = CLIENTSTATE_STREAMSENT;
       return XMPP_ITER_SEND;
-    case CLIENTSTATE_STREAMSENT:
-      int r = xmppParseStream(&c->parser, &stream);
+  }
+  if (c->state == CLIENTSTATE_STREAMSENT) {
+      if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL)
+        return XMPP_ITER_RECV;
       assert(r == 0);
       if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
         xmppFormatStartTls(&c->comp);
@@ -1011,13 +1071,21 @@ static int xmppIterate(struct xmppClient *c) {
         c->todofeatures |= XMPP_STREAMFEATURE_SMACKS;
       if (stream.features & XMPP_STREAMFEATURE_BIND) {
         xmppFormatBindResource(&c->comp, 1, c->jid.resource);
+        xmppFormatAckEnable(&c->comp, true);
         c->state = CLIENTSTATE_BIND;
         return XMPP_ITER_SEND;
       }
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       return XMPP_ITER_ACCEPTSTANZA;
+  }
+  MoveStanza(&c->parser);
+  Log("Parsing: \e[33m%.*s\e[0m", c->parser.n-c->parser.i, c->parser.p+c->parser.i);
+  if (c->parser.i == c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL)
+    return XMPP_ITER_RECV;
+  assert(r == 0);
+  if (!c->isnegotiationdone) {
+    switch (c->state) {
     case CLIENTSTATE_STARTTLS:
-      xmppParseStanza(&c->parser, st);
       if (st->type == XMPP_STANZA_STARTTLSPROCEED) {
         c->state = CLIENTSTATE_INIT;
         c->enabledfeatures |= XMPP_STREAMFEATURE_STARTTLS;
@@ -1025,23 +1093,16 @@ static int xmppIterate(struct xmppClient *c) {
       }
       break;
     case CLIENTSTATE_SASLINIT:
-      xmppParseStanza(&c->parser, st);
       assert(st->type == XMPP_STANZA_SASLCHALLENGE);
       c->state = CLIENTSTATE_SASLPWD;
       return XMPP_ITER_GIVEPWD;
-    case CLIENTSTATE_SASLRESPONSE:
-      xmppFormatSaslResponse(&c->comp, &c->saslctx);
-      c->state = CLIENTSTATE_SASLRESULT;
-      return XMPP_ITER_SEND;
     case CLIENTSTATE_SASLRESULT:
-      xmppParseStanza(&c->parser, st);
       assert(st->type == XMPP_STANZA_SASLSUCCESS);
       assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
       c->enabledfeatures |= XMPP_STREAMFEATURE_SCRAMSHA1;
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
-      assert(xmppParseStanza(&c->parser, st) == 0);
       assert(st->type == XMPP_STANZA_BINDJID);
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
@@ -1129,12 +1190,13 @@ static void TestClient() {
   xmppInitClient(&client, "admin@localhost/resource");
   bool sent = false;
   int r;
-  for (int i = 0; i < 15; i++) {
+  for (int i = 0; i < 20; i++) {
     switch ((r = xmppIterate(&client))) {
     case XMPP_ITER_SEND:
       Log("Out: \e[32m%.*s\e[0m", (int)client.comp.n, client.comp.p);
       SendAll();
-      MoveStanza(&client.parser);
+      break;
+    case XMPP_ITER_RECV:
       if (client.enabledfeatures & XMPP_STREAMFEATURE_STARTTLS)
         r = mbedtls_ssl_read(&ssl, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
       else
@@ -1159,7 +1221,6 @@ static void TestClient() {
       break;
     }
   }
-
   CleanupTls();
 }
 
