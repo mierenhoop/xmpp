@@ -38,10 +38,12 @@
 #define XMPP_CONFIG_MAX_SASLSCRAM1_ITERS 10000
 
 // https://sans-io.readthedocs.io/
+// starttls reference with MbedTLS: https://github.com/espressif/esp-idf/blob/master/examples/protocols/smtp_client/main/smtp_client_example_main.c
 
 // mbedtls random source
 // https://github.com/Mbed-TLS/mbedtls/blob/2a674bd9ce4758dff0d18f4ac8b6da4419efc504/library/entropy.c#L48
 // ESP: https://github.com/espressif/esp-idf/blob/0479494e7abe5aef71393fba2e184b3a78ea488f/components/mbedtls/port/esp_hardware.c#L19
+
 
 #ifndef NDEBUG
 #define Log(fmt, ...) printf(fmt "\n" __VA_OPT__(,) __VA_ARGS__)
@@ -51,32 +53,50 @@
 #define LogWarn(fmt, ...) ((void)0)
 #endif
 
+static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
+  if (mbedtls_base64_encode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
+    return e;
+  return d+n;
+}
+
+static char *DecodeBase64(char *d, char *e, const char *s, size_t n) {
+  if (mbedtls_base64_decode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
+    return e;
+  return d+n;
+}
+
 // if (s.p && (d = calloc(s.n+1))) xmppReadXmlSlice(d, s);
 // TODO: have specific impl for this?
 // TODO: we can skip the whole prefix initialization since that is
 // static. just memcpy the internal state to the struct.
 void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
-  static const char attrprefix[] = "<x e='";
-  static const char contprefix[] = "<x>";
-  char buf[16];
-  int i;
-  yxml_t x;
-  yxml_init(&x, buf, sizeof(buf));
-  int target = s.isattr ? YXML_ATTRVAL : YXML_CONTENT;
-  const char *prefix = s.isattr ? attrprefix : contprefix;
-  size_t n = s.isattr ? sizeof(attrprefix)-1 : sizeof(contprefix)-1;
-  for (i = 0; i < n; i++) {
-    yxml_parse(&x, prefix[i]);
-  }
-  for (i = 0; i < s.rawn; i++) {
-    // with parsing input validation has already succeeded so there is
-    // no reason to check for errors again.
-    if (yxml_parse(&x, s.p[i]) == target)
-      d = stpcpy(d, x.data);
-  }
-  if (s.isattr) {
-    if (yxml_parse(&x, '\'') == YXML_ATTRVAL)
-      d = stpcpy(d, x.data);
+  if (s.type == XMPP_SLICE_ATTR || s.type == XMPP_SLICE_CONT) {
+    static const char attrprefix[] = "<x e='";
+    static const char contprefix[] = "<x>";
+    char buf[16];
+    int i;
+    yxml_t x;
+    yxml_init(&x, buf, sizeof(buf));
+    int target = s.type == XMPP_SLICE_ATTR ? YXML_ATTRVAL : YXML_CONTENT;
+    const char *prefix = s.type == XMPP_SLICE_ATTR ? attrprefix : contprefix;
+    size_t n = s.type == XMPP_SLICE_ATTR ? sizeof(attrprefix)-1 : sizeof(contprefix)-1;
+    for (i = 0; i < n; i++) {
+      yxml_parse(&x, prefix[i]);
+    }
+    for (i = 0; i < s.rawn; i++) {
+      // with parsing input validation has already succeeded so there is
+      // no reason to check for errors again.
+      if (yxml_parse(&x, s.p[i]) == target)
+        d = stpcpy(d, x.data);
+    }
+    if (s.type == XMPP_SLICE_ATTR) {
+      if (yxml_parse(&x, '\'') == YXML_ATTRVAL)
+        d = stpcpy(d, x.data);
+    }
+  } else if (s.type == XMPP_SLICE_B64) {
+    DecodeBase64(d, d+s.n, s.p, s.rawn);
+  } else {
+    memcpy(d, s.p, s.rawn);
   }
 }
 
@@ -327,7 +347,7 @@ static int ParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
   slc->p = NULL;
   slc->n = 0;
   slc->rawn = 0;
-  slc->isattr = true;
+  slc->type = XMPP_SLICE_ATTR;
   while (1) { // hacky way to check end of attr list
     if (!slc->p && (p->p[p->i-1] == '>' || p->p[p->i-1] == '/'))
       return 0;
@@ -671,18 +691,6 @@ int xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const ch
   return 0;
 }
 
-static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
-  if (mbedtls_base64_encode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
-    return e;
-  return d+n;
-}
-
-static char *DecodeBase64(char *d, char *e, const char *s, size_t n) {
-  if (mbedtls_base64_decode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
-    return e;
-  return d+n;
-}
-
 static char *EncodeXmlString(char *d, char *e, const char *s) {
   for (;*s && d < e; s++) {
     switch (*s) {
@@ -963,7 +971,6 @@ static void MoveStanza(struct xmppParser *p) {
 #define XMPP_ITER_OK 0
 // A stanza was read.
 #define XMPP_ITER_STANZA   1
-//#define XMPP_ITER_RECV 1
 // Data should be sent and received.
 // TODO: rename to TRANSFER or NET
 #define XMPP_ITER_SEND 2
@@ -1054,8 +1061,10 @@ static int xmppIterate(struct xmppClient *c) {
       return XMPP_ITER_SEND;
   }
   if (c->state == CLIENTSTATE_STREAMSENT) {
-      if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL)
+      if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
+        MoveStanza(&c->parser);
         return XMPP_ITER_RECV;
+      }
       assert(r == 0);
       if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
         xmppFormatStartTls(&c->comp);
@@ -1078,10 +1087,11 @@ static int xmppIterate(struct xmppClient *c) {
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       return XMPP_ITER_ACCEPTSTANZA;
   }
-  MoveStanza(&c->parser);
-  Log("Parsing: \e[33m%.*s\e[0m", c->parser.n-c->parser.i, c->parser.p+c->parser.i);
-  if (c->parser.i == c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL)
+  Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
+  if (c->parser.i == c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL) {
+    MoveStanza(&c->parser); // TODO: Here we are aggressive with memmoving the stanzas, we could be more lax.
     return XMPP_ITER_RECV;
+  }
   assert(r == 0);
   if (!c->isnegotiationdone) {
     switch (c->state) {
@@ -1227,19 +1237,11 @@ static void TestClient() {
 static struct xmppParser SetupXmppParser(const char *xml) {
   static char buf[1000];
   struct xmppParser p = {0};
-  yxml_init(&p.x, buf, sizeof(buf));
   p.p = client.in;
+  p.c = sizeof(client.in);
   strcpy(p.p, xml);
-  p.i = 0;
   p.n = strlen(xml);
   return p;
-}
-
-static char *CloneXmlSlice(struct xmppXmlSlice slc) {
-  char *d = NULL;
-  if (slc.p && (d = calloc(slc.n+1, 1)))
-    xmppReadXmlSlice(d, slc);
-  return d;
 }
 
 static void TestXml() {
@@ -1273,137 +1275,13 @@ static void TestXml() {
   assert(FindElement("procee", 6, "p=proceed f=failure c=procee") == 'c');
 }
 
-// these macros are getting too crazy...
-// method either net or ssl
-// fn is xmppFormat* function
-// ... is args passed after format
-#define Send(method, ctx, fn, ...) do { \
-  char *end = fn(client.out, client.out+sizeof(client.out) __VA_OPT__(,) __VA_ARGS__); \
-  Log("Out: \e[32m%.*s\e[0m", (int)(end-client.out), client.out); \
-  mbedtls_##method(ctx, client.out, end - client.out); \
-} while (0)
-
-#define SendPlain(...) Send(net_send, &server_fd, __VA_ARGS__)
-#define SendSsl(...) Send(ssl_write, &ssl, __VA_ARGS__)
-
-#define Receive(method, ctx) do { \
-  size_t n = mbedtls_##method(ctx, client.in, sizeof(client.in)); \
-  client.parser.n = n; \
-  client.parser.i = 0; \
-  client.in[n] = '\0'; \
-  Log("In:  \e[34m%s\e[0m", client.in); \
-} while (0)
-
-#define ReceivePlain() Receive(net_recv, &server_fd)
-#define ReceiveSsl() Receive(ssl_read, &ssl)
-
-/*
-static void SetupJid(struct Jid *jid) {
-  strcpy(jid->full, "admin@localhost/resource");
-  jid->domain = strchr(jid->full, '@')+1 - jid->full;
-  jid->resource = strchr(jid->full, '/')+1 - jid->full;
-  jid->end = strlen(jid->full);
-}
-
-static void TestTls() {
-  char *buf = NULL;
-  int ret, len;
-  struct xmppStream stream;
-  struct xmppStanza st;
-
-  //SetupJid(&client.jid);
-
-  SetupTls("localhost", "5222");
-
-  SendPlain(xmppFormatStream, "localhost");
-  ReceivePlain();
-  assert(xmppParseStream(&client.p, &stream) == 0);
-  assert(stream.features & XMPP_STREAMFEATURE_STARTTLS);
-  SendPlain(xmppFormatStartTls);
-  ReceivePlain();
-  assert(xmppParseStanza(&client.p, &st) == 0 && st.type == XMPP_STANZA_STARTTLSPROCEED);
-
-	while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
-		if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-      printf("%d\n", ret);
-			assert(false);
-		}
-	}
-
-  int flags;
-	if ((flags = mbedtls_ssl_get_verify_result(&ssl)) != 0) {
-    puts("cert faile");
-	} else {
-    puts("cert Successssss");
-	}
-
-  SendSsl(xmppFormatStream, "localhost");
-  ReceiveSsl();
-  assert(xmppParseStream(&client.p, &stream) == 0);
-  assert(stream.features & XMPP_STREAMFEATURE_SCRAMSHA1);
-
-  struct xmppXmlSlice challenge;
-  xmppInitSaslContext(&client.saslctx, client.saslbuf, sizeof(client.saslbuf), "admin");
-  SendSsl(xmppFormatSaslInitialMessage, &client.saslctx);
-  ReceiveSsl();
-  assert(xmppParseStanza(&client.p, &st) == 0 && st.type == XMPP_STANZA_SASLCHALLENGE);
-  assert(xmppSolveSaslChallenge(&client.saslctx, st.saslchallenge, "adminpass") == 0);
-  SendSsl(xmppFormatSaslResponse, &client.saslctx);
-  ReceiveSsl();
-  assert(xmppParseStanza(&client.p, &st) == 0 && st.type == XMPP_STANZA_SASLSUCCESS);
-  assert(xmppVerifySaslSuccess(&client.saslctx, st.saslsuccess) == 0);
-
-  SendSsl(xmppFormatStream, "localhost");
-  ReceiveSsl();
-  assert(xmppParseStream(&client.p, &stream) == 0);
-  SendSsl(xmppFormatBindResource, 1, "resource");
-  ReceiveSsl();
-  assert(xmppParseStanza(&client.p, &st) == 0);
-  assert(st.type == XMPP_STANZA_BINDJID);
-
-  SendSsl(xmppFormatDisco, "admin@localhost/resource", "localhost", "disco1");
-  ReceiveSsl();
-  SendSsl(xmppFormatAckEnable, true);
-  ReceiveSsl();
-  SendSsl(xmppFormatMessage, "admin@localhost", 1, "Hello world!");
-  SendSsl(xmppFormatAckRequest);
-  ReceiveSsl();
-  xmppParseStanza(&client.p, &st);
-  assert(st.ack == 1);
-
-  //xmppFormatAckAnswer(out, out+sizeof(out), INT_MAX);
-  //Log("%s %d\n", out, INT_MAX);
-
-  CleanupTls();
-}*/
-
 int main() {
   puts("Starting tests");
   TestClient();
-  //TestXml();
-  //TestTls();
+  TestXml();
   puts("All tests passed");
   return 0;
 }
 
-#if 0
-
-https://github.com/espressif/esp-idf/blob/master/examples/protocols/smtp_client/main/smtp_client_example_main.c
-
-struct xmppClient c;
-char req[10000], resp[10000];
-xmppInitiate(&c, from, to, features); // features can be SASLSCRAMSHA1|SASLPLAIN|TLS|MUSTTLS
-xmppFormatStream();
-write();
-
-read();
-xmppParseStream(); // parse stream and features
-
-// r could be one of 
-//  | PARTIAL(req buffer not complete, stanza not complete ending, so should read more bytes from stream)
-//  | SEND(should send req)
-int r = xmppIterate(req, strlen(req), resp, sizeof(resp));
-
-#endif
 
 #endif
