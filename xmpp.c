@@ -231,9 +231,9 @@ static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
 
 #define HasOverflowed(p, e) ((p) >= (e))
 
-// TODO: don't use yxml, but in-house parser,
-// dozens of LOC can be removed because XMPP only allows subset of XML
-// and the usage here is usecase specific.
+// TODO: remove unneeded parts of yxml, dozens of LOC can be removed
+// because XMPP only allows subset of XML and the usage here is usecase
+// specific.
 struct xmppParser {
   yxml_t x;
   char xbuf[XMPP_CONFIG_MAX_YXMLBUF_SIZE];
@@ -247,6 +247,7 @@ struct xmppStream {
   int features;
   int optionalfeatures;
   int requiredfeatures;
+  bool hasunknownrequired; // TODO: make this an error?
 };
 
 // full  domain      resource    end
@@ -307,7 +308,7 @@ struct xmppClient {
   int state;
   int todofeatures;
   int enabledfeatures;
-  int actualsent;
+  int actualsent, actualrecv;
   int sentacks, recvacks;
   int lastdisco, lastping;
   bool disablesmack, disabledisco, enablereceipts;
@@ -600,8 +601,9 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
   while (ParseElement(p)) {
     if (!strcmp(p->x.elem, "starttls")) {
       s->features |= XMPP_STREAMFEATURE_STARTTLS;
+      SkipUnknownXml(p);
     } else if (!strcmp(p->x.elem, "mechanisms")) {
-      while (ParseElement(p)) { // TODO: check if elem is mechanism
+      while (ParseElement(p)) {
         struct xmppXmlSlice mech;
         if (strcmp(p->x.elem, "mechanism"))
           longjmp(p->jb, XMPP_EXML);
@@ -613,17 +615,21 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
         else if (!strncmp(mech.p, "PLAIN", mech.n)) // TODO: mech.rawn
           s->features |= XMPP_STREAMFEATURE_PLAIN;
       }
-      continue;
     } else if (!strcmp(p->x.elem, "sm")) {
       if (!ParseAttribute(p, &attr) || strcmp(p->x.attr, "xmlns"))
         longjmp(p->jb, XMPP_EXML);
       if (!strcmp(attr.p, "urn:xmpp:sm:3"))
         ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_SMACKS);
+      SkipUnknownXml(p);
     } else if (!strcmp(p->x.elem, "bind")) {
       ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_BIND);
-      continue;
+    } else {
+      while (ParseElement(p)) {
+        if (!strcmp(p->x.elem, "required"))
+          s->hasunknownrequired = true;
+        SkipUnknownXml(p);
+      }
     }
-    SkipUnknownXml(p);
   }
   return 0;
 }
@@ -651,8 +657,7 @@ static char *FillRandomHex(char *p, char *e, size_t n) {
   return p + nn;
 }
 
-// TODO: check if this conforms to sasl spec
-// and also check for d buf size
+// Assume the username has been SASLprep'ed.
 static char *SanitizeSaslUsername(char *d, char *e, const char *s) {
   for (;*s && d < e;s++) {
     switch (*s) {
@@ -799,16 +804,6 @@ int xmppVerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice s) {
    || mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
     return XMPP_EXML;
   return !!memcmp(ctx->srvsig, b2, 20);
-}
-
-void dumphex(const char *p, size_t n) {
-  for (int i = 0; i < n; i++)
-    printf("%02x", (unsigned char)p[i]);
-  puts("");
-}
-
-void dumpxmlslice(struct xmppXmlSlice slc) {
-  printf("XML SLICE n %ld rawn %ld %.*s\n", slc.n, slc.rawn, (int)slc.n, slc.p);
 }
 
 static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
@@ -969,15 +964,17 @@ static void MoveStanza(struct xmppParser *p) {
 
 // Nothing should be done, make another call to xmppIterate.
 #define XMPP_ITER_OK 0
-// A stanza was read.
+// A stanza was read. You can access the stanza in c->stanza, it will be valid up until the next call of Iterate.
 #define XMPP_ITER_STANZA   1
 // Data should be sent and received.
 // TODO: rename to TRANSFER or NET
 #define XMPP_ITER_SEND 2
 // TLS handshake must be done now.
 #define XMPP_ITER_STARTTLS 3
-// Stream negotation has completed, you can now send and receive stanzas.
-#define XMPP_ITER_ACCEPTSTANZA 4
+// Stream negotation has completed, you can now send and receive
+// stanzas. After ready is returned, you may send new stanzas. When data
+// is available you should read it.
+#define XMPP_ITER_READY 4
 
 // returned when SASL negotiation starts, xmppSupplyPassword will perform the SASL calculations. To strengthen security, the password is not stored in plaintext inside the xmppClient, also after calling said function, the buffer in the `pwd` argument should be zero'd.
 #define XMPP_ITER_GIVEPWD 5
@@ -1001,12 +998,12 @@ static void MoveStanza(struct xmppParser *p) {
 #define CLIENTSTATE_SASLRESULT 7
 #define CLIENTSTATE_BIND 8
 #define CLIENTSTATE_ACCEPTSTANZA 9
-#define CLIENTSTATE_SENDSTANZA 10
 
 static void SendMessage(struct xmppClient *c, const char *to, const char *body) {
   xmppFormatMessage(&c->comp, to, 1, body);
   xmppFormatAckRequest(&c->comp);
-  c->state = CLIENTSTATE_SENDSTANZA;
+  c->actualsent++;
+  //c->state = CLIENTSTATE_SENDSTANZA;
 }
 
 // Coindcidentally the only function that allocates on the heap.
@@ -1037,13 +1034,12 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
   memcpy(c->jid.resource, jid+r, (c->jid.resourcen = n-r));
 }
 
-// When SEND is returned, the complete out buffer with the size
-// specified in *outn must be sent over the network before another
-// iteration is done. If *outn is 0, you don't have to write anything.
-// After writing you should always read from the network before making
-// another call to xmppIterate. If there was no SEND response you should
-// never change the in buffer, you may only reallocate the in buffer
-// just before or after reading from the network.
+// When SEND is returned, the complete out buffer (c->comp.p) with the
+// size specified in (c->comp.n) must be sent over the network before
+// another iteration is done. If c->comp.n is 0, you don't have to write
+// anything. It is recommended that your send function does not block so
+// that you can call Iterate again asap. You may only reallocate the in
+// buffer just before or after reading from the network.
 // ret:
 //  XMPP_ITER_*
 static int xmppIterate(struct xmppClient *c) {
@@ -1085,12 +1081,12 @@ static int xmppIterate(struct xmppClient *c) {
         return XMPP_ITER_SEND;
       }
       c->state = CLIENTSTATE_ACCEPTSTANZA;
-      return XMPP_ITER_ACCEPTSTANZA;
+      return XMPP_ITER_READY;
   }
   Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
   if (c->parser.i == c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL) {
     MoveStanza(&c->parser); // TODO: Here we are aggressive with memmoving the stanzas, we could be more lax.
-    return XMPP_ITER_RECV;
+    return c->isnegotiationdone ? XMPP_ITER_READY : XMPP_ITER_RECV;
   }
   assert(r == 0);
   if (!c->isnegotiationdone) {
@@ -1116,19 +1112,25 @@ static int xmppIterate(struct xmppClient *c) {
       assert(st->type == XMPP_STANZA_BINDJID);
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
-      return XMPP_ITER_ACCEPTSTANZA;
+      return XMPP_ITER_OK; // TODO: will we include smacks with the negotiation?
     }
-  } else {
-    switch (c->state) {
-    case CLIENTSTATE_ACCEPTSTANZA:
-      return XMPP_ITER_ACCEPTSTANZA;
-    case CLIENTSTATE_SENDSTANZA:
-      c->state = CLIENTSTATE_ACCEPTSTANZA;
-      return XMPP_ITER_SEND;
-    }
+    assert(false);
   }
-  assert(false);
-  return 0;
+  switch (st->type) {
+  case XMPP_STANZA_SMACKSENABLED:
+    if (st->smacksenabled.id.p) {
+      assert(st->smacksenabled.id.rawn <= sizeof(c->smackid));
+      memcpy(c->smackid, st->smacksenabled.id.p, st->smacksenabled.id.rawn);
+      c->cansmackresume = st->smacksenabled.resume;
+    }
+    break;
+  case XMPP_STANZA_ACKANSWER:
+    assert(st->ack == c->actualsent);
+    Log("Ack succeeded!");
+    break;
+  }
+  //assert(false);
+  return XMPP_ITER_READY;
 }
 
 #ifdef XMPP_RUNTEST
@@ -1200,13 +1202,23 @@ static void TestClient() {
   xmppInitClient(&client, "admin@localhost/resource");
   bool sent = false;
   int r;
-  for (int i = 0; i < 20; i++) {
+  for (int i = 0; i < 30; i++) {
     switch ((r = xmppIterate(&client))) {
     case XMPP_ITER_SEND:
       Log("Out: \e[32m%.*s\e[0m", (int)client.comp.n, client.comp.p);
       SendAll();
       break;
+    case XMPP_ITER_READY:
+    // poll(recv, msg)
+    // if msg then SendMsg(client, msg) break end
+      if (!sent) {
+        SendMessage(&client, "admin@localhost", "Hello!");
+        sent = true;
+        break;
+      }
+      // fallthrough
     case XMPP_ITER_RECV:
+      Log("Waiting for recv...");
       if (client.enabledfeatures & XMPP_STREAMFEATURE_STARTTLS)
         r = mbedtls_ssl_read(&ssl, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
       else
@@ -1223,14 +1235,14 @@ static void TestClient() {
     case XMPP_ITER_GIVEPWD:
       xmppSupplyPassword(&client, "adminpass", 9);
       break;
-    case XMPP_ITER_ACCEPTSTANZA:
-      if (!sent) {
-        SendMessage(&client, "admin@localhost", "Hello!");
-        sent = true;
-      }
+    case XMPP_ITER_STANZA:
+      break;
+    case XMPP_ITER_OK:
+    default:
       break;
     }
   }
+stop:
   CleanupTls();
 }
 
