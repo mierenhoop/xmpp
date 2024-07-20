@@ -94,7 +94,7 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
         d = stpcpy(d, x.data);
     }
   } else if (s.type == XMPP_SLICE_B64) {
-    DecodeBase64(d, d+s.n, s.p, s.rawn);
+    DecodeBase64(d, d+s.n, s.p, s.rawn); // TODO: check if b64 is valid.
   } else {
     memcpy(d, s.p, s.rawn);
   }
@@ -132,6 +132,7 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STREAMFEATURE_PLAIN (1 << 4)
 #define XMPP_STREAMFEATURE_SMACKS (1 << 5)
 
+#define XMPP_DISCO_REGISTER (1 << 0)
 
 #define XMPP_STANZA_EMPTY 0
 #define XMPP_STANZA_MESSAGE 1
@@ -146,6 +147,9 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STANZA_ACKANSWER 8
 #define XMPP_STANZA_SASLSUCCESS 9
 #define XMPP_STANZA_SASLCHALLENGE 10
+#define XMPP_STANZA_DISCOREQ 11
+#define XMPP_STANZA_DISCORESP 12
+#define XMPP_STANZA_PING 13
 
 #define XMPP_FAILURE_ABORTED                (1 << 0)
 #define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
@@ -306,6 +310,7 @@ struct xmppClient {
   struct xmppXmlComposer comp;
   bool isnegotiationdone;
   int state;
+  int disco;
   int todofeatures;
   int enabledfeatures;
   int actualsent, actualrecv;
@@ -735,9 +740,10 @@ static char *Itoa(char *d, char *e, int i) {
 // - %s: Encoded XML attribute value string
 // - %b: Base64 string, first arg is len and second is raw data
 // - %d: integer
-// TODO: the rest... are they really needed?
+// - %x: xmppXmlSlice to encoded XML
 static int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
   va_list ap;
+  struct xmppXmlSlice slc;
   size_t n;
   bool skip = false;
   int i;
@@ -753,16 +759,21 @@ static int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
         i = va_arg(ap, int);
         if (!skip)
           d = Itoa(d, e, i);
-      break; case 's': // xml string
+      break; case 's':
         s = va_arg(ap, const char*);
         if (!skip)
           d = EncodeXmlString(d, e, s);
-      break; case 'c': // content TODO: different encoding than xml string?
-      break; case 'b': // base64
+      break; case 'b':
         n = va_arg(ap, size_t);
         s = va_arg(ap, const char*);
         if (!skip)
           d = EncodeBase64(d, e, s, n);
+      break; case 'x': // TODO: we just assume the slc.type is the same for in and output
+        slc = va_arg(ap, struct xmppXmlSlice);
+        if (!skip && d+slc.rawn < e) {
+          memcpy(d, slc.p, slc.rawn);
+          d += slc.rawn;
+        }
       }
     break; case '[': skip = !va_arg(ap, int); // actually bool
     break; case ']': skip = false;
@@ -947,7 +958,12 @@ static void MoveStanza(struct xmppParser *p) {
 
 // XEP-0199: XMPP Ping
 
-#define xmppFormatPing(c, from, to, id) xmppFormatIq(c, "get", from, to, id, "<ping xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+#define xmppFormatPing(c, to, id)                                      \
+  FormatXml(c,                                                         \
+            "<iq to='%s' id='ping%d' type='get'><ping "                \
+            "xmlns='urn:xmpp:ping'/></iq>",                            \
+            to, id)
+
 
 // XEP-0030: Service Discovery
 
@@ -1003,7 +1019,13 @@ static void SendMessage(struct xmppClient *c, const char *to, const char *body) 
   xmppFormatMessage(&c->comp, to, 1, body);
   xmppFormatAckRequest(&c->comp);
   c->actualsent++;
-  //c->state = CLIENTSTATE_SENDSTANZA;
+}
+
+static void SendPing(struct xmppClient *c, const char *to) {
+  int ping = c->lastping + 1;
+  xmppFormatPing(&c->comp, to, ping);
+  c->lastping = ping;
+  c->actualsent++;
 }
 
 // Coindcidentally the only function that allocates on the heap.
@@ -1032,6 +1054,14 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
   memcpy(c->jid.local, jid, (c->jid.localn = d-1));
   memcpy(c->jid.domain, jid+d, (c->jid.domainn = r-d-1));
   memcpy(c->jid.resource, jid+r, (c->jid.resourcen = n-r));
+}
+
+// Stream feature f is enabled now.
+static void AddFeature(struct xmppClient *c, int f) {
+  c->enabledfeatures |= f;
+  //if (c->enabledfeatures & c->requiredfeatures) {
+  //  c->isnegotiationdone = true;
+  //}
 }
 
 // When SEND is returned, the complete out buffer (c->comp.p) with the
@@ -1089,12 +1119,13 @@ static int xmppIterate(struct xmppClient *c) {
     return c->isnegotiationdone ? XMPP_ITER_READY : XMPP_ITER_RECV;
   }
   assert(r == 0);
+  c->actualrecv++;
   if (!c->isnegotiationdone) {
     switch (c->state) {
     case CLIENTSTATE_STARTTLS:
       if (st->type == XMPP_STANZA_STARTTLSPROCEED) {
         c->state = CLIENTSTATE_INIT;
-        c->enabledfeatures |= XMPP_STREAMFEATURE_STARTTLS;
+        AddFeature(c, XMPP_STREAMFEATURE_STARTTLS);
         return XMPP_ITER_STARTTLS;
       }
       break;
@@ -1105,18 +1136,23 @@ static int xmppIterate(struct xmppClient *c) {
     case CLIENTSTATE_SASLRESULT:
       assert(st->type == XMPP_STANZA_SASLSUCCESS);
       assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
-      c->enabledfeatures |= XMPP_STREAMFEATURE_SCRAMSHA1;
+      AddFeature(c, XMPP_STREAMFEATURE_SCRAMSHA1);
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
       assert(st->type == XMPP_STANZA_BINDJID);
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
+      AddFeature(c, XMPP_STREAMFEATURE_BIND);
       return XMPP_ITER_OK; // TODO: will we include smacks with the negotiation?
     }
     assert(false);
   }
   switch (st->type) {
+  case XMPP_STANZA_PING:
+    FormatXml(&c->comp, "<iq to='%x' id='%x' type='result'/>", st->from, st->id);
+    c->actualsent++;
+    return XMPP_ITER_OK;
   case XMPP_STANZA_SMACKSENABLED:
     if (st->smacksenabled.id.p) {
       assert(st->smacksenabled.id.rawn <= sizeof(c->smackid));
@@ -1125,15 +1161,20 @@ static int xmppIterate(struct xmppClient *c) {
     }
     break;
   case XMPP_STANZA_ACKANSWER:
-    assert(st->ack == c->actualsent);
+    // return XMPP_ITER_UPTODATE
+    //assert(st->ack == c->actualsent);
     Log("Ack succeeded!");
     break;
+  default:
+    return XMPP_ITER_STANZA;
   }
   //assert(false);
   return XMPP_ITER_READY;
 }
 
 #ifdef XMPP_RUNTEST
+
+#include <sys/poll.h>
 
 #include "cacert.inc"
 
@@ -1197,12 +1238,21 @@ static void SendAll() {
   memset(client.comp.p, 0, client.comp.c); // just in case
 }
 
+static bool HasDataAvailable() {
+  struct pollfd pfd = {0};
+  pfd.fd = server_fd.fd;
+  pfd.events = POLLIN;
+  int r = poll(&pfd, 1, 200);
+  assert(r >= 0);
+  return r && pfd.revents & POLLIN;
+}
+
 static void TestClient() {
   SetupTls("localhost", "5222");
   xmppInitClient(&client, "admin@localhost/resource");
   bool sent = false;
   int r;
-  for (int i = 0; i < 30; i++) {
+  for (;;) {
     switch ((r = xmppIterate(&client))) {
     case XMPP_ITER_SEND:
       Log("Out: \e[32m%.*s\e[0m", (int)client.comp.n, client.comp.p);
@@ -1213,9 +1263,14 @@ static void TestClient() {
     // if msg then SendMsg(client, msg) break end
       if (!sent) {
         SendMessage(&client, "admin@localhost", "Hello!");
+        xmppFormatPing(&client.comp, "localhost", 1);
+        xmppFormatAckRequest(&client.comp);
+        client.actualsent++;
         sent = true;
         break;
       }
+      if (!HasDataAvailable())
+        goto stop;
       // fallthrough
     case XMPP_ITER_RECV:
       Log("Waiting for recv...");

@@ -13,10 +13,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/poll.h>
+#include <stdbool.h>
 
 #define DB_FILE "o/im.db"
 
 static sqlite3 *db;
+
+static char *command;
+static size_t commandsz;
 
 static void AddMessage(const char *body, int id) {
   static sqlite3_stmt *stmt;
@@ -66,6 +71,27 @@ static void InitializeConn(const char *server, const char *port) {
                              MBEDTLS_NET_PROTO_TCP) == 0);
   mbedtls_ssl_set_bio(&conn.ssl, &conn.server_fd, mbedtls_net_send,
                       mbedtls_net_recv, NULL);
+}
+
+static void HandleCommand() {
+  getline(&command, &commandsz, stdin);
+}
+
+static bool Poll() {
+  struct pollfd fds[2] = {0};
+  fds[0].fd = STDIN_FILENO;
+  fds[0].events = POLLIN;
+  fds[1].fd = conn.server_fd.fd;
+  fds[1].events = POLLIN;
+  int r = poll(fds, 2, -1);
+  assert(r >= 0);
+  if (fds[0].revents & POLLIN) {
+    HandleCommand();
+    return false;
+  }
+  if (fds[1].revents & POLLIN)
+    return true;
+  assert(false);
 }
 
 // TODO: make this the main thread/proc and put all complete message
