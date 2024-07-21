@@ -132,6 +132,10 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STREAMFEATURE_PLAIN (1 << 4)
 #define XMPP_STREAMFEATURE_SMACKS (1 << 5)
 
+#define XMPP_STREAMFEATUREMASK_SASL                                    \
+  (XMPP_STREAMFEATURE_SCRAMSHA1 | XMPP_STREAMFEATURE_SCRAMSHA1PLUS |   \
+   XMPP_STREAMFEATURE_PLAIN)
+
 #define XMPP_DISCO_REGISTER (1 << 0)
 
 #define XMPP_STANZA_EMPTY 0
@@ -237,7 +241,11 @@ static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
 
 // TODO: remove unneeded parts of yxml, dozens of LOC can be removed
 // because XMPP only allows subset of XML and the usage here is usecase
-// specific.
+// specific. We would also benefit from adding the following states to
+// yxml_ret_t: YXML_ATTRSEND (when either / or > is encountered
+// inside an element to notify that there will be no more attributes) &
+// YXML_CONTENTSTOP (when < is encountered) & possible also
+// YXML_CONTENTSTART (when > is encountered).
 struct xmppParser {
   yxml_t x;
   char xbuf[XMPP_CONFIG_MAX_YXMLBUF_SIZE];
@@ -292,7 +300,7 @@ struct xmppSaslContext {
   size_t serverfirstmsg;
   size_t clientfinalmsg;
   size_t authmsgend;
-  size_t clientfinalmsgend;
+  size_t end;
   char srvsig[20];
 };
 
@@ -639,10 +647,17 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
   return 0;
 }
 
-static char *SafeStpCpy(char *d, char *e, char *s) {
+static char *SafeStpCpy(char *d, char *e, const char *s) {
   while (*s && d < e)
     *d++ = *s++;
   return d;
+}
+
+static char *SafeMempCpy(char *d, char *e, char *s, size_t n) {
+  if (d + n > e)
+    return e;
+  memcpy(d, s, n);
+  return d + n;
 }
 
 // n = number of random bytes
@@ -698,6 +713,21 @@ int xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const ch
   if (HasOverflowed(p, e))
     return XMPP_EMEM;
   ctx->state = XMPP_SASL_INITIALIZED;
+  return 0;
+}
+
+static int MakeSaslPlain(struct xmppSaslContext *ctx, char *p, size_t n, const char *user, const char *pwd) {
+  char *e = p + n;
+  memset(ctx, 0, sizeof(*ctx));
+  ctx->p = p;
+  ctx->n = n;
+  p = SafeMempCpy(p, e, "\0", 1);
+  p = SafeStpCpy(p, e, user);
+  p = SafeMempCpy(p, e, "\0", 1);
+  p = SafeStpCpy(p, e, pwd);
+  ctx->end = p - ctx->p;
+  if (HasOverflowed(p, e))
+    return XMPP_EMEM;
   return 0;
 }
 
@@ -789,20 +819,11 @@ static int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
   return HasOverflowed(d, e);
 }
 
-static void FormatSaslPlain(struct xmppXmlComposer *c,
-                            struct xmppSaslContext *ctx,
-                            const char *user, const char *pwd) {
-  assert(ctx->state == XMPP_SASL_INITIALIZED);
-  size_t un = strlen(user), pn = strlen(pwd);
-  assert(1+un+1+pn <= ctx->n); // TODO: return error
-  ctx->p[0] = '\0';
-  memcpy(ctx->p+1, user, un);
-  ctx->p[un+1] = '\0';
-  memcpy(ctx->p+1+un+1, pwd, pn);
-  ctx->state = XMPP_SASL_CALCULATED;
-  FormatXml(c, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>%b</auth>", 1+un+1+pn, ctx->p);
-}
-
+#define FormatSaslPlain(c, ctx)                                        \
+  FormatXml(c,                                                         \
+            "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' "          \
+            "mechanism='PLAIN'>%b</auth>",                             \
+            (ctx)->end, (ctx)->p)
 
 #define xmppFormatStream(c, to) FormatXml(c, \
     "<?xml version='1.0'?>" \
@@ -816,7 +837,7 @@ static void FormatSaslPlain(struct xmppXmlComposer *c,
 #define xmppFormatSaslInitialMessage(c, ctx) \
   FormatXml(c, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>%b</auth>", (ctx)->serverfirstmsg-1, (ctx)->p)
 
-#define xmppFormatSaslResponse(c, ctx) FormatXml(c, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>%b</response>", (ctx)->clientfinalmsgend-(ctx)->clientfinalmsg, (ctx)->p+(ctx)->clientfinalmsg)
+#define xmppFormatSaslResponse(c, ctx) FormatXml(c, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>%b</response>", (ctx)->end-(ctx)->clientfinalmsg, (ctx)->p+(ctx)->clientfinalmsg)
 
 // TODO: use a single buf? mbedtls decode base64 probably allows overlap
 // length of s not checked, it's expected that invalid input would
@@ -939,7 +960,7 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
     return XMPP_ECRYPTO;
   r = stpcpy(r, ",p=");
   mbedtls_base64_encode(r, 9001, &n, clientproof, 20); // IDK random value
-  ctx->clientfinalmsgend = (r-ctx->p)+n;
+  ctx->end = (r-ctx->p)+n;
   if (HasOverflowed(r, e))
     return XMPP_EMEM;
   ctx->state = XMPP_SASL_CALCULATED;
@@ -1012,6 +1033,8 @@ static void MoveStanza(struct xmppParser *p) {
 
 #define XMPP_ITER_RECV 6
 
+#define XMPP_ITER_SASLFAIL -10
+
 /*static void SendDisco(struct xmppClient *c) {
   int disco = c->lastdisco + 1;
   FormatXml(c->out+c->outn, c->out+sizeof(c->out), "<iq type='get' to='%s' id='disco%d'><query xmlns='http://jabber.org/protocol/disco#info'/></iq>", "localhost", disco);
@@ -1029,6 +1052,7 @@ static void MoveStanza(struct xmppParser *p) {
 #define CLIENTSTATE_SASLRESULT 7
 #define CLIENTSTATE_BIND 8
 #define CLIENTSTATE_ACCEPTSTANZA 9
+#define CLIENTSTATE_SASLPLAIN 10
 
 static void SendMessage(struct xmppClient *c, const char *to, const char *body) {
   xmppFormatMessage(&c->comp, to, 1, body);
@@ -1045,9 +1069,15 @@ static void SendPing(struct xmppClient *c, const char *to) {
 
 // Coindcidentally the only function that allocates on the heap.
 static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) {
-  assert(c->state == CLIENTSTATE_SASLPWD);
-  xmppSolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
-  xmppFormatSaslResponse(&c->comp, &c->saslctx);
+  if (c->state == CLIENTSTATE_SASLPWD) {
+    xmppSolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
+    xmppFormatSaslResponse(&c->comp, &c->saslctx);
+  } else if (c->state == CLIENTSTATE_SASLPLAIN) {
+    MakeSaslPlain(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local, pwd);
+    FormatSaslPlain(&c->comp, &c->saslctx);
+  } else {
+    assert(false);
+  }
   c->state = CLIENTSTATE_SASLRESULT;
 }
 
@@ -1112,17 +1142,22 @@ static int xmppIterate(struct xmppClient *c) {
       }
       assert(r == 0);
       if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
+        assert(!(c->enabledfeatures & XMPP_STREAMFEATURE_STARTTLS));
         c->state = CLIENTSTATE_STARTTLS;
         return ReturnSend(xmppFormatStartTls(&c->comp));
-      } else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
-        xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
-        c->state = CLIENTSTATE_SASLINIT;
-        FormatSaslPlain(&c->comp, &c->saslctx, "admin", "adminpass");
-        //xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
-        return XMPP_ITER_SEND;
+        // TODO: make a flag in xmppInitClient where a sasl method can be preferred
+      //} else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
+      //  xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
+      //  c->state = CLIENTSTATE_SASLINIT;
+      //  xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
+      //  return XMPP_ITER_SEND;
+      } else if (stream.features & XMPP_STREAMFEATURE_PLAIN) {
+        c->state = CLIENTSTATE_SASLPLAIN;
+        return XMPP_ITER_GIVEPWD;
       }
-      if (stream.features & XMPP_STREAMFEATURE_SMACKS)
+      if (stream.features & XMPP_STREAMFEATURE_SMACKS) {
         c->todofeatures |= XMPP_STREAMFEATURE_SMACKS;
+      }
       if (stream.features & XMPP_STREAMFEATURE_BIND) {
         c->state = CLIENTSTATE_BIND;
         xmppFormatBindResource(&c->comp, 1, c->jid.resource);
@@ -1131,6 +1166,8 @@ static int xmppIterate(struct xmppClient *c) {
       }
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       return XMPP_ITER_READY;
+  }
+  if (!c->isnegotiationdone) {
   }
   Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
   if (c->parser.i == c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL) {
@@ -1154,8 +1191,10 @@ static int xmppIterate(struct xmppClient *c) {
       return XMPP_ITER_GIVEPWD;
     case CLIENTSTATE_SASLRESULT:
       assert(st->type == XMPP_STANZA_SASLSUCCESS);
-      assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
+      //assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
       AddFeature(c, XMPP_STREAMFEATURE_SCRAMSHA1);
+      memset(c->saslctx.p, 0, c->saslctx.n);
+      memset(&c->saslctx, 0, sizeof(c->saslctx));
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
