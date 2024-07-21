@@ -789,11 +789,26 @@ static int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
   return HasOverflowed(d, e);
 }
 
+static void FormatSaslPlain(struct xmppXmlComposer *c,
+                            struct xmppSaslContext *ctx,
+                            const char *user, const char *pwd) {
+  assert(ctx->state == XMPP_SASL_INITIALIZED);
+  size_t un = strlen(user), pn = strlen(pwd);
+  assert(1+un+1+pn <= ctx->n); // TODO: return error
+  ctx->p[0] = '\0';
+  memcpy(ctx->p+1, user, un);
+  ctx->p[un+1] = '\0';
+  memcpy(ctx->p+1+un+1, pwd, pn);
+  ctx->state = XMPP_SASL_CALCULATED;
+  FormatXml(c, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>%b</auth>", 1+un+1+pn, ctx->p);
+}
+
+
 #define xmppFormatStream(c, to) FormatXml(c, \
     "<?xml version='1.0'?>" \
     "<stream:stream xmlns='jabber:client'" \
     " version='1.0' xmlns:stream='http://etherx.jabber.org/streams'" \
-    " to='%s'>", to);
+    " to='%s'>", to)
 
 // For static XML we can directly call SafeStpCpy
 #define xmppFormatStartTls(c) FormatXml(c, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
@@ -1064,6 +1079,11 @@ static void AddFeature(struct xmppClient *c, int f) {
   //}
 }
 
+// bool isstanza -> send ack
+static int ReturnSend(int r) {
+  return XMPP_ITER_SEND;
+}
+
 // When SEND is returned, the complete out buffer (c->comp.p) with the
 // size specified in (c->comp.n) must be sent over the network before
 // another iteration is done. If c->comp.n is 0, you don't have to write
@@ -1082,9 +1102,8 @@ static int xmppIterate(struct xmppClient *c) {
   if (c->comp.n > 0)
     return XMPP_ITER_SEND;
   if (c->state == CLIENTSTATE_INIT) {
-      xmppFormatStream(&c->comp, c->jid.domain);
       c->state = CLIENTSTATE_STREAMSENT;
-      return XMPP_ITER_SEND;
+      return ReturnSend(xmppFormatStream(&c->comp, c->jid.domain));
   }
   if (c->state == CLIENTSTATE_STREAMSENT) {
       if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
@@ -1093,21 +1112,21 @@ static int xmppIterate(struct xmppClient *c) {
       }
       assert(r == 0);
       if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
-        xmppFormatStartTls(&c->comp);
         c->state = CLIENTSTATE_STARTTLS;
-        return XMPP_ITER_SEND;
+        return ReturnSend(xmppFormatStartTls(&c->comp));
       } else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
         xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
-        xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
         c->state = CLIENTSTATE_SASLINIT;
+        FormatSaslPlain(&c->comp, &c->saslctx, "admin", "adminpass");
+        //xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
         return XMPP_ITER_SEND;
       }
       if (stream.features & XMPP_STREAMFEATURE_SMACKS)
         c->todofeatures |= XMPP_STREAMFEATURE_SMACKS;
       if (stream.features & XMPP_STREAMFEATURE_BIND) {
+        c->state = CLIENTSTATE_BIND;
         xmppFormatBindResource(&c->comp, 1, c->jid.resource);
         xmppFormatAckEnable(&c->comp, true);
-        c->state = CLIENTSTATE_BIND;
         return XMPP_ITER_SEND;
       }
       c->state = CLIENTSTATE_ACCEPTSTANZA;
@@ -1341,6 +1360,29 @@ static void TestXml() {
   assert(FindElement("efailure", 8, "p=proceed f=failure") == '?');
   assert(FindElement("procee", 6, "p=proceed f=failure c=procee") == 'c');
 }
+
+//static int sock;
+//
+//static void IterateUntil(int ex) {
+//  int r = xmppIterate(&client);
+//  if (r == ex)
+//    return;
+//"<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>"
+//"<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='22c26b93-d844-47a5-a4ba-b8731c558245' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>"
+//"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
+//"<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
+//"<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
+//"<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>"
+//"<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='25414acb-6c9d-4fc0-a489-169d9a680ce8' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism><mechanism>SCRAM-SHA-1-PLUS</mechanism><mechanism>PLAIN</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>"
+//"<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>biwsbj1hZG1pbixyPTIwOEI5QjNGNTk0MTAyQTBEN0RDQTg5QzU1MjVGQ0FENTVEQTY4MkU1Njc2MTVFMzA4MDlGREZFMTE3NEJBMzU=</auth>"
+
+//}
+//
+//static void Test() {
+//  ExpectUntil("<stream:stream>");
+//  Send("<stream:stream>");
+//}
+
 
 int main() {
   puts("Starting tests");
