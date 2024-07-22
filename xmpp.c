@@ -317,11 +317,11 @@ struct xmppClient {
   struct xmppStanza stanza;
   struct xmppParser parser;
   struct xmppXmlComposer comp;
+  int opts;
   bool isnegotiationdone;
   int state;
   int disco;
-  int todofeatures;
-  int enabledfeatures;
+  int features;
   int actualsent, actualrecv;
   int sentacks, recvacks;
   int lastdisco, lastping;
@@ -1044,22 +1044,43 @@ static void MoveStanza(struct xmppParser *p) {
   c->actualsent++;
 }*/
 
-#define CLIENTSTATE_UNINIT 0
-#define CLIENTSTATE_INIT 1
-#define CLIENTSTATE_STREAMSENT 2
-#define CLIENTSTATE_STARTTLS 3
-#define CLIENTSTATE_SASLINIT 4
-#define CLIENTSTATE_SASLPWD 5
-#define CLIENTSTATE_SASLRESPONSE 6
-#define CLIENTSTATE_SASLRESULT 7
-#define CLIENTSTATE_BIND 8
-#define CLIENTSTATE_ACCEPTSTANZA 9
-#define CLIENTSTATE_SASLPLAIN 10
-#define CLIENTSTATE_SMACKS 11
+enum {
+  CLIENTSTATE_UNINIT = 0,
+  CLIENTSTATE_INIT,
+  CLIENTSTATE_STREAMSENT,
+  CLIENTSTATE_STARTTLS,
+  CLIENTSTATE_SASLINIT,
+  CLIENTSTATE_SASLPWD,
+  CLIENTSTATE_SASLRESPONSE,
+  CLIENTSTATE_SASLCHECKRESULT,
+  CLIENTSTATE_SASLPLAIN,
+  CLIENTSTATE_SASLRESULT,
+  CLIENTSTATE_BIND,
+  CLIENTSTATE_ACCEPTSTANZA,
+  CLIENTSTATE_SMACKS,
+};
+
+// Always emit stanzas (TLS and SASL negotiation not included).
+#define XMPP_OPT_EMITSTANZA (1 << 0) 
+// Security related:
+// By default all connections MUST go over TLS. For SASL, SCRAM is preferred but PLAIN is allowed.
+// TLS optional, SCRAM forced.
+#define XMPP_OPT_ALLOWUNENCRYPTED (1 << 1)
+// No TLS, SCRAM still forced.
+#define XMPP_OPT_FORCEUNENCRYPTED (1 << 2)
+// Force SCRAM, even over TLS.
+#define XMPP_OPT_FORCESCRAM (1 << 3)
+// Danger zone!!!
+// Allow PLAIN SASL, even without TLS.
+#define XMPP_OPT_ALLOWUNENCRYPTEDPLAIN (1 << 4)
+// Always force PLAIN SASL.
+#define XMPP_OPT_FORCEPLAIN (1 << 5)
 
 static void SendMessage(struct xmppClient *c, const char *to, const char *body) {
   xmppFormatMessage(&c->comp, to, 1, body);
-  xmppFormatAckRequest(&c->comp);
+  if (c->features & XMPP_STREAMFEATURE_SMACKS) {
+    xmppFormatAckRequest(&c->comp);
+  }
   c->actualsent++;
 }
 
@@ -1075,13 +1096,14 @@ static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) 
   if (c->state == CLIENTSTATE_SASLPWD) {
     xmppSolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
     xmppFormatSaslResponse(&c->comp, &c->saslctx);
+    c->state = CLIENTSTATE_SASLCHECKRESULT;
   } else if (c->state == CLIENTSTATE_SASLPLAIN) {
     MakeSaslPlain(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local, pwd);
     FormatSaslPlain(&c->comp, &c->saslctx);
+    c->state = CLIENTSTATE_SASLRESULT;
   } else {
     assert(false);
   }
-  c->state = CLIENTSTATE_SASLRESULT;
 }
 
 // finds the first occurance of c in s and returns the position after
@@ -1091,8 +1113,9 @@ static size_t FindNext(const char *s, char c) {
   return (f = strchr(s, c)) ? f - s + 1 : 0;
 }
 
-static void xmppInitClient(struct xmppClient *c, const char *jid) {
+static void xmppInitClient(struct xmppClient *c, const char *jid, int opts) {
   memset(c, 0, sizeof(*c));
+  c->opts = opts;
   c->state = CLIENTSTATE_INIT;
   c->parser.p = c->in;
   c->parser.c = sizeof(c->in);
@@ -1102,14 +1125,6 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
   memcpy(c->jid.local, jid, (c->jid.localn = d-1));
   memcpy(c->jid.domain, jid+d, (c->jid.domainn = r-d-1));
   memcpy(c->jid.resource, jid+r, (c->jid.resourcen = n-r));
-}
-
-// Stream feature f is enabled now.
-static void AddFeature(struct xmppClient *c, int f) {
-  c->enabledfeatures |= f;
-  //c->todofeatures &= ~f;
-  //if (!c->todofeatures)
-  //  c->isnegotiationdone = true;
 }
 
 // bool isstanza -> send ack
@@ -1144,22 +1159,21 @@ static int xmppIterate(struct xmppClient *c) {
       return XMPP_ITER_RECV;
     }
     assert(r == 0);
-    if (stream.features & XMPP_STREAMFEATURE_STARTTLS && !(c->enabledfeatures & XMPP_STREAMFEATURE_STARTTLS)) {
+    if (stream.features & XMPP_STREAMFEATURE_STARTTLS && !(c->features & XMPP_STREAMFEATURE_STARTTLS)) {
       c->state = CLIENTSTATE_STARTTLS;
       return ReturnSend(xmppFormatStartTls(&c->comp));
-      // TODO: make a flag in xmppInitClient where a sasl method can be preferred
-    //} else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
-    //  xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
-    //  c->state = CLIENTSTATE_SASLINIT;
-    //  xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
-    //  return XMPP_ITER_SEND;
+    }
+    if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1 && !(c->opts & XMPP_OPT_FORCEPLAIN)) {
+      xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
+      c->state = CLIENTSTATE_SASLINIT;
+      xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
+      return XMPP_ITER_SEND;
     } else if (stream.features & XMPP_STREAMFEATURE_PLAIN) {
       c->state = CLIENTSTATE_SASLPLAIN;
       return XMPP_ITER_GIVEPWD;
     }
-    Log("%d", stream.features);
     if (stream.features & XMPP_STREAMFEATURE_SMACKS)
-      c->todofeatures |= XMPP_STREAMFEATURE_SMACKS;
+      c->features |= XMPP_STREAMFEATURE_SMACKS;
     assert(stream.features & XMPP_STREAMFEATURE_BIND);
     c->state = CLIENTSTATE_BIND;
     return ReturnSend(xmppFormatBindResource(&c->comp,  c->jid.resource));
@@ -1175,8 +1189,8 @@ static int xmppIterate(struct xmppClient *c) {
     switch (c->state) {
     case CLIENTSTATE_STARTTLS:
       if (st->type == XMPP_STANZA_STARTTLSPROCEED) {
+        c->features |= XMPP_STREAMFEATURE_STARTTLS;
         c->state = CLIENTSTATE_INIT;
-        AddFeature(c, XMPP_STREAMFEATURE_STARTTLS);
         return XMPP_ITER_STARTTLS;
       }
       break;
@@ -1184,18 +1198,22 @@ static int xmppIterate(struct xmppClient *c) {
       assert(st->type == XMPP_STANZA_SASLCHALLENGE);
       c->state = CLIENTSTATE_SASLPWD;
       return XMPP_ITER_GIVEPWD;
+    case CLIENTSTATE_SASLCHECKRESULT:
+      assert(st->type == XMPP_STANZA_SASLSUCCESS);
+      assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
+      memset(c->saslctx.p, 0, c->saslctx.n);
+      memset(&c->saslctx, 0, sizeof(c->saslctx));
+      c->state = CLIENTSTATE_INIT;
+      return XMPP_ITER_OK;
     case CLIENTSTATE_SASLRESULT:
       assert(st->type == XMPP_STANZA_SASLSUCCESS);
-      //assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
-      AddFeature(c, XMPP_STREAMFEATURE_SCRAMSHA1);
       memset(c->saslctx.p, 0, c->saslctx.n);
       memset(&c->saslctx, 0, sizeof(c->saslctx));
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
       // TODO: check if returned bind address is either empty or the same as c->jid
-      AddFeature(c, XMPP_STREAMFEATURE_BIND);
-      if (c->todofeatures & XMPP_STREAMFEATURE_SMACKS) {
+      if (c->features & XMPP_STREAMFEATURE_SMACKS) {
         c->state = CLIENTSTATE_SMACKS;
         return ReturnSend(xmppFormatAckEnable(&c->comp, true));
       }
@@ -1203,12 +1221,14 @@ static int xmppIterate(struct xmppClient *c) {
       c->isnegotiationdone = true;
       return XMPP_ITER_READY;
     case CLIENTSTATE_SMACKS:
-      AddFeature(c, XMPP_STREAMFEATURE_SMACKS);
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
       return XMPP_ITER_READY;
     }
+    assert(false);
   }
+  if (c->features & XMPP_STREAMFEATURE_SMACKS)
+    c->actualrecv++;
   switch (st->type) {
   case XMPP_STANZA_PING:
     FormatXml(&c->comp, "<iq to='%x' id='%x' type='result'/>", st->from, st->id);
@@ -1290,7 +1310,7 @@ static void CleanupTls() {
 static void SendAll() {
   int n, i = 0;
   do {
-    if (client.enabledfeatures & XMPP_STREAMFEATURE_STARTTLS)
+    if (client.features & XMPP_STREAMFEATURE_STARTTLS)
       n = mbedtls_ssl_write(&ssl, client.comp.p+i, client.comp.n-i);
     else
       n = mbedtls_net_send(&server_fd, client.comp.p+i, client.comp.n-i);
@@ -1311,7 +1331,7 @@ static bool HasDataAvailable() {
 
 static void TestClient() {
   SetupTls("localhost", "5222");
-  xmppInitClient(&client, "admin@localhost/resource");
+  xmppInitClient(&client, "admin@localhost/resource", XMPP_OPT_FORCEPLAIN);
   bool sent = false;
   int r;
   for (;;) {
@@ -1336,7 +1356,7 @@ static void TestClient() {
       // fallthrough
     case XMPP_ITER_RECV:
       Log("Waiting for recv...");
-      if (client.enabledfeatures & XMPP_STREAMFEATURE_STARTTLS)
+      if (client.features & XMPP_STREAMFEATURE_STARTTLS)
         r = mbedtls_ssl_read(&ssl, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
       else
         r = mbedtls_net_recv(&server_fd, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
