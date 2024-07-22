@@ -14,6 +14,7 @@ Uses:
 Goals:
 - Run on embedded (support for ESP-IDF (ESP32) & (hopefully) pico-sdk (Raspberry Pi
   Pico [W])).
+- Be portable to any OS. Empower any system to connect to XMPP networks.
 - Support non-embedded (Desktop, etc.) too.
 - Be compatible with the major XMPP servers (Prosody guaranteed).
 - Don't allow unusual or malicious data sent from a server.

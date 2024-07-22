@@ -136,7 +136,8 @@ const char *xmppErrToStr(int e) {
   (XMPP_STREAMFEATURE_SCRAMSHA1 | XMPP_STREAMFEATURE_SCRAMSHA1PLUS |   \
    XMPP_STREAMFEATURE_PLAIN)
 
-#define XMPP_DISCO_REGISTER (1 << 0)
+#define XMPP_DISCO_DONE (1 << 0)
+#define XMPP_DISCO_REGISTER (1 << 1)
 
 #define XMPP_STANZA_EMPTY 0
 #define XMPP_STANZA_MESSAGE 1
@@ -631,9 +632,10 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
     } else if (!strcmp(p->x.elem, "sm")) {
       if (!ParseAttribute(p, &attr) || strcmp(p->x.attr, "xmlns"))
         longjmp(p->jb, XMPP_EXML);
-      if (!strcmp(attr.p, "urn:xmpp:sm:3"))
+      if (!strncmp(attr.p, "urn:xmpp:sm:3", attr.rawn))
         ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_SMACKS);
-      SkipUnknownXml(p);
+      else
+        SkipUnknownXml(p);
     } else if (!strcmp(p->x.elem, "bind")) {
       ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_BIND);
     } else {
@@ -987,10 +989,10 @@ static void MoveStanza(struct xmppParser *p) {
 
 // TODO: better way to do this?
 // res: string or NULL if you want the server to generate it
-#define xmppFormatBindResource(c, id, res) \
+#define xmppFormatBindResource(c, res) \
   FormatXml(c, \
-      "<iq id='bind%d' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
-      id, !res, !!res, res)
+      "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
+      !res, !!res, res)
 
 // XEP-0199: XMPP Ping
 
@@ -1053,6 +1055,7 @@ static void MoveStanza(struct xmppParser *p) {
 #define CLIENTSTATE_BIND 8
 #define CLIENTSTATE_ACCEPTSTANZA 9
 #define CLIENTSTATE_SASLPLAIN 10
+#define CLIENTSTATE_SMACKS 11
 
 static void SendMessage(struct xmppClient *c, const char *to, const char *body) {
   xmppFormatMessage(&c->comp, to, 1, body);
@@ -1104,9 +1107,9 @@ static void xmppInitClient(struct xmppClient *c, const char *jid) {
 // Stream feature f is enabled now.
 static void AddFeature(struct xmppClient *c, int f) {
   c->enabledfeatures |= f;
-  //if (c->enabledfeatures & c->requiredfeatures) {
+  //c->todofeatures &= ~f;
+  //if (!c->todofeatures)
   //  c->isnegotiationdone = true;
-  //}
 }
 
 // bool isstanza -> send ack
@@ -1136,38 +1139,30 @@ static int xmppIterate(struct xmppClient *c) {
       return ReturnSend(xmppFormatStream(&c->comp, c->jid.domain));
   }
   if (c->state == CLIENTSTATE_STREAMSENT) {
-      if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
-        MoveStanza(&c->parser);
-        return XMPP_ITER_RECV;
-      }
-      assert(r == 0);
-      if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
-        assert(!(c->enabledfeatures & XMPP_STREAMFEATURE_STARTTLS));
-        c->state = CLIENTSTATE_STARTTLS;
-        return ReturnSend(xmppFormatStartTls(&c->comp));
-        // TODO: make a flag in xmppInitClient where a sasl method can be preferred
-      //} else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
-      //  xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
-      //  c->state = CLIENTSTATE_SASLINIT;
-      //  xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
-      //  return XMPP_ITER_SEND;
-      } else if (stream.features & XMPP_STREAMFEATURE_PLAIN) {
-        c->state = CLIENTSTATE_SASLPLAIN;
-        return XMPP_ITER_GIVEPWD;
-      }
-      if (stream.features & XMPP_STREAMFEATURE_SMACKS) {
-        c->todofeatures |= XMPP_STREAMFEATURE_SMACKS;
-      }
-      if (stream.features & XMPP_STREAMFEATURE_BIND) {
-        c->state = CLIENTSTATE_BIND;
-        xmppFormatBindResource(&c->comp, 1, c->jid.resource);
-        xmppFormatAckEnable(&c->comp, true);
-        return XMPP_ITER_SEND;
-      }
-      c->state = CLIENTSTATE_ACCEPTSTANZA;
-      return XMPP_ITER_READY;
-  }
-  if (!c->isnegotiationdone) {
+    if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
+      MoveStanza(&c->parser);
+      return XMPP_ITER_RECV;
+    }
+    assert(r == 0);
+    if (stream.features & XMPP_STREAMFEATURE_STARTTLS && !(c->enabledfeatures & XMPP_STREAMFEATURE_STARTTLS)) {
+      c->state = CLIENTSTATE_STARTTLS;
+      return ReturnSend(xmppFormatStartTls(&c->comp));
+      // TODO: make a flag in xmppInitClient where a sasl method can be preferred
+    //} else if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1) {
+    //  xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
+    //  c->state = CLIENTSTATE_SASLINIT;
+    //  xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
+    //  return XMPP_ITER_SEND;
+    } else if (stream.features & XMPP_STREAMFEATURE_PLAIN) {
+      c->state = CLIENTSTATE_SASLPLAIN;
+      return XMPP_ITER_GIVEPWD;
+    }
+    Log("%d", stream.features);
+    if (stream.features & XMPP_STREAMFEATURE_SMACKS)
+      c->todofeatures |= XMPP_STREAMFEATURE_SMACKS;
+    assert(stream.features & XMPP_STREAMFEATURE_BIND);
+    c->state = CLIENTSTATE_BIND;
+    return ReturnSend(xmppFormatBindResource(&c->comp,  c->jid.resource));
   }
   Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
   if (c->parser.i == c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL) {
@@ -1198,13 +1193,21 @@ static int xmppIterate(struct xmppClient *c) {
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
-      assert(st->type == XMPP_STANZA_BINDJID);
+      // TODO: check if returned bind address is either empty or the same as c->jid
+      AddFeature(c, XMPP_STREAMFEATURE_BIND);
+      if (c->todofeatures & XMPP_STREAMFEATURE_SMACKS) {
+        c->state = CLIENTSTATE_SMACKS;
+        return ReturnSend(xmppFormatAckEnable(&c->comp, true));
+      }
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
-      AddFeature(c, XMPP_STREAMFEATURE_BIND);
-      return XMPP_ITER_OK; // TODO: will we include smacks with the negotiation?
+      return XMPP_ITER_READY;
+    case CLIENTSTATE_SMACKS:
+      AddFeature(c, XMPP_STREAMFEATURE_SMACKS);
+      c->state = CLIENTSTATE_ACCEPTSTANZA;
+      c->isnegotiationdone = true;
+      return XMPP_ITER_READY;
     }
-    assert(false);
   }
   switch (st->type) {
   case XMPP_STANZA_PING:
@@ -1231,6 +1234,7 @@ static int xmppIterate(struct xmppClient *c) {
 }
 
 #ifdef XMPP_RUNTEST
+// TODO: move this to test.c and #include "xmpp.c"
 
 #include <sys/poll.h>
 
