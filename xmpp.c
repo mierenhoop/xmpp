@@ -155,6 +155,7 @@ const char *xmppErrToStr(int e) {
 #define XMPP_STANZA_DISCOREQ 11
 #define XMPP_STANZA_DISCORESP 12
 #define XMPP_STANZA_PING 13
+#define XMPP_STANZA_RESUMED 14
 
 #define XMPP_FAILURE_ABORTED                (1 << 0)
 #define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
@@ -309,7 +310,7 @@ struct xmppSaslContext {
 // xmppIterate.
 struct xmppClient {
   struct BetterJid jid;
-  char smackid[XMPP_CONFIG_MAX_SMACKID_SIZE],
+  char smackid[XMPP_CONFIG_MAX_SMACKID_SIZE+1],
       in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
   size_t smackidn;
   char saslbuf[2000];
@@ -1058,6 +1059,7 @@ enum {
   CLIENTSTATE_BIND,
   CLIENTSTATE_ACCEPTSTANZA,
   CLIENTSTATE_SMACKS,
+  CLIENTSTATE_RESUME,
 };
 
 // Always emit stanzas (TLS and SASL negotiation not included).
@@ -1066,7 +1068,7 @@ enum {
 // By default all connections MUST go over TLS. For SASL, SCRAM is preferred but PLAIN is allowed.
 // TLS optional, SCRAM forced.
 #define XMPP_OPT_ALLOWUNENCRYPTED (1 << 1)
-// No TLS, SCRAM still forced.
+// No TLS, SCRAM forced.
 #define XMPP_OPT_FORCEUNENCRYPTED (1 << 2)
 // Force SCRAM, even over TLS.
 #define XMPP_OPT_FORCESCRAM (1 << 3)
@@ -1075,6 +1077,11 @@ enum {
 #define XMPP_OPT_ALLOWUNENCRYPTEDPLAIN (1 << 4)
 // Always force PLAIN SASL.
 #define XMPP_OPT_FORCEPLAIN (1 << 5)
+// End danger zone.
+
+#define XMPP_OPT_DISABLESMACKS (1 << 6)
+
+#define XMPP_OPT_DISABLERESUME (1 << 7)
 
 static void SendMessage(struct xmppClient *c, const char *to, const char *body) {
   xmppFormatMessage(&c->comp, to, 1, body);
@@ -1104,6 +1111,12 @@ static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) 
   } else {
     assert(false);
   }
+}
+
+static void xmppResume(struct xmppClient *c) {
+  c->state = CLIENTSTATE_INIT;
+  c->comp.n = 0;
+  assert(c->cansmackresume);
 }
 
 // finds the first occurance of c in s and returns the position after
@@ -1159,21 +1172,38 @@ static int xmppIterate(struct xmppClient *c) {
       return XMPP_ITER_RECV;
     }
     assert(r == 0);
-    if (stream.features & XMPP_STREAMFEATURE_STARTTLS && !(c->features & XMPP_STREAMFEATURE_STARTTLS)) {
-      c->state = CLIENTSTATE_STARTTLS;
-      return ReturnSend(xmppFormatStartTls(&c->comp));
+    if (!(c->features & XMPP_STREAMFEATURE_STARTTLS) && !(c->opts & XMPP_OPT_FORCEUNENCRYPTED)) {
+      if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
+        c->state = CLIENTSTATE_STARTTLS;
+        return ReturnSend(xmppFormatStartTls(&c->comp));
+      } else if (!(c->opts & XMPP_OPT_ALLOWUNENCRYPTED)) {
+        // return XMPP_ENEGOTIATE
+        assert(false);
+      }
     }
-    if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1 && !(c->opts & XMPP_OPT_FORCEPLAIN)) {
-      xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
-      c->state = CLIENTSTATE_SASLINIT;
-      xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
-      return XMPP_ITER_SEND;
-    } else if (stream.features & XMPP_STREAMFEATURE_PLAIN) {
-      c->state = CLIENTSTATE_SASLPLAIN;
-      return XMPP_ITER_GIVEPWD;
+    // TODO: maybe for muc or register we don't always need SASL
+    if (!(c->features & XMPP_STREAMFEATUREMASK_SASL)) {
+      // TODO: -PLUS
+      if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1 && !(c->opts & XMPP_OPT_FORCEPLAIN)) {
+        xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
+        c->state = CLIENTSTATE_SASLINIT;
+        xmppFormatSaslInitialMessage(&c->comp, &c->saslctx);
+        return XMPP_ITER_SEND;
+      } else if (stream.features & XMPP_STREAMFEATURE_PLAIN &&
+               !(c->opts & XMPP_OPT_FORCESCRAM) &&
+               (c->features & XMPP_STREAMFEATURE_STARTTLS ||
+                c->opts & XMPP_OPT_ALLOWUNENCRYPTEDPLAIN)) {
+        c->state = CLIENTSTATE_SASLPLAIN;
+        return XMPP_ITER_GIVEPWD;
+      }
+      assert(false);
     }
-    if (stream.features & XMPP_STREAMFEATURE_SMACKS)
-      c->features |= XMPP_STREAMFEATURE_SMACKS;
+    if (!(stream.features & XMPP_STREAMFEATURE_SMACKS)) {
+      c->opts |= XMPP_OPT_DISABLESMACKS;
+    } else if (c->smackidn) {
+      c->state = CLIENTSTATE_RESUME;
+      return ReturnSend(xmppFormatAckResume(&c->comp, c->actualrecv, c->smackid));
+    }
     assert(stream.features & XMPP_STREAMFEATURE_BIND);
     c->state = CLIENTSTATE_BIND;
     return ReturnSend(xmppFormatBindResource(&c->comp,  c->jid.resource));
@@ -1203,17 +1233,21 @@ static int xmppIterate(struct xmppClient *c) {
       assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
       memset(c->saslctx.p, 0, c->saslctx.n);
       memset(&c->saslctx, 0, sizeof(c->saslctx));
+      c->features |= XMPP_STREAMFEATURE_SCRAMSHA1;
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_SASLRESULT:
       assert(st->type == XMPP_STANZA_SASLSUCCESS);
       memset(c->saslctx.p, 0, c->saslctx.n);
       memset(&c->saslctx, 0, sizeof(c->saslctx));
+      c->features |= XMPP_STREAMFEATURE_PLAIN;
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
+      assert(st->type == XMPP_STANZA_BINDJID);
       // TODO: check if returned bind address is either empty or the same as c->jid
-      if (c->features & XMPP_STREAMFEATURE_SMACKS) {
+      if (!(c->opts & XMPP_OPT_DISABLESMACKS)) {
+        c->features |= XMPP_STREAMFEATURE_SMACKS;
         c->state = CLIENTSTATE_SMACKS;
         return ReturnSend(xmppFormatAckEnable(&c->comp, true));
       }
@@ -1222,6 +1256,10 @@ static int xmppIterate(struct xmppClient *c) {
       return XMPP_ITER_READY;
     case CLIENTSTATE_SMACKS:
       c->state = CLIENTSTATE_ACCEPTSTANZA;
+      c->isnegotiationdone = true;
+      return XMPP_ITER_READY;
+    case CLIENTSTATE_RESUME:
+      assert(st->type == XMPP_STANZA_RESUMED);
       c->isnegotiationdone = true;
       return XMPP_ITER_READY;
     }
@@ -1238,7 +1276,8 @@ static int xmppIterate(struct xmppClient *c) {
     if (st->smacksenabled.id.p) {
       assert(st->smacksenabled.id.rawn <= sizeof(c->smackid));
       memcpy(c->smackid, st->smacksenabled.id.p, st->smacksenabled.id.rawn);
-      c->cansmackresume = st->smacksenabled.resume;
+      if (!(c->opts & XMPP_OPT_DISABLESMACKS))
+        c->cansmackresume = st->smacksenabled.resume;
     }
     break;
   case XMPP_STANZA_ACKANSWER:
