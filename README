@@ -2,7 +2,9 @@ Notice
 > In this stage of the project, superior ways-of-doing-things might be
   found in the near future which can make the API unstable. The code
   also needs more real-world- and unit-tests, so do not use this for
-  critical production software. Please report any bugs when found.
+  critical production software. Also, do not dynamically link with the
+  expectation you can swap with a newer version. Please report any bugs
+  when found.
 
 Uses:
 - Instant messenger for the paranoid.
@@ -37,16 +39,17 @@ XEP-0368 (Direct TLS): Undecided.
 XEP-0030 (Service Discovery): Partial, full not planned.
 XEP-0115 (Entity Capabilities): Partial planned.
 XEP-0163 (Personal Eventing Protocol): Undecided.
-XEP-0245 (The /me Command): Full planned.
-XEP-0084 (User Avatar): Undecided.
-XEP-0054 (vcard-temp): Undecided.
-XEP-0280 (Message Carbons): Full planned.
-XEP-0191 (Blocking Command): Full planned.
+XEP-0245 (The /me Command): Responsibility of client.
+XEP-0084 (User Avatar): Responsibility of client.
+XEP-0054 (vcard-temp): Responsibility of client.
+XEP-0280 (Message Carbons): Responsibility of client.
+XEP-0191 (Blocking Command): Responsibility of client.
 XEP-0045 (Multi-User Chat): Planned.
 XEP-0249 (Direct MUC Invitations): Full planned.
-XEP-0198 (Stream Management): Partial, full planned.
-XEP-0184 (Message Delivery Receipts): Full planned.
-XEP-0363 (HTTP File Upload): Not planned.
+XEP-0198 (Stream Management): Mostly.
+- Location and (C->S) max attributes not supported.
+XEP-0184 (Message Delivery Receipts): Responsibility of client.
+XEP-0363 (HTTP File Upload): Responsibility of client.
 
 Dependencies:
 - MbedTLS

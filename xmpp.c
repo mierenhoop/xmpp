@@ -214,9 +214,15 @@ struct xmppFailure {
 //  type = XMPP_STANZA_FAILURE, field = failure
 //  type = XMPP_STANZA_BINDJID, field = bindjid
 //  etc.
+// Example:
+//  <iq><ping/></iq>
+//  outer = <iq><ping/></iq>
+//  inner = <ping/>
+// TODO: implement the above using a modified XML parser.
 struct xmppStanza {
   int type;
   struct xmppXmlSlice id, from, to;
+  struct xmppXmlSlice outer, inner;
   union {
     struct xmppFailure failure;
     struct xmppXmlSlice saslchallenge;
@@ -1083,6 +1089,18 @@ enum {
 
 #define XMPP_OPT_DISABLERESUME (1 << 7)
 
+// TODO: when buffer is not large enough, do not change any state in the
+// client and return an error, when Iterate is called again it is either
+// expected the buffer has grown or the error has been handled either by
+// ignoring the to-be-sent message or sending an stanza/stream error
+// (using some utility function akin to xmppSupplyPassword). When the
+// buffer has grown and not other error handling is done, calling
+// Iterate again should try again.
+// bool isstanza -> send ack
+static int ReturnSend(struct xmppClient *c, int r) {
+  return XMPP_ITER_SEND;
+}
+
 static void SendMessage(struct xmppClient *c, const char *to, const char *body) {
   xmppFormatMessage(&c->comp, to, 1, body);
   if (c->features & XMPP_STREAMFEATURE_SMACKS) {
@@ -1115,6 +1133,7 @@ static void xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) 
 
 static void xmppResume(struct xmppClient *c) {
   c->state = CLIENTSTATE_INIT;
+  c->features &= ~(XMPP_STREAMFEATURE_STARTTLS | XMPP_STREAMFEATUREMASK_SASL);
   c->comp.n = 0;
   assert(c->cansmackresume);
 }
@@ -1140,11 +1159,6 @@ static void xmppInitClient(struct xmppClient *c, const char *jid, int opts) {
   memcpy(c->jid.resource, jid+r, (c->jid.resourcen = n-r));
 }
 
-// bool isstanza -> send ack
-static int ReturnSend(int r) {
-  return XMPP_ITER_SEND;
-}
-
 // When SEND is returned, the complete out buffer (c->comp.p) with the
 // size specified in (c->comp.n) must be sent over the network before
 // another iteration is done. If c->comp.n is 0, you don't have to write
@@ -1163,8 +1177,8 @@ static int xmppIterate(struct xmppClient *c) {
   if (c->comp.n > 0)
     return XMPP_ITER_SEND;
   if (c->state == CLIENTSTATE_INIT) {
-      c->state = CLIENTSTATE_STREAMSENT;
-      return ReturnSend(xmppFormatStream(&c->comp, c->jid.domain));
+    c->state = CLIENTSTATE_STREAMSENT;
+    return ReturnSend(xmppFormatStream(&c->comp, c->jid.domain));
   }
   if (c->state == CLIENTSTATE_STREAMSENT) {
     if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
@@ -1245,7 +1259,8 @@ static int xmppIterate(struct xmppClient *c) {
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
       assert(st->type == XMPP_STANZA_BINDJID);
-      // TODO: check if returned bind address is either empty or the same as c->jid
+      // TODO: check if returned bind address is either empty or the same as
+      // c->jid, maybe put the new resource into c->jid.resource
       if (!(c->opts & XMPP_OPT_DISABLESMACKS)) {
         c->features |= XMPP_STREAMFEATURE_SMACKS;
         c->state = CLIENTSTATE_SMACKS;
@@ -1274,7 +1289,7 @@ static int xmppIterate(struct xmppClient *c) {
     return XMPP_ITER_OK;
   case XMPP_STANZA_SMACKSENABLED:
     if (st->smacksenabled.id.p) {
-      assert(st->smacksenabled.id.rawn <= sizeof(c->smackid));
+      assert(st->smacksenabled.id.rawn < sizeof(c->smackid));
       memcpy(c->smackid, st->smacksenabled.id.p, st->smacksenabled.id.rawn);
       if (!(c->opts & XMPP_OPT_DISABLESMACKS))
         c->cansmackresume = st->smacksenabled.resume;
@@ -1282,13 +1297,10 @@ static int xmppIterate(struct xmppClient *c) {
     break;
   case XMPP_STANZA_ACKANSWER:
     // return XMPP_ITER_UPTODATE
-    //assert(st->ack == c->actualsent);
-    Log("Ack succeeded!");
     break;
   default:
     return XMPP_ITER_STANZA;
   }
-  //assert(false);
   return XMPP_ITER_READY;
 }
 
@@ -1463,33 +1475,59 @@ static void TestXml() {
   assert(FindElement("procee", 6, "p=proceed f=failure c=procee") == 'c');
 }
 
-//static int sock;
-//
-//static void IterateUntil(int ex) {
-//  int r = xmppIterate(&client);
-//  if (r == ex)
-//    return;
-//"<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>"
-//"<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='22c26b93-d844-47a5-a4ba-b8731c558245' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>"
-//"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
-//"<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
-//"<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>"
-//"<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>"
-//"<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='25414acb-6c9d-4fc0-a489-169d9a680ce8' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism><mechanism>SCRAM-SHA-1-PLUS</mechanism><mechanism>PLAIN</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>"
-//"<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>biwsbj1hZG1pbixyPTIwOEI5QjNGNTk0MTAyQTBEN0RDQTg5QzU1MjVGQ0FENTVEQTY4MkU1Njc2MTVFMzA4MDlGREZFMTE3NEJBMzU=</auth>"
+static void ExpectUntil(int goal, const char *exp) {
+  for (;;) {
+    int r = xmppIterate(&client);
+    if (goal && r == goal)
+      return;
+    switch (r) {
+    case XMPP_ITER_SEND:
+      if (strncmp(client.comp.p, exp, client.comp.n)) {
+        Log("Expected %s, but got %.*s", exp, (int)client.comp.n, client.comp.p);
+        assert(false);
+      }
+      exp += client.comp.n;
+      client.comp.n = 0;
+      break;
+    case XMPP_ITER_READY:
+    case XMPP_ITER_RECV:
+      return;
+    }
+  }
+}
 
-//}
-//
-//static void Test() {
-//  ExpectUntil("<stream:stream>");
-//  Send("<stream:stream>");
-//}
+static void Send(const char *s) {
+  strcpy(client.parser.p+client.parser.n, s);
+  client.parser.n += strlen(s);
+}
+
+static void Test() {
+  xmppInitClient(&client, "admin@localhost/resource", XMPP_OPT_FORCEPLAIN);
+  ExpectUntil(0, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
+  Send("<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='some-stream-id' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>");
+  ExpectUntil(0, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
+  Send("<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
+  ExpectUntil(XMPP_ITER_STARTTLS, "");
+  ExpectUntil(0, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
+  Send("<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='some-stream-id-2' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism><mechanism>SCRAM-SHA-1-PLUS</mechanism><mechanism>PLAIN</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>");
+  ExpectUntil(XMPP_ITER_GIVEPWD, "");
+  xmppSupplyPassword(&client, "adminpass", 9);
+  ExpectUntil(0, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>AGFkbWluAGFkbWlucGFzcw==</auth>");
+  Send("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>");
+  ExpectUntil(0, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
+  Send("<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='8824a41e-dca3-4770-888f-493f858ce800' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><required/></bind><session xmlns='urn:ietf:params:xml:ns:xmpp-session'><optional/></session><sub xmlns='urn:xmpp:features:pre-approval'/><c ver='WmLhVdPgNBF2TJv5X+4p6F0IMeM=' hash='sha-1' xmlns='http://jabber.org/protocol/caps' node='http://prosody.im'/><ver xmlns='urn:xmpp:features:rosterver'/><csi xmlns='urn:xmpp:csi:0'/><sm xmlns='urn:xmpp:sm:2'><optional/></sm><sm xmlns='urn:xmpp:sm:3'><optional/></sm></stream:features>");
+  ExpectUntil(0, "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>resource</resource></bind></iq>");
+  Send("<iq type='result' id='bind'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>admin@localhost/resource</jid></bind></iq>");
+  ExpectUntil(0, "<enable xmlns='urn:xmpp:sm:3' resume='true'/>");
+  Send("<enabled resume='true' max='600' xmlns='urn:xmpp:sm:3' id='sm-id'/>");
+}
 
 
 int main() {
   puts("Starting tests");
   TestClient();
-  TestXml();
+  //TestXml();
+  //Test();
   puts("All tests passed");
   return 0;
 }
