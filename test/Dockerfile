@@ -8,4 +8,5 @@ expose 5222
 workdir /var/lib/prosody
 user prosody
 run prosodyctl register admin localhost adminpass
+run prosodyctl register user localhost userpass
 cmd /usr/bin/prosody -F

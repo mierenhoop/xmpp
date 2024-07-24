@@ -16,12 +16,15 @@
 #include <sys/poll.h>
 #include <stdbool.h>
 
+#include "xmpp.h"
+#include "cacert.inc"
+
+#define Log(fmt, ...) printf(fmt "\n" __VA_OPT__(,) __VA_ARGS__)
+
 #define DB_FILE "o/im.db"
 
 static sqlite3 *db;
-
-static char *command;
-static size_t commandsz;
+static struct xmppClient client;
 
 static void AddMessage(const char *body, int id) {
   static sqlite3_stmt *stmt;
@@ -55,8 +58,10 @@ static void InitializeConn(const char *server, const char *port) {
   mbedtls_entropy_init(&conn.entropy);
   assert(mbedtls_ctr_drbg_seed(&conn.ctr_drbg, mbedtls_entropy_func,
                                &conn.entropy, NULL, 0) == 0);
-  assert(mbedtls_x509_crt_parse_file(
-             &conn.cacert, "/etc/ssl/certs/ca-certificates.crt") >= 0);
+  //assert(mbedtls_x509_crt_parse_file(
+  //           &conn.cacert, "/etc/ssl/certs/ca-certificates.crt") >= 0);
+  assert(mbedtls_x509_crt_parse(&conn.cacert, cacert_pem, cacert_pem_len) >=
+         0);
   assert(mbedtls_ssl_set_hostname(&conn.ssl, server) == 0);
   assert(mbedtls_ssl_config_defaults(&conn.conf, MBEDTLS_SSL_IS_CLIENT,
                                      MBEDTLS_SSL_TRANSPORT_STREAM,
@@ -73,10 +78,6 @@ static void InitializeConn(const char *server, const char *port) {
                       mbedtls_net_recv, NULL);
 }
 
-static void HandleCommand() {
-  getline(&command, &commandsz, stdin);
-}
-
 static bool Poll() {
   struct pollfd fds[2] = {0};
   fds[0].fd = STDIN_FILENO;
@@ -85,31 +86,92 @@ static bool Poll() {
   fds[1].events = POLLIN;
   int r = poll(fds, 2, -1);
   assert(r >= 0);
-  if (fds[0].revents & POLLIN) {
-    HandleCommand();
+  if (fds[0].revents & POLLIN)
     return false;
-  }
   if (fds[1].revents & POLLIN)
     return true;
   assert(false);
 }
 
-// TODO: make this the main thread/proc and put all complete message
-// strings in a pipe for the thread/fork which handles all xmpp state.
+static void SendAll() {
+  int n, i = 0;
+  do {
+    if (client.features & XMPP_STREAMFEATURE_STARTTLS)
+      n = mbedtls_ssl_write(&conn.ssl, client.comp.p+i, client.comp.n-i);
+    else
+      n = mbedtls_net_send(&conn.server_fd, client.comp.p+i, client.comp.n-i);
+    i += n;
+  } while (n > 0);
+  client.comp.n = 0;
+  memset(client.comp.p, 0, client.comp.c); // just in case
+}
+
+static void Handshake() {
+  int r;
+  while ((r = mbedtls_ssl_handshake(&conn.ssl)) != 0)
+    assert(r == MBEDTLS_ERR_SSL_WANT_READ ||
+           r == MBEDTLS_ERR_SSL_WANT_WRITE);
+  assert(mbedtls_ssl_get_verify_result(&conn.ssl) == 0);
+}
+
+static void IterateClient() {
+  int r;
+  for (;;) {
+    switch ((r = xmppIterate(&client))) {
+    case XMPP_ITER_SEND:
+      Log("Out: \e[32m%.*s\e[0m", (int)client.comp.n, client.comp.p);
+      SendAll();
+      break;
+    case XMPP_ITER_READY:
+      if (!Poll())
+        return;
+      // fallthrough
+    case XMPP_ITER_RECV:
+      Log("Waiting for recv...");
+      if (client.features & XMPP_STREAMFEATURE_STARTTLS)
+        r = mbedtls_ssl_read(&conn.ssl, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
+      else
+        r = mbedtls_net_recv(&conn.server_fd, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
+      assert(r >= 0);
+      client.parser.n += r;
+      Log("In:  \e[34m%.*s\e[0m", (int)client.parser.n, client.parser.p);
+      break;
+    case XMPP_ITER_STARTTLS:
+      Handshake();
+      break;
+    case XMPP_ITER_GIVEPWD:
+      xmppSupplyPassword(&client, "adminpass");
+      break;
+    case XMPP_ITER_STANZA:
+      break;
+    case XMPP_ITER_OK:
+    default:
+      break;
+    }
+  }
+}
+
 static void Loop() {
   char *line = NULL, *msgbody;
   size_t n;
-  while (getline(&line, &n, stdin) != -1) {
-    // if (!strncmp(line, "/msg ", 5)) {
-    //   msgbody = line+5;
-    //   AddMessage(msgbody, 0);
-    // }
-    if (line[0] != '\n') {
-      AddMessage(line, 0);
-      mbedtls_net_send(&conn.server_fd, line, strlen(line));
-      puts("message sent!");
-    }
+  xmppInitClient(&client, "admin@localhost/resource", 0);
+  for (;;) {
+    IterateClient();
+    getline(&line, &n, stdin);
+    xmppSendMessage(&client, "admin@localhost", "hello there!");
   }
+
+  //while (getline(&line, &n, stdin) != -1) {
+  //  // if (!strncmp(line, "/msg ", 5)) {
+  //  //   msgbody = line+5;
+  //  //   AddMessage(msgbody, 0);
+  //  // }
+  //  if (line[0] != '\n') {
+  //    AddMessage(line, 0);
+  //    mbedtls_net_send(&conn.server_fd, line, strlen(line));
+  //    puts("message sent!");
+  //  }
+  //}
   free(line);
 }
 
@@ -120,7 +182,7 @@ int main() {
   rc = sqlite3_exec(db, "create table if not exists message(id, body)",
                     NULL, NULL, NULL);
   assert(rc == SQLITE_OK);
-  InitializeConn("localhost", "10444"); // $ nc -l -p 10444
+  InitializeConn("localhost", "5222"); // $ nc -l -p 10444
   Loop();
   sqlite3_close(db);
 }
