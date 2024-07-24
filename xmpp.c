@@ -111,6 +111,9 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
 
 #define XMPP_ESASLBUF -5
 
+#define XMPP_ENEGOTIATE -6
+#define XMPP_ESTATE -7
+
 const char *xmppErrToStr(int e) {
   switch (e) {
   case XMPP_EMEM: return "XMPP_EMEM";
@@ -264,7 +267,7 @@ struct xmppParser {
 struct xmppStream {
   struct xmppXmlSlice from, to, id;
   int features;
-  int optionalfeatures;
+  //int optionalfeatures;
   int requiredfeatures;
   bool hasunknownrequired; // TODO: make this an error?
 };
@@ -400,6 +403,7 @@ static void GetXmlContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   bool stop = false;
   struct xmppXmlSlice attr;
   memset(slc, 0, sizeof(*slc));
+  slc->type = XMPP_SLICE_CONT;
   while (ParseAttribute(p, &attr)) {}
   while (p->i < p->n) {
     if (!slc->p) {
@@ -497,17 +501,14 @@ static void ParseCommonStanzaAttributes(struct xmppParser *p, struct xmppStanza 
   }
 }
 
-// TODO: have new yxml state per stanza, this is only because if a stanza is partial
-// we want to ignore it and let the user decide if it needs to get more data from server
-// and read it again, the yxml would be messed up for reading again
-// maybe this is not needed.
-// But right now if we want to correctly detect </stream:stream>, the new yxml state should
-// start with <stream:stream>
 int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
   int r;
   int i = p->i;
   struct xmppXmlSlice attr, cont;
   memset(st, 0, sizeof(*st));
+  yxml_init(&p->x, p->xbuf, sizeof(p->xbuf));
+  for (const char *pre = "<stream:stream>"; *pre; pre++)
+    yxml_parse(&p->x, *pre);
   // TODO: put back the initialization of stream:stream
   if ((r = setjmp(p->jb))) {
     memset(st, 0, sizeof(*st));
@@ -575,6 +576,8 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
       }
       SkipUnknownXml(p);
     }
+  } else {
+    SkipUnknownXml(p);
   }
   st->raw.rawn = st->raw.n = p->i - i;
   return 0;
@@ -584,7 +587,7 @@ static void ParseOptionalRequired(struct xmppParser *p, struct xmppStream *s, in
   s->features |= flag;
   while (ParseElement(p)) {
     if (!strcmp(p->x.elem, "optional"))
-      s->optionalfeatures |= flag;
+      {} //s->optionalfeatures |= flag;
     else if (!strcmp(p->x.elem, "required"))
       s->requiredfeatures |= flag;
     else
@@ -987,9 +990,11 @@ int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, c
 // moves both the next stanza and the [i]ndex to the beginning of the
 // buffer, overwriting all previous data.
 static void MoveStanza(struct xmppParser *p) {
-  p->n = p->n - p->i;
-  memmove(p->p, p->p + p->i, p->n);
-  p->i = 0;
+  if (p->i) {
+    p->n = p->n - p->i;
+    memmove(p->p, p->p + p->i, p->n);
+    p->i = 0;
+  }
 }
 
 #define xmppFormatIq(c, type, from, to, id, fmt, ...) FormatXml(c, "<iq" \
@@ -1034,7 +1039,6 @@ static void MoveStanza(struct xmppParser *p) {
 // A stanza was read. You can access the stanza in c->stanza, it will be valid up until the next call of Iterate.
 #define XMPP_ITER_STANZA   1
 // Data should be sent and received.
-// TODO: rename to TRANSFER or NET
 #define XMPP_ITER_SEND 2
 // TLS handshake must be done now.
 #define XMPP_ITER_STARTTLS 3
@@ -1047,8 +1051,6 @@ static void MoveStanza(struct xmppParser *p) {
 #define XMPP_ITER_GIVEPWD 5
 
 #define XMPP_ITER_RECV 6
-
-#define XMPP_ITER_SASLFAIL -10
 
 /*static void SendDisco(struct xmppClient *c) {
   int disco = c->lastdisco + 1;
@@ -1099,14 +1101,9 @@ enum {
 // service-unavailable and not responding to message delivery receipts.
 #define XMPP_OPT_HIDEPRESENCE (1 << 8)
 
-// TODO: when buffer is not large enough, do not change any state in the
-// client and return an error, when Iterate is called again it is either
-// expected the buffer has grown or the error has been handled either by
-// ignoring the to-be-sent message or sending an stanza/stream error
-// (using some utility function akin to xmppSupplyPassword). When the
-// buffer has grown and not other error handling is done, calling
-// Iterate again should try again.
-// bool isstanza -> send ack
+// Don't authenticate (for e.g. In-Band Registration).
+#define XMPP_OPT_NOAUTH (1 << 9)
+
 static int SendStanzaTrail(struct xmppClient *c) {
   int r;
   if (c->features & XMPP_STREAMFEATURE_SMACKS &&
@@ -1115,15 +1112,12 @@ static int SendStanzaTrail(struct xmppClient *c) {
   return XMPP_ITER_SEND;
 }
 
-static int SendMessage(struct xmppClient *c, const char *to, const char *body) {
+static int SendMessage(struct xmppClient *c, const char *to,
+                       const char *body) {
   int r;
-  if ((r = xmppFormatMessage(&c->comp, to, 1, body)))
+  if ((r = xmppFormatMessage(&c->comp, to, 1, body)) ||
+      (r = SendStanzaTrail(c)))
     return r;
-  if (c->features & XMPP_STREAMFEATURE_SMACKS) {
-    // TODO: use SendStanzaTrail
-    if ((r = xmppFormatAckRequest(&c->comp)))
-      return r;
-  }
   c->actualsent++;
   return 0;
 }
@@ -1131,7 +1125,8 @@ static int SendMessage(struct xmppClient *c, const char *to, const char *body) {
 static int SendPing(struct xmppClient *c, const char *to) {
   int r;
   int ping = c->lastping + 1;
-  if ((r = xmppFormatPing(&c->comp, to, ping)))
+  if ((r = xmppFormatPing(&c->comp, to, ping)) ||
+      (r = SendStanzaTrail(c)))
     return r;
   c->lastping = ping;
   c->actualsent++;
@@ -1152,17 +1147,18 @@ static int xmppSupplyPassword(struct xmppClient *c, const char *pwd, size_t n) {
       return r;
     c->state = CLIENTSTATE_SASLRESULT;
   } else {
-    assert(false);
-    // return XMPP_ESTATE;
+    return XMPP_ESTATE;
   }
   return 0;
 }
 
-static void xmppResume(struct xmppClient *c) {
+static bool xmppResume(struct xmppClient *c) {
+  if (!c->cansmackresume)
+    return false;
   c->state = CLIENTSTATE_INIT;
   c->features &= ~(XMPP_STREAMFEATURE_STARTTLS | XMPP_STREAMFEATUREMASK_SASL);
   c->comp.n = 0;
-  assert(c->cansmackresume);
+  return true;
 }
 
 // finds the first occurance of c in s and returns the position after
@@ -1186,6 +1182,17 @@ static void xmppInitClient(struct xmppClient *c, const char *jid, int opts) {
   memcpy(c->jid.resource, jid+r, (c->jid.resourcen = n-r));
 }
 
+// Called when error returned from Format* so that the error can be
+// resolved and the stanza/stream can be reused. We can either choose to
+// make a reuse flag so that the reading won't be done again OR we can
+// set back the parser pointer so that the reading will be done again,
+// this might be easier but requires we re-initialize the yxml context
+// for every new stanza.
+static int ReturnRetry(struct xmppClient *c, int r) {
+  c->parser.i = 0;
+  return r;
+}
+
 // When SEND is returned, the complete out buffer (c->comp.p) with the
 // size specified in (c->comp.n) must be sent over the network before
 // another iteration is done. If c->comp.n is 0, you don't have to write
@@ -1197,7 +1204,7 @@ static void xmppInitClient(struct xmppClient *c, const char *jid, int opts) {
 static int xmppIterate(struct xmppClient *c) {
   struct xmppStanza *st = &c->stanza;
   struct xmppStream stream;
-  int r;
+  int r = 0;
   // always return SEND if the out buffer is not returned, do not
   // try caching to avoid prematurely filling up the entire buffer. Let
   // the OS/network stack handle caching.
@@ -1205,35 +1212,33 @@ static int xmppIterate(struct xmppClient *c) {
     return XMPP_ITER_SEND;
   if (c->state == CLIENTSTATE_INIT) {
     if ((r = xmppFormatStream(&c->comp, c->jid.domain)))
-      return r;
+      return ReturnRetry(c, r);
     c->state = CLIENTSTATE_STREAMSENT;
     return XMPP_ITER_SEND;
   }
   if (c->state == CLIENTSTATE_STREAMSENT) {
-    // TODO: only if not handled
-    if (c->parser.i == c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
-      MoveStanza(&c->parser);
+    MoveStanza(&c->parser);
+    if (!c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
       return XMPP_ITER_RECV;
     }
-    assert(r == 0);
+    if (r)
+      return r;
     if (!(c->features & XMPP_STREAMFEATURE_STARTTLS) && !(c->opts & XMPP_OPT_FORCEUNENCRYPTED)) {
       if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
         if ((r = xmppFormatStartTls(&c->comp)))
-          return r;
+          return ReturnRetry(c, r);
         c->state = CLIENTSTATE_STARTTLS;
         return XMPP_ITER_SEND;
       } else if (!(c->opts & XMPP_OPT_ALLOWUNENCRYPTED)) {
-        // return XMPP_ENEGOTIATE
-        assert(false);
+        return XMPP_ENEGOTIATE;
       }
     }
-    // TODO: maybe for muc or register we don't always need SASL
-    if (!(c->features & XMPP_STREAMFEATUREMASK_SASL)) {
+    if (!(c->opts & XMPP_OPT_NOAUTH) && !(c->features & XMPP_STREAMFEATUREMASK_SASL)) {
       // TODO: -PLUS
       if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1 && !(c->opts & XMPP_OPT_FORCEPLAIN)) {
         xmppInitSaslContext(&c->saslctx, c->saslbuf, sizeof(c->saslbuf), c->jid.local);
         if ((r = xmppFormatSaslInitialMessage(&c->comp, &c->saslctx)))
-          return r;
+          return ReturnRetry(c, r);
         c->state = CLIENTSTATE_SASLINIT;
         return XMPP_ITER_SEND;
       } else if (stream.features & XMPP_STREAMFEATURE_PLAIN &&
@@ -1243,30 +1248,30 @@ static int xmppIterate(struct xmppClient *c) {
         c->state = CLIENTSTATE_SASLPLAIN;
         return XMPP_ITER_GIVEPWD;
       }
-      assert(false);
+      return XMPP_ENEGOTIATE;
     }
     if (!(stream.features & XMPP_STREAMFEATURE_SMACKS)) {
       c->opts |= XMPP_OPT_DISABLESMACKS;
     } else if (c->smackidn) {
       if ((r = xmppFormatAckResume(&c->comp, c->actualrecv, c->smackid)))
-        return r;
+        return ReturnRetry(c, r);
       c->state = CLIENTSTATE_RESUME;
       return XMPP_ITER_SEND;
     }
     assert(stream.features & XMPP_STREAMFEATURE_BIND);
     if ((r = xmppFormatBindResource(&c->comp,  c->jid.resource)))
-      return r;
+      return ReturnRetry(c, r);
     c->state = CLIENTSTATE_BIND;
     return XMPP_ITER_SEND;
   }
-  Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
+  MoveStanza(&c->parser);
+  if (c->parser.n) Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
   // TODO: if previous stanza handled only then read.
-  if (c->parser.i == c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL) {
-    MoveStanza(&c->parser); // TODO: Here we are aggressive with memmoving the stanzas, we could be more lax.
+  if (!c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL) {
     return c->isnegotiationdone ? XMPP_ITER_READY : XMPP_ITER_RECV;
   }
-  assert(r == 0);
-  //c->actualrecv++;
+  if (r)
+    return r;
   if (!c->isnegotiationdone) {
     switch (c->state) {
     case CLIENTSTATE_STARTTLS:
@@ -1301,24 +1306,24 @@ static int xmppIterate(struct xmppClient *c) {
       // c->jid, maybe put the new resource into c->jid.resource
       if (!(c->opts & XMPP_OPT_DISABLESMACKS)) {
         if ((r = xmppFormatAckEnable(&c->comp, true)))
-          return r;
+          return ReturnRetry(c, r);
         c->features |= XMPP_STREAMFEATURE_SMACKS;
         c->state = CLIENTSTATE_SMACKS;
         return XMPP_ITER_SEND;
       }
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
-      return XMPP_ITER_READY;
+      return XMPP_ITER_OK;
     case CLIENTSTATE_SMACKS:
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
-      return XMPP_ITER_READY;
+      return XMPP_ITER_OK;
     case CLIENTSTATE_RESUME:
       assert(st->type == XMPP_STANZA_RESUMED);
       c->isnegotiationdone = true;
-      return XMPP_ITER_READY;
+      return XMPP_ITER_OK;
     }
-    assert(false);
+    return XMPP_ESTATE;
   }
   if (c->features & XMPP_STREAMFEATURE_SMACKS)
     c->actualrecv++;
@@ -1339,7 +1344,7 @@ static int xmppIterate(struct xmppClient *c) {
     break;
   case XMPP_STANZA_ACKANSWER:
     // return XMPP_ITER_UPTODATE
-    break;
+    return XMPP_ITER_OK;
   default:
     return XMPP_ITER_STANZA;
   }
@@ -1569,7 +1574,7 @@ int main() {
   puts("Starting tests");
   TestClient();
   //TestXml();
-  //Test();
+  Test();
   puts("All tests passed");
   return 0;
 }
