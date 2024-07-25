@@ -1032,20 +1032,19 @@ int xmppIterate(struct xmppClient *c) {
       c->state = CLIENTSTATE_INIT;
       return XMPP_ITER_OK;
     case CLIENTSTATE_BIND:
+      // TODO: smacks is not really part of negotiation, I think. So we must
+      // take in account there might be messages sent to us before the stream
+      // is enabled.
       assert(st->type == XMPP_STANZA_BINDJID);
       // TODO: check if returned bind address is either empty or the same as
       // c->jid, maybe put the new resource into c->jid.resource
       if (!(c->opts & XMPP_OPT_DISABLESMACKS)) {
         if ((r = xmppFormatAckEnable(&c->comp, true)))
           return ReturnRetry(c, r);
-        c->features |= XMPP_STREAMFEATURE_SMACKS;
-        c->state = CLIENTSTATE_SMACKS;
+        c->state = CLIENTSTATE_ACCEPTSTANZA;
+        c->isnegotiationdone = true;
         return XMPP_ITER_SEND;
       }
-      c->state = CLIENTSTATE_ACCEPTSTANZA;
-      c->isnegotiationdone = true;
-      return XMPP_ITER_OK;
-    case CLIENTSTATE_SMACKS:
       c->state = CLIENTSTATE_ACCEPTSTANZA;
       c->isnegotiationdone = true;
       return XMPP_ITER_OK;
@@ -1066,6 +1065,7 @@ int xmppIterate(struct xmppClient *c) {
     c->actualsent++;
     return XMPP_ITER_OK;
   case XMPP_STANZA_SMACKSENABLED:
+    c->features |= XMPP_STREAMFEATURE_SMACKS;
     if (st->smacksenabled.id.p) {
       assert(st->smacksenabled.id.rawn < sizeof(c->smackid));
       memcpy(c->smackid, st->smacksenabled.id.p, st->smacksenabled.id.rawn);

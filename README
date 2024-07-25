@@ -6,6 +6,11 @@ Notice
   expectation you can swap with a newer version. Please report any bugs
   when found.
 
+This library only supports the bare minimum framework for keeping track
+of an XMPP session. The `im.c` example shows how additional
+functionality can be used in combination with the library. The example
+is not a feature complete instant messenger.
+
 Uses:
 - Instant messenger for the paranoid.
 - Iot.

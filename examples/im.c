@@ -19,12 +19,20 @@
 #include "xmpp.h"
 #include "cacert.inc"
 
-#define Log(fmt, ...) printf(fmt "\n" __VA_OPT__(,) __VA_ARGS__)
+#if 0
+#define Log(fmt, ...) fprintf(log, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
+#else
+#define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
+#endif
 
 #define DB_FILE "o/im.db"
 
+static char *logdata;
+static size_t logdatan;
+static FILE *log;
 static sqlite3 *db;
 static struct xmppClient client;
+static char pass[1024];
 
 static void AddMessage(const char *body, int id) {
   static sqlite3_stmt *stmt;
@@ -140,7 +148,8 @@ static void IterateClient() {
       Handshake();
       break;
     case XMPP_ITER_GIVEPWD:
-      xmppSupplyPassword(&client, "adminpass");
+      xmppSupplyPassword(&client, pass);
+      bzero(pass, sizeof(pass));
       break;
     case XMPP_ITER_STANZA:
       break;
@@ -151,38 +160,60 @@ static void IterateClient() {
   }
 }
 
+static bool HandleCommand(char *cmd) {
+  static char jid[3074];
+  cmd[strlen(cmd)-1] = '\0'; // Remove the trailing newline
+  if (!strncmp("/login ", cmd, 7)) {
+    if (!client.state) {
+      assert(sscanf(cmd+7, "%3074s %1024s", jid, pass) == 2);
+      strcat(jid, "/resource");
+      xmppInitClient(&client, jid, 0);
+      puts("Logging in...");
+      return true;
+    } else {
+      puts("Log out first.");
+    }
+  } else if (!strcmp("/log", cmd)) {
+    fflush(log);
+    printf("Printing log:\n%d %s\n", (int)logdatan, logdata);
+  } else if (!strcmp("/help", cmd)) {
+    puts("Try: /login jid password");
+  } else if (strlen(cmd)) {
+    if (!client.state) {
+      puts("Can not send messages yet.\nTry: /login jid password");
+    } else {
+      xmppSendMessage(&client, "admin@localhost", cmd);
+    }
+  }
+  return false;
+}
+
 static void Loop() {
   char *line = NULL, *msgbody;
   size_t n;
-  xmppInitClient(&client, "admin@localhost/resource", 0);
+  for (;;) {
+    assert(getline(&line, &n, stdin) > 0);
+    if (HandleCommand(line))
+      break;
+  }
   for (;;) {
     IterateClient();
-    getline(&line, &n, stdin);
-    xmppSendMessage(&client, "admin@localhost", "hello there!");
+    assert(getline(&line, &n, stdin) > 0);
+    HandleCommand(line);
   }
-
-  //while (getline(&line, &n, stdin) != -1) {
-  //  // if (!strncmp(line, "/msg ", 5)) {
-  //  //   msgbody = line+5;
-  //  //   AddMessage(msgbody, 0);
-  //  // }
-  //  if (line[0] != '\n') {
-  //    AddMessage(line, 0);
-  //    mbedtls_net_send(&conn.server_fd, line, strlen(line));
-  //    puts("message sent!");
-  //  }
-  //}
   free(line);
 }
 
 int main() {
+  log = open_memstream(&logdata, &logdatan);
+  assert(log);
   unlink(DB_FILE);
   int rc = sqlite3_open(DB_FILE, &db);
   assert(rc == SQLITE_OK);
   rc = sqlite3_exec(db, "create table if not exists message(id, body)",
                     NULL, NULL, NULL);
   assert(rc == SQLITE_OK);
-  InitializeConn("localhost", "5222"); // $ nc -l -p 10444
+  InitializeConn("localhost", "5222");
   Loop();
   sqlite3_close(db);
 }

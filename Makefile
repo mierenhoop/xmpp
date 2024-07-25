@@ -19,7 +19,7 @@ test: o/test
 	./o/test
 
 runim: o/im
-	./o/im
+	rlwrap ./o/im
 
 prosody:
 	docker-compose -f test/docker-compose.yml up -d --build

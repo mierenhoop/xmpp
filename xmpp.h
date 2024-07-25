@@ -77,6 +77,7 @@ struct xmppXmlSlice {
 // returned when SASL negotiation starts, xmppSupplyPassword will perform the SASL calculations. To strengthen security, the password is not stored in plaintext inside the xmppClient, also after calling said function, the buffer in the `pwd` argument should be zero'd.
 #define XMPP_ITER_GIVEPWD 5
 #define XMPP_ITER_RECV 6
+#define XMPP_ITER_NEGOTIATIONDONE  7
 
 #define XMPP_SASL_INITIALIZED 1
 #define XMPP_SASL_CALCULATED 2
