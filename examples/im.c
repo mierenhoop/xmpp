@@ -32,7 +32,14 @@ static size_t logdatan;
 static FILE *log;
 static sqlite3 *db;
 static struct xmppClient client;
-static char pass[1024];
+static char *line;
+static size_t linen;
+
+static void Die() {
+  free(line);
+  sqlite3_close(db);
+  exit(0);
+}
 
 static void AddMessage(const char *body, int id) {
   static sqlite3_stmt *stmt;
@@ -122,8 +129,24 @@ static void Handshake() {
   assert(mbedtls_ssl_get_verify_result(&conn.ssl) == 0);
 }
 
+static char *GetLine() {
+  if (getline(&line, &linen, stdin) <= 0)
+    Die();
+  line[strlen(line)-1] = '\0'; // Remove the trailing newline
+  return line;
+}
+
+static void GivePassword() {
+  char *pwd;
+  printf("Password? ");
+  pwd = GetLine();
+  xmppSupplyPassword(&client, pwd);
+  explicit_bzero(pwd, strlen(pwd));
+}
+
 static void IterateClient() {
   int r;
+  static int sent = 0;
   for (;;) {
     switch ((r = xmppIterate(&client))) {
     case XMPP_ITER_SEND:
@@ -131,6 +154,14 @@ static void IterateClient() {
       SendAll();
       break;
     case XMPP_ITER_READY:
+      Log("Polling...");
+      if (!sent) {
+        //FormatXml(&client.comp, "<iq xmlns='jabber:client' type='set' id='carbon'><enable xmlns='urn:xmpp:carbons:2'/></iq>");
+        //FormatXml(&client.comp, "<presence/>");
+        xmppFormatStanza(&client, "<presence/>");
+        sent = 1;
+        continue;
+      }
       if (!Poll())
         return;
       // fallthrough
@@ -148,24 +179,27 @@ static void IterateClient() {
       Handshake();
       break;
     case XMPP_ITER_GIVEPWD:
-      xmppSupplyPassword(&client, pass);
-      bzero(pass, sizeof(pass));
+      GivePassword();
       break;
     case XMPP_ITER_STANZA:
       break;
     case XMPP_ITER_OK:
     default:
+      if (r < 0) {
+        puts("Error encountered");
+        Die();
+      }
       break;
     }
   }
 }
 
-static bool HandleCommand(char *cmd) {
+static bool HandleCommand() {
   static char jid[3074];
-  cmd[strlen(cmd)-1] = '\0'; // Remove the trailing newline
+  const char *cmd = GetLine();
   if (!strncmp("/login ", cmd, 7)) {
     if (!client.state) {
-      assert(sscanf(cmd+7, "%3074s %1024s", jid, pass) == 2);
+      strcpy(jid, cmd+7);
       strcat(jid, "/resource");
       xmppInitClient(&client, jid, 0);
       puts("Logging in...");
@@ -182,7 +216,7 @@ static bool HandleCommand(char *cmd) {
     if (!client.state) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
-      xmppSendMessage(&client, "admin@localhost", cmd);
+      xmppSendMessage(&client, "user@localhost", cmd);
     }
   }
   return false;
@@ -192,14 +226,12 @@ static void Loop() {
   char *line = NULL, *msgbody;
   size_t n;
   for (;;) {
-    assert(getline(&line, &n, stdin) > 0);
-    if (HandleCommand(line))
+    if (HandleCommand())
       break;
   }
   for (;;) {
     IterateClient();
-    assert(getline(&line, &n, stdin) > 0);
-    HandleCommand(line);
+    HandleCommand();
   }
   free(line);
 }
@@ -215,5 +247,5 @@ int main() {
   assert(rc == SQLITE_OK);
   InitializeConn("localhost", "5222");
   Loop();
-  sqlite3_close(db);
+  Die();
 }

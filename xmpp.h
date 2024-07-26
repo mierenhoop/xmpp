@@ -104,8 +104,6 @@ struct xmppXmlSlice {
 #define XMPP_STANZA_BINDJID 5
 #define XMPP_STANZA_SMACKSENABLED 6
 #define XMPP_STANZA_STARTTLSPROCEED 7
-// server can't send ack request
-//#define XMPP_STANZA_ACKREQUEST 7
 #define XMPP_STANZA_ACKANSWER 8
 #define XMPP_STANZA_SASLSUCCESS 9
 #define XMPP_STANZA_SASLCHALLENGE 10
@@ -113,6 +111,7 @@ struct xmppXmlSlice {
 #define XMPP_STANZA_DISCORESP 12
 #define XMPP_STANZA_PING 13
 #define XMPP_STANZA_RESUMED 14
+#define XMPP_STANZA_ACKREQUEST 15
 
 #define XMPP_FAILURE_ABORTED                (1 << 0)
 #define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
@@ -186,7 +185,7 @@ struct xmppStanza {
   };
 };
 
-struct Jid {
+struct xmppJid {
   size_t localn, domainn, resourcen;
   char local[1024], domain[1024], resource[1024];
 };
@@ -226,6 +225,7 @@ struct xmppParser {
 
 // i = current end pos of xml
 // n = size of buffer in p
+// c = capacity of buffer in p
 struct xmppXmlComposer {
   char *p;
   size_t n, c;
@@ -234,7 +234,7 @@ struct xmppXmlComposer {
 // stanza is valid after XMPP_ITER_STANZA and until the next call of
 // xmppIterate.
 struct xmppClient {
-  struct Jid jid;
+  struct xmppJid jid;
   char smackid[XMPP_CONFIG_MAX_SMACKID_SIZE+1],
       in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
   size_t smackidn;
@@ -255,7 +255,26 @@ struct xmppClient {
   bool cansmackresume;
 };
 
+static inline int xmppIncrementAck(struct xmppClient *c, int r) {
+  if (r)
+    return r;
+  c->actualsent++;
+  return 0;
+}
+
+#define xmppFormatStanza(c, fmt, ...) xmppIncrementAck(c, FormatXml(&(c)->comp, fmt "[<r xmlns='urn:xmpp:sm:3'/>]" __VA_OPT__(,)  __VA_ARGS__, ((c)->features & XMPP_STREAMFEATURE_SMACKS)))
+
+int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...);
+
+struct StaticData {
+  const char in[1], out[1], sasl[1];
+};
+
 void xmppInitClient(struct xmppClient *c, const char *jid, int opts);
+
+static inline void xmppInitStatic(struct xmppClient *c, struct StaticData *d) {
+}
+
 int xmppIterate(struct xmppClient *c);
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd);
 int xmppSendMessage(struct xmppClient *c, const char *to, const char *body);

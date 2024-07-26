@@ -41,20 +41,10 @@ XMPP Compliance:
 RFC-6120 (Core): Partial.
 RFC-7590 (TLS): Partial, full planned.
 XEP-0368 (Direct TLS): Undecided.
-XEP-0030 (Service Discovery): Partial, full not planned.
-XEP-0115 (Entity Capabilities): Partial planned.
-XEP-0163 (Personal Eventing Protocol): Undecided.
-XEP-0245 (The /me Command): Responsibility of client.
-XEP-0084 (User Avatar): Responsibility of client.
-XEP-0054 (vcard-temp): Responsibility of client.
-XEP-0280 (Message Carbons): Responsibility of client.
-XEP-0191 (Blocking Command): Responsibility of client.
-XEP-0045 (Multi-User Chat): Planned.
-XEP-0249 (Direct MUC Invitations): Full planned.
 XEP-0198 (Stream Management): Mostly.
 - Location and (C->S) max attributes not supported.
-XEP-0184 (Message Delivery Receipts): Responsibility of client.
-XEP-0363 (HTTP File Upload): Responsibility of client.
+XEP-0199 (XMPP Ping): Partial.
+- Received ping's are returned unless disabled.
 
 Dependencies:
 - MbedTLS

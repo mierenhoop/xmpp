@@ -296,6 +296,9 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
     longjmp(p->jb, XMPP_EXML);
   if (!strcmp(p->x.elem, "a")) {
     ReadAckAnswer(p, st);
+  } else if (!strcmp(p->x.elem, "r")) {
+    st->type = XMPP_STANZA_ACKREQUEST;
+    SkipUnknownXml(p);
   } else if (!strcmp(p->x.elem, "enabled")) {
     st->type = XMPP_STANZA_SMACKSENABLED;
     while (ParseAttribute(p, &attr)) {
@@ -560,7 +563,7 @@ static char *Itoa(char *d, char *e, int i) {
 // - %b: Base64 string, first arg is len and second is raw data
 // - %d: integer
 // - %x: xmppXmlSlice to encoded XML
-static int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
+int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
   va_list ap;
   struct xmppXmlSlice slc;
   size_t n;
@@ -1043,6 +1046,7 @@ int xmppIterate(struct xmppClient *c) {
           return ReturnRetry(c, r);
         c->state = CLIENTSTATE_ACCEPTSTANZA;
         c->isnegotiationdone = true;
+        c->features |= XMPP_STREAMFEATURE_SMACKS; // TODO
         return XMPP_ITER_SEND;
       }
       c->state = CLIENTSTATE_ACCEPTSTANZA;
@@ -1076,6 +1080,10 @@ int xmppIterate(struct xmppClient *c) {
   case XMPP_STANZA_ACKANSWER:
     // return XMPP_ITER_UPTODATE
     return XMPP_ITER_OK;
+  case XMPP_STANZA_ACKREQUEST:
+    if ((r = xmppFormatAckAnswer(&c->comp, c->actualrecv)))
+      return r;
+    return XMPP_ITER_SEND;
   default:
     return XMPP_ITER_STANZA;
   }
