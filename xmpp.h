@@ -28,7 +28,7 @@ struct xmppXmlSlice {
 
 // The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.
 #define XMPP_EMEM -1
-// Some input from the input buffer is either malformed XML or does not follow the XMPP specification.
+// Some input from the input buffer is malformed XML.
 #define XMPP_EXML -2
 // MbedTls cryptography-related functions failed. (Could also be failed malloc done by MbedTls)
 #define XMPP_ECRYPTO -3
@@ -37,6 +37,9 @@ struct xmppXmlSlice {
 #define XMPP_ESASLBUF -5
 #define XMPP_ENEGOTIATE -6
 #define XMPP_ESTATE -7
+#define XMPP_EPASS -8
+// XML does not follow XMPP spec.
+#define XMPP_ESPEC -9
 
 // Always emit stanzas (TLS and SASL negotiation not included).
 #define XMPP_OPT_EMITSTANZA (1 << 0) 
@@ -112,6 +115,8 @@ struct xmppXmlSlice {
 #define XMPP_STANZA_PING 13
 #define XMPP_STANZA_RESUMED 14
 #define XMPP_STANZA_ACKREQUEST 15
+#define XMPP_STANZA_FAILURE 16
+#define XMPP_STANZA_STREAMEND 17
 
 #define XMPP_FAILURE_ABORTED                (1 << 0)
 #define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
@@ -197,7 +202,7 @@ struct xmppJid {
 // https://wiki.xmpp.org/web/SASL_Authentication_and_SCRAM#In_detail
 // feel free to realloc p if malloc'ed: ctx.p = realloc(ctx.p, (ctx.n*=2))
 struct xmppSaslContext {
-  int state;
+  int state; // TODO: we might not need this
   char *p;
   size_t n;
   size_t initialmsg;

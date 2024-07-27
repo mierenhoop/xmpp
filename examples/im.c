@@ -178,6 +178,9 @@ static void IterateClient() {
     case XMPP_ITER_STARTTLS:
       Handshake();
       break;
+    case XMPP_EPASS:
+      puts("Password was wrong.");
+      Die();
     case XMPP_ITER_GIVEPWD:
       GivePassword();
       break;
