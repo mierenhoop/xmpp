@@ -40,6 +40,8 @@ struct xmppXmlSlice {
 #define XMPP_EPASS -8
 // XML does not follow XMPP spec.
 #define XMPP_ESPEC -9
+// Resource binding at specified address has not succeeded.
+#define XMPP_EBIND -10
 
 // Always emit stanzas (TLS and SASL negotiation not included).
 #define XMPP_OPT_EMITSTANZA (1 << 0) 
@@ -65,8 +67,8 @@ struct xmppXmlSlice {
 // Don't authenticate (for e.g. In-Band Registration).
 #define XMPP_OPT_NOAUTH (1 << 9)
 
-// Nothing should be done, make another call to xmppIterate.
-#define XMPP_ITER_OK 0
+// Don't call xmppIterate again.
+#define XMPP_ITER_STREAMEND 0
 // A stanza was read. You can access the stanza in c->stanza, it will be valid up until the next call of Iterate.
 #define XMPP_ITER_STANZA   1
 // Data should be sent and received.
@@ -81,6 +83,8 @@ struct xmppXmlSlice {
 #define XMPP_ITER_GIVEPWD 5
 #define XMPP_ITER_RECV 6
 #define XMPP_ITER_NEGOTIATIONDONE  7
+// Nothing should be done, make another call to xmppIterate.
+#define XMPP_ITER_OK 8
 
 #define XMPP_SASL_INITIALIZED 1
 #define XMPP_SASL_CALCULATED 2
@@ -117,6 +121,7 @@ struct xmppXmlSlice {
 #define XMPP_STANZA_ACKREQUEST 15
 #define XMPP_STANZA_FAILURE 16
 #define XMPP_STANZA_STREAMEND 17
+#define XMPP_STANZA_ERROR 18
 
 #define XMPP_FAILURE_ABORTED                (1 << 0)
 #define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
