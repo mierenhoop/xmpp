@@ -49,6 +49,19 @@ static char *DecodeBase64(char *d, char *e, const char *s, size_t n) {
   return d+n;
 }
 
+// Check if some user provided string u with size n matches a constant
+// string c. This function is useful for when n is not constant. It is
+// reasonable to compare XML strings using this, however we expect that
+// there are no useless entities or CDATA.
+// Returns true if matches, be careful it's the opposite of strcmp.
+static bool StrictStrEqual(const char *c, const char *u, size_t n) {
+  while (--n) {
+    if (!c || *c++ != *u++)
+      return false;
+  }
+  return !c[1] && !n;
+}
+
 // if (s.p && (d = calloc(s.n+1))) xmppReadXmlSlice(d, s);
 // TODO: have specific impl for this?
 // TODO: we can skip the whole prefix initialization since that is
@@ -311,8 +324,8 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
       if (!strcmp(p->x.attr, "id")) {
         memcpy(&st->smacksenabled.id, &attr, sizeof(attr));
       } else if (!strcmp(p->x.attr, "resume")) {
-        st->smacksenabled.resume = !strncmp(attr.p, "true", attr.rawn)
-          || !strncmp(attr.p, "1", attr.rawn);
+        st->smacksenabled.resume = StrictStrEqual("true", attr.p, attr.rawn) ||
+                                   StrictStrEqual("1", attr.p, attr.rawn);
       }
     }
     SkipUnknownXml(p);
@@ -429,17 +442,18 @@ int xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
         if (strcmp(p->x.elem, "mechanism"))
           longjmp(p->jb, XMPP_ESPEC);
         GetXmlContent(p, &mech);
-        if (!strncmp(mech.p, "SCRAM-SHA-1", mech.n)) // TODO: mech.rawn
+        if (StrictStrEqual("SCRAM-SHA-1", mech.p, mech.rawn))
           s->features |= XMPP_STREAMFEATURE_SCRAMSHA1;
-        else if (!strncmp(mech.p, "SCRAM-SHA-1-PLUS", mech.n)) // TODO: mech.rawn
+        else if (StrictStrEqual("SCRAM-SHA-1-PLUS", mech.p, mech.rawn))
           s->features |= XMPP_STREAMFEATURE_SCRAMSHA1PLUS;
-        else if (!strncmp(mech.p, "PLAIN", mech.n)) // TODO: mech.rawn
+        else if (StrictStrEqual("PLAIN", mech.p, mech.rawn))
           s->features |= XMPP_STREAMFEATURE_PLAIN;
+        Log("%d", s->features);
       }
     } else if (!strcmp(p->x.elem, "sm")) {
       if (!ParseAttribute(p, &attr) || strcmp(p->x.attr, "xmlns"))
         longjmp(p->jb, XMPP_ESPEC);
-      if (!strncmp(attr.p, "urn:xmpp:sm:3", attr.rawn))
+      if (StrictStrEqual("urn:xmpp:sm:3", attr.p, attr.rawn))
         ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_SMACKS);
       else
         SkipUnknownXml(p);
@@ -844,13 +858,11 @@ enum {
   CLIENTSTATE_STARTTLS,
   CLIENTSTATE_SASLINIT,
   CLIENTSTATE_SASLPWD,
-  CLIENTSTATE_SASLRESPONSE,
   CLIENTSTATE_SASLCHECKRESULT,
   CLIENTSTATE_SASLPLAIN,
   CLIENTSTATE_SASLRESULT,
   CLIENTSTATE_BIND,
   CLIENTSTATE_ACCEPTSTANZA,
-  //CLIENTSTATE_SMACKS,
   CLIENTSTATE_RESUME,
   CLIENTSTATE_ENDSTREAM,
 };
@@ -950,9 +962,9 @@ static int ReturnRetry(struct xmppClient *c, int r) {
 // there's no resolution done we want to gracefully exit by sending our
 // stream ending.
 static int EndStream(struct xmppClient *c) {
-  FormatXml(&c->comp, "</stream:stream>"); // We don't really care about the return here, if we can't sent it well *who cares* :).
   c->state = CLIENTSTATE_UNINIT;
-  return XMPP_ITER_STREAMEND;
+  FormatXml(&c->comp, "</stream:stream>"); // We don't really care about the return here, if we can't sent it well *who cares* :).
+  return XMPP_ITER_SEND;
 }
 
 static int ReturnStreamError(struct xmppClient *c, int r) {
@@ -960,6 +972,8 @@ static int ReturnStreamError(struct xmppClient *c, int r) {
   return r;
 }
 
+// UNINIT(0)--xmppInitClient()--INIT--
+//
 // When SEND is returned, the complete out buffer (c->comp.p) with the
 // size specified in (c->comp.n) must be sent over the network before
 // another iteration is done. If c->comp.n is 0, you don't have to write
@@ -983,6 +997,8 @@ int xmppIterate(struct xmppClient *c) {
   // the OS/network stack handle caching.
   if (c->comp.n > 0)
     return XMPP_ITER_SEND;
+  if (c->state == CLIENTSTATE_UNINIT)
+    return 0;
   if (c->state == CLIENTSTATE_INIT) {
     if ((r = xmppFormatStream(&c->comp, c->jid.domain)))
       return ReturnRetry(c, r);
@@ -1229,7 +1245,7 @@ static bool HasDataAvailable() {
 
 static void TestClient() {
   SetupTls("localhost", "5222");
-  xmppInitClient(&client, "admin@localhost/resource", XMPP_OPT_FORCEPLAIN);
+  xmppInitClient(&client, "admin@localhost/resource", 0);
   bool sent = false;
   int r;
   while ((r = xmppIterate(&client))) {
@@ -1274,6 +1290,10 @@ static void TestClient() {
       break;
     case XMPP_ITER_OK:
     default:
+      if (r < 0) {
+        Log("Error %d", r);
+        goto stop;
+      }
       break;
     }
   }
@@ -1320,6 +1340,9 @@ static void TestXml() {
   assert(FindElement("failuree", 8, "p=proceed f=failure") == '?');
   assert(FindElement("efailure", 8, "p=proceed f=failure") == '?');
   assert(FindElement("procee", 6, "p=proceed f=failure c=procee") == 'c');
+  assert(!StrictStrEqual("SCRAM-SHA-1", "SCRAM-SHA-1-PLUS", sizeof("SCRAM-SHA-1-PLUS")-1));
+  assert(StrictStrEqual("SCRAM-SHA-1", "SCRAM-SHA-1", sizeof("SCRAM-SHA-1")-1));
+  assert(!StrictStrEqual("SCRAM-SHA-1", "PLAIN", sizeof("PLAIN")-1));
 }
 
 static void ExpectUntil(int goal, const char *exp) {
@@ -1373,7 +1396,7 @@ static void Test() {
 int main() {
   puts("Starting tests");
   TestClient();
-  //TestXml();
+  TestXml();
   //Test();
   puts("All tests passed");
   return 0;
