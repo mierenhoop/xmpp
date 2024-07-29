@@ -296,7 +296,10 @@ static void ParseCommonStanzaAttributes(struct xmppParser *p, struct xmppStanza 
 // into st. We only parse the bare minimal for this library. For unknown
 // stanzas, st->raw will contain the slice of the stanza that has been
 // split out of the stream so that you can parse it again looking for
-// specific types of stanzas.
+// specific types of stanzas. We do not parse many XEP's here, that must
+// be done externally. Partly for the reason that whenever there's a
+// small mistake in the parsing code or wrongly handled input the whole
+// stream will be unreadable (in the current implementation that is).
 int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
   int r;
   int i = p->i;
@@ -380,7 +383,10 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
       } else if (!strcmp(p->x.elem, "error")) {
         st->type = XMPP_STANZA_ERROR;
         SkipUnknownXml(p);
+        while (ParseElement(p)) {}
         break;
+      } else {
+        SkipUnknownXml(p);
       }
     }
   } else if (!strcmp(p->x.elem, "message")) {

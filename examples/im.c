@@ -160,6 +160,7 @@ static void PrintMessage(struct xmppStanza *st) {
   printf("> ");
   PrintSlice(&st->message.body, "[empty]");
   puts("");
+  fflush(stdout);
 }
 
 static void IterateClient() {
@@ -178,6 +179,8 @@ static void IterateClient() {
         sent = 1;
         continue;
       }
+      printf("> ");
+      fflush(stdout);
       if (!Poll())
         return;
       // fallthrough
@@ -235,12 +238,15 @@ static bool HandleCommand() {
     printf("Printing log:\n%d %s\n", (int)logdatan, logdata);
   } else if (!strcmp("/help", cmd)) {
     puts("Try: /login jid password");
+  } else if (!strncmp("/ping ", cmd, 6)) {
+    strcpy(jid, cmd+6);
+    xmppFormatStanza(&client, "<iq to='%s' id='%s' type='set'><ping xmlns='urn:xmpp:ping'/></iq>", jid, "ping1");
   } else if (strlen(cmd)) {
     if (!client.state) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
       //xmppSendMessage(&client, "user@localhost", cmd);
-      xmppFormatStanza(&client, "<message to='%s' id='message%d'><body>%s</body></message>", "user@localhost", rand(), cmd);
+      xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", rand(), cmd);
     }
   }
   return false;
@@ -250,6 +256,7 @@ static void Loop() {
   char *line = NULL, *msgbody;
   size_t n;
   for (;;) {
+    printf("> ");
     if (HandleCommand())
       break;
   }
