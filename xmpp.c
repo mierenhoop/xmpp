@@ -292,6 +292,11 @@ static void ParseCommonStanzaAttributes(struct xmppParser *p, struct xmppStanza 
   }
 }
 
+// Parse stanza (or other XML element with depth of 1) out of XML stream
+// into st. We only parse the bare minimal for this library. For unknown
+// stanzas, st->raw will contain the slice of the stanza that has been
+// split out of the stream so that you can parse it again looking for
+// specific types of stanzas.
 int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
   int r;
   int i = p->i;
@@ -300,7 +305,6 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
   yxml_init(&p->x, p->xbuf, sizeof(p->xbuf));
   for (const char *pre = "<stream:stream>"; *pre; pre++)
     yxml_parse(&p->x, *pre);
-  // TODO: put back the initialization of stream:stream
   if ((r = setjmp(p->jb))) {
     memset(st, 0, sizeof(*st));
     p->i = i;
@@ -381,9 +385,16 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st) {
     }
   } else if (!strcmp(p->x.elem, "message")) {
     st->type = XMPP_STANZA_MESSAGE;
-    SkipUnknownXml(p);
+    ParseCommonStanzaAttributes(p, st);
+    while (ParseElement(p)) {
+      if (!strcmp(p->x.elem, "body"))
+        GetXmlContent(p, &st->message.body);
+      else
+        SkipUnknownXml(p);
+    }
   } else if (!strcmp(p->x.elem, "presence")) {
     st->type = XMPP_STANZA_PRESENCE;
+    ParseCommonStanzaAttributes(p, st);
     SkipUnknownXml(p);
   } else {
     SkipUnknownXml(p);
@@ -1153,10 +1164,10 @@ int xmppIterate(struct xmppClient *c) {
       if (!(c->opts & XMPP_OPT_DISABLESMACKS))
         c->cansmackresume = st->smacksenabled.resume;
     }
-    break;
-  case XMPP_STANZA_ACKANSWER:
-    // return XMPP_ITER_UPTODATE
     return XMPP_ITER_OK;
+  case XMPP_STANZA_ACKANSWER:
+    Log("Answer %d real %d", st->ack, c->actualsent);
+    return XMPP_ITER_ACK;
   case XMPP_STANZA_ACKREQUEST:
     if ((r = xmppFormatAckAnswer(&c->comp, c->actualrecv)))
       return r;
@@ -1164,7 +1175,7 @@ int xmppIterate(struct xmppClient *c) {
   default:
     return XMPP_ITER_STANZA;
   }
-  return XMPP_ITER_READY;
+  return XMPP_ITER_OK;
 }
 
 #ifdef XMPP_RUNTEST
@@ -1258,10 +1269,7 @@ static void TestClient() {
     // poll(recv, msg)
     // if msg then SendMsg(client, msg) break end
       if (!sent) {
-        xmppSendMessage(&client, "admin@localhost", "Hello!");
-        xmppFormatPing(&client.comp, "localhost", 1);
-        xmppFormatAckRequest(&client.comp);
-        client.actualsent++;
+        xmppFormatStanza(&client, "<message to='%s' id='%s'><body>%s</body></message>", "admin@localhost", "message1", "Hello!");
         sent = true;
         break;
       }

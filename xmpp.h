@@ -26,6 +26,8 @@ struct xmppXmlSlice {
   size_t n, rawn; // TODO: n -> realn, rawn -> n
 };
 
+void xmppReadXmlSlice(char *d, struct xmppXmlSlice s);
+
 // The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.
 #define XMPP_EMEM -1
 // Some input from the input buffer is malformed XML.
@@ -85,6 +87,7 @@ struct xmppXmlSlice {
 #define XMPP_ITER_NEGOTIATIONDONE  7
 // Nothing should be done, make another call to xmppIterate.
 #define XMPP_ITER_OK 8
+#define XMPP_ITER_ACK 9
 
 #define XMPP_SASL_INITIALIZED 1
 #define XMPP_SASL_CALCULATED 2
@@ -264,6 +267,9 @@ struct xmppClient {
   bool disablesmack, disabledisco, enablereceipts;
   bool cansmackresume;
 };
+
+// Only call when XMPP_ITER_ACK
+#define xmppIsSynchronized(c) ((c)->stanza.type == XMPP_STANZA_ACKANSWER && (c)->stanza.ack == (c)->actualsent)
 
 static inline int xmppIncrementAck(struct xmppClient *c, int r) {
   if (r)

@@ -144,6 +144,24 @@ static void GivePassword() {
   explicit_bzero(pwd, strlen(pwd));
 }
 
+static void PrintSlice(struct xmppXmlSlice *slc, const char *alt) {
+  char *p;
+  if (slc->p && (p = calloc(slc->n+1, 1))) {
+    xmppReadXmlSlice(p, *slc);
+    printf("%s", p);
+    free(p);
+  } else {
+    printf("%s", alt);
+  }
+}
+
+static void PrintMessage(struct xmppStanza *st) {
+  PrintSlice(&st->from, "[unknown]");
+  printf("> ");
+  PrintSlice(&st->message.body, "[empty]");
+  puts("");
+}
+
 static void IterateClient() {
   int r;
   static int sent = 0;
@@ -156,8 +174,6 @@ static void IterateClient() {
     case XMPP_ITER_READY:
       Log("Polling...");
       if (!sent) {
-        //FormatXml(&client.comp, "<iq xmlns='jabber:client' type='set' id='carbon'><enable xmlns='urn:xmpp:carbons:2'/></iq>");
-        //FormatXml(&client.comp, "<presence/>");
         xmppFormatStanza(&client, "<presence/>");
         sent = 1;
         continue;
@@ -185,11 +201,15 @@ static void IterateClient() {
       GivePassword();
       break;
     case XMPP_ITER_STANZA:
+      Log("Stanza type %d", client.stanza.type);
+      if (client.stanza.type == XMPP_STANZA_MESSAGE) {
+        PrintMessage(&client.stanza);
+      }
       break;
     case XMPP_ITER_OK:
     default:
       if (r < 0) {
-        puts("Error encountered");
+        Log("Error encountered %d", r);
         Die();
       }
       break;
@@ -219,7 +239,8 @@ static bool HandleCommand() {
     if (!client.state) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
-      xmppSendMessage(&client, "user@localhost", cmd);
+      //xmppSendMessage(&client, "user@localhost", cmd);
+      xmppFormatStanza(&client, "<message to='%s' id='message%d'><body>%s</body></message>", "user@localhost", rand(), cmd);
     }
   }
   return false;
