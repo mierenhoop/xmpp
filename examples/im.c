@@ -93,6 +93,22 @@ static void InitializeConn(const char *server, const char *port) {
                       mbedtls_net_recv, NULL);
 }
 
+static void Initialize(const char *jid) {
+  xmppInitClient(&client, jid, 0);
+  InitializeConn(client.jid.domain, "5222");
+}
+
+static void Close() {
+  Log("Closing XMPP stream");
+  mbedtls_ssl_close_notify(&conn.ssl);
+  mbedtls_net_free(&conn.server_fd);
+  mbedtls_x509_crt_free(&conn.cacert);
+  mbedtls_ssl_free(&conn.ssl);
+  mbedtls_ssl_config_free(&conn.conf);
+  mbedtls_ctr_drbg_free(&conn.ctr_drbg);
+  mbedtls_entropy_free(&conn.entropy);
+}
+
 static bool Poll() {
   struct pollfd fds[2] = {0};
   fds[0].fd = STDIN_FILENO;
@@ -163,11 +179,12 @@ static void PrintMessage(struct xmppStanza *st) {
   fflush(stdout);
 }
 
-static void IterateClient() {
+// returns true if stream is done for
+static bool IterateClient() {
   int r;
   static int sent = 0;
-  for (;;) {
-    switch ((r = xmppIterate(&client))) {
+  while ((r = xmppIterate(&client))) {
+    switch (r) {
     case XMPP_ITER_SEND:
       Log("Out: \e[32m%.*s\e[0m", (int)client.comp.n, client.comp.p);
       SendAll();
@@ -182,7 +199,7 @@ static void IterateClient() {
       printf("> ");
       fflush(stdout);
       if (!Poll())
-        return;
+        return false;
       // fallthrough
     case XMPP_ITER_RECV:
       Log("Waiting for recv...");
@@ -195,6 +212,7 @@ static void IterateClient() {
       Log("In:  \e[34m%.*s\e[0m", (int)client.parser.n, client.parser.p);
       break;
     case XMPP_ITER_STARTTLS:
+      sent = false; // TODO: hack
       Handshake();
       break;
     case XMPP_EPASS:
@@ -218,50 +236,51 @@ static void IterateClient() {
       break;
     }
   }
+  return true;
 }
 
-static bool HandleCommand() {
+static void HandleCommand() {
   static char jid[3074];
   const char *cmd = GetLine();
   if (!strncmp("/login ", cmd, 7)) {
-    if (!client.state) {
+    if (!xmppIsInitialized(&client)) {
       strcpy(jid, cmd+7);
       strcat(jid, "/resource");
-      xmppInitClient(&client, jid, 0);
+      Initialize(jid);
       puts("Logging in...");
-      return true;
     } else {
       puts("Log out first.");
     }
+  } else if (!strcmp("/logout", cmd)) {
+    xmppEndStream(&client);
   } else if (!strcmp("/log", cmd)) {
     fflush(log);
     printf("Printing log:\n%d %s\n", (int)logdatan, logdata);
-  } else if (!strcmp("/help", cmd)) {
-    puts("Try: /login jid password");
   } else if (!strncmp("/ping ", cmd, 6)) {
     strcpy(jid, cmd+6);
     xmppFormatStanza(&client, "<iq to='%s' id='%s' type='set'><ping xmlns='urn:xmpp:ping'/></iq>", jid, "ping1");
+  } else if (!strcmp("/", cmd)) {
+    puts("Try: /login jid password");
   } else if (strlen(cmd)) {
-    if (!client.state) {
+    if (!xmppIsInitialized(&client)) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
       //xmppSendMessage(&client, "user@localhost", cmd);
       xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", rand(), cmd);
     }
   }
-  return false;
 }
 
 static void Loop() {
   char *line = NULL, *msgbody;
   size_t n;
   for (;;) {
-    printf("> ");
-    if (HandleCommand())
-      break;
-  }
-  for (;;) {
-    IterateClient();
+    if (xmppIsInitialized(&client)) {
+      if (IterateClient())
+        Close();
+    } else {
+      printf("> ");
+    }
     HandleCommand();
   }
   free(line);

@@ -978,7 +978,9 @@ static int ReturnRetry(struct xmppClient *c, int r) {
 // stanza->type so the caller to Iterate can handle as appropriate, if
 // there's no resolution done we want to gracefully exit by sending our
 // stream ending.
-static int EndStream(struct xmppClient *c) {
+int xmppEndStream(struct xmppClient *c) {
+  if (!xmppIsInitialized(c))
+    return 0;
   c->state = CLIENTSTATE_UNINIT;
   FormatXml(&c->comp, "</stream:stream>"); // We don't really care about the return here, if we can't sent it well *who cares* :).
   return XMPP_ITER_SEND;
@@ -1071,7 +1073,7 @@ int xmppIterate(struct xmppClient *c) {
     return XMPP_ITER_SEND;
   }
   if (c->state == CLIENTSTATE_ENDSTREAM) {
-    return EndStream(c);
+    return xmppEndStream(c);
   }
   MoveStanza(&c->parser);
   if (c->parser.n) Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);

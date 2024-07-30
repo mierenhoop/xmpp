@@ -288,10 +288,14 @@ struct StaticData {
 
 void xmppInitClient(struct xmppClient *c, const char *jid, int opts);
 
+#define xmppIsInitialized(c) (!!(c)->state)
+
 static inline void xmppInitStatic(struct xmppClient *c, struct StaticData *d) {
 }
 
 int xmppIterate(struct xmppClient *c);
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd);
 int xmppSendMessage(struct xmppClient *c, const char *to, const char *body);
+int xmppEndStream(struct xmppClient *c);
+
 #endif
