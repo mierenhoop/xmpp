@@ -15,8 +15,7 @@ o/test: o/xmpp.o
 o/im: o/xmpp.o
 	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -DIM_NATIVE
 
-# TODO: upgrade to newer esp-idf and with that mbedtls 3.0
-ESPIDF_DOCKERCMD=docker run --rm -v ${PWD}:/project -w /project -e HOME=/tmp espressif/idf idf.py
+ESPIDF_DOCKERCMD=docker run --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp espressif/idf idf.py
 
 esp-im: | o
 	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im build
@@ -25,10 +24,10 @@ size-esp-im: | o
 	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im size-files
 
 test: o/test
-	./o/test
+	LD_LIBRARY_PATH=/usr/local/lib ./o/test
 
 runim: o/im
-	rlwrap ./o/im
+	LD_LIBRARY_PATH=/usr/local/lib rlwrap ./o/im
 
 prosody:
 	docker-compose -f test/docker-compose.yml up -d --build
