@@ -978,6 +978,7 @@ static int ReturnRetry(struct xmppClient *c, int r) {
 // stanza->type so the caller to Iterate can handle as appropriate, if
 // there's no resolution done we want to gracefully exit by sending our
 // stream ending.
+// TODO: should we bzero anywhere?
 int xmppEndStream(struct xmppClient *c) {
   if (!xmppIsInitialized(c))
     return 0;
@@ -1159,10 +1160,15 @@ int xmppIterate(struct xmppClient *c) {
       c->actualrecv++;
   switch (st->type) {
   case XMPP_STANZA_PING:
-    // TODO: when not wanting to leak presence to another client, we should
-    // return service-unavailable (the server won't forward it then).
-    FormatXml(&c->comp, "<iq to='%x' id='%x' type='result'/>", st->from, st->id);
-    c->actualsent++;
+    if (!(c->opts & XMPP_OPT_HIDEPRESENCE))
+      xmppFormatStanza(c, "<iq to='%x' id='%x' type='result'/>", st->from, st->id);
+    else
+      xmppFormatStanza(
+          c,
+          "<iq to='%x' id='%x' type='error'><ping "
+          "xmlns='urn:xmpp:ping'/><error type='cancel'><service-unavailable "
+          "xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>",
+          st->from, st->id);
     return XMPP_ITER_OK;
   case XMPP_STANZA_SMACKSENABLED:
     c->features |= XMPP_STREAMFEATURE_SMACKS;

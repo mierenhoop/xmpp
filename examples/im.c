@@ -1,5 +1,3 @@
-#include <sqlite3.h>
-
 #include <mbedtls/base64.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
@@ -25,35 +23,16 @@
 #define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
 #endif
 
-#define DB_FILE "o/im.db"
-
 static char *logdata;
 static size_t logdatan;
 static FILE *log;
-static sqlite3 *db;
 static struct xmppClient client;
 static char *line;
 static size_t linen;
 
 static void Die() {
   free(line);
-  sqlite3_close(db);
   exit(0);
-}
-
-static void AddMessage(const char *body, int id) {
-  static sqlite3_stmt *stmt;
-  int rc =
-      sqlite3_prepare(db, "insert into message(id, body) values (?, ?)",
-                      -1, &stmt, NULL);
-  assert(rc == SQLITE_OK);
-  rc = sqlite3_bind_int(stmt, 1, id);
-  assert(rc == SQLITE_OK);
-  rc = sqlite3_bind_text(stmt, 2, body, -1, NULL);
-  assert(rc == SQLITE_OK);
-  rc = sqlite3_step(stmt);
-  assert(rc == SQLITE_DONE);
-  sqlite3_finalize(stmt);
 }
 
 static struct {
@@ -217,7 +196,7 @@ static bool IterateClient() {
       break;
     case XMPP_EPASS:
       puts("Password was wrong.");
-      Die();
+      break;
     case XMPP_ITER_GIVEPWD:
       GivePassword();
       break;
@@ -276,10 +255,13 @@ static void Loop() {
   size_t n;
   for (;;) {
     if (xmppIsInitialized(&client)) {
-      if (IterateClient())
+      if (IterateClient()) {
         Close();
+        continue;
+      }
     } else {
       printf("> ");
+      fflush(stdout);
     }
     HandleCommand();
   }
@@ -289,12 +271,6 @@ static void Loop() {
 int main() {
   log = open_memstream(&logdata, &logdatan);
   assert(log);
-  unlink(DB_FILE);
-  int rc = sqlite3_open(DB_FILE, &db);
-  assert(rc == SQLITE_OK);
-  rc = sqlite3_exec(db, "create table if not exists message(id, body)",
-                    NULL, NULL, NULL);
-  assert(rc == SQLITE_OK);
   InitializeConn("localhost", "5222");
   Loop();
   Die();
