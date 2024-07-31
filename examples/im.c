@@ -17,6 +17,8 @@
 #include "xmpp.h"
 #include "cacert.inc"
 
+#include "system.h"
+
 #if 0
 #define Log(fmt, ...) fprintf(log, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
 #else
@@ -27,6 +29,7 @@ static char *logdata;
 static size_t logdatan;
 static FILE *log;
 static struct xmppClient client;
+static char linebuf[1000];
 static char *line;
 static size_t linen;
 
@@ -88,21 +91,6 @@ static void Close() {
   mbedtls_entropy_free(&conn.entropy);
 }
 
-static bool Poll() {
-  struct pollfd fds[2] = {0};
-  fds[0].fd = STDIN_FILENO;
-  fds[0].events = POLLIN;
-  fds[1].fd = conn.server_fd.fd;
-  fds[1].events = POLLIN;
-  int r = poll(fds, 2, -1);
-  assert(r >= 0);
-  if (fds[0].revents & POLLIN)
-    return false;
-  if (fds[1].revents & POLLIN)
-    return true;
-  assert(false);
-}
-
 static void SendAll() {
   int n, i = 0;
   do {
@@ -125,15 +113,34 @@ static void Handshake() {
 }
 
 static char *GetLine() {
-  if (getline(&line, &linen, stdin) <= 0)
+  //char *nl;
+  //nl = memchr(linebuf, 0, sizeof(linebuf));
+  //memmove(linebuf, nl+1, (nl-linebuf)-linen);
+  //while (!(nl = memchr(linebuf, '\n', linen))) {
+  //  if (linen >= sizeof(linebuf)-1) {
+  //    Log("Warning: too much line data");
+  //    linen = 0;
+  //  }
+  //  ssize_t n = read(STDIN_FILENO, linebuf+linen, sizeof(linebuf)-linen-1);
+  //  if (n <= 0)
+  //    Die("No more data");
+  //  linen += n;
+  //}
+  //*nl = 0;
+  ssize_t n;
+  if ((n = read(STDIN_FILENO, linebuf, sizeof(linebuf)-1)) <= 0)
     Die();
-  line[strlen(line)-1] = '\0'; // Remove the trailing newline
-  return line;
+  linebuf[n-1] = 0;
+  //if (getline(&line, &linen, stdin) <= 0)
+  //  Die();
+  //line[strlen(line)-1] = '\0'; // Remove the trailing newline
+  return linebuf;
 }
 
 static void GivePassword() {
   char *pwd;
   printf("Password? ");
+  fflush(stdout);
   pwd = GetLine();
   xmppSupplyPassword(&client, pwd);
   explicit_bzero(pwd, strlen(pwd));
@@ -177,7 +184,7 @@ static bool IterateClient() {
       }
       printf("> ");
       fflush(stdout);
-      if (!Poll())
+      if (!SystemPoll())
         return false;
       // fallthrough
     case XMPP_ITER_RECV:
@@ -268,10 +275,33 @@ static void Loop() {
   free(line);
 }
 
-int main() {
+void RunIm() {
   log = open_memstream(&logdata, &logdatan);
   assert(log);
   InitializeConn("localhost", "5222");
   Loop();
   Die();
 }
+
+#ifdef IM_NATIVE 
+
+bool SystemPoll() {
+  struct pollfd fds[2] = {0};
+  fds[0].fd = STDIN_FILENO;
+  fds[0].events = POLLIN;
+  fds[1].fd = conn.server_fd.fd;
+  fds[1].events = POLLIN;
+  int r = poll(fds, 2, -1);
+  assert(r >= 0);
+  if (fds[0].revents & POLLIN)
+    return false;
+  if (fds[1].revents & POLLIN)
+    return true;
+  assert(false);
+}
+
+int main() {
+  RunIm();
+}
+
+#endif

@@ -57,3 +57,6 @@ Running the tests:
 
 Run the im (instant messenger) example:
  $ make runim
+
+Compile the esp-idf version of the im:
+ $ make esp-im

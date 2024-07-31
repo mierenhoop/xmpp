@@ -13,7 +13,16 @@ o/test: o/xmpp.o
 	$(CC) -DXMPP_RUNTEST -o o/test yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
 
 o/im: o/xmpp.o
-	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -lsqlite3 -lreadline
+	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -DIM_NATIVE
+
+# TODO: upgrade to newer esp-idf and with that mbedtls 3.0
+ESPIDF_DOCKERCMD=docker run --rm -v ${PWD}:/project -w /project -e HOME=/tmp espressif/idf idf.py
+
+esp-im: | o
+	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im build
+
+size-esp-im: | o
+	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im size-files
 
 test: o/test
 	./o/test

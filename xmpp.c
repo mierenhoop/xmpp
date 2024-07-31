@@ -700,7 +700,12 @@ static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, 
   mbedtls_md_context_t sha_context;
   mbedtls_md_init(&sha_context);
   if (!(r = mbedtls_md_setup(&sha_context, mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 1)))
+    // TODO: upgrade fully to mbedtls 3.0
+#if 1
+    r = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA1, pwd, plen, salt, slen, itrs, 20, k);
+#else
     r = mbedtls_pkcs5_pbkdf2_hmac(&sha_context, pwd, plen, salt, slen, itrs, 20, k);
+#endif
   mbedtls_md_free(&sha_context);
   if (r != 0) {
     LogWarn("MbedTLS PBKDF2-HMAC error: %s", mbedtls_high_level_strerr(r));
@@ -718,7 +723,7 @@ static int HMAC(char d[static 20], const char *p, size_t n, const char k[static 
   return 1;
 }
 
-static int SHA1(char d[static 20], const char p[static 20]) {
+static int Sha1(char d[static 20], const char p[static 20]) {
   int r = mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), p, 20, d);
   if (r != 0) {
     LogWarn("MbedTLS SHA1 error: %s", mbedtls_high_level_strerr(r));
@@ -759,7 +764,7 @@ static int CalculateScramSha1(struct xmppSaslContext *ctx, char clientproof[stat
   serverkey[20];
   return H(saltedpwd, pwd, plen, salt, slen, itrs)
     && HMAC(clientkey, "Client Key", 10, saltedpwd)
-    && SHA1(storedkey, clientkey)
+    && Sha1(storedkey, clientkey)
     && HMAC(clientsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, storedkey)
     && XorSha1(clientproof, clientkey, clientsig)
     && HMAC(serverkey, "Server Key", 10, saltedpwd)
