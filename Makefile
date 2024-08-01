@@ -15,6 +15,24 @@ o/test: o/xmpp.o
 o/im: o/xmpp.o
 	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -DIM_NATIVE
 
+LIBOMEMO_DIR=o/libomemo-c-0.5.0
+
+$(LIBOMEMO_DIR).tar.gz: | o
+	wget -O $@ https://github.com/dino/libomemo-c/archive/refs/tags/v0.5.0.tar.gz
+
+$(LIBOMEMO_DIR): $(LIBOMEMO_DIR).tar.gz
+	tar -xzf $< -C o
+	patch -d $(LIBOMEMO_DIR) -p1 < build/amalg.patch
+
+CURVE_DIR=$(LIBOMEMO_DIR)/src/curve25519
+DEST_AMALG_C=$(CURVE_DIR)/amalg.c
+
+curve25519.c: $(LIBOMEMO_DIR)
+	cp build/amalg.c $(DEST_AMALG_C)
+	echo "#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include <stdint.h>\n" > $@
+	cpp $(DEST_AMALG_C) -I $(CURVE_DIR)/ed25519/nacl_includes/ -I $(CURVE_DIR)/ed25519/additions/ -I $(CURVE_DIR)/ed25519 \
+		| awk '/# 5 .*amalg\.c.*/ {k=1} /# / {next} k {print $0}' >> $@
+
 ESPIDF_DOCKERCMD=docker run --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp espressif/idf idf.py
 
 esp-im: | o

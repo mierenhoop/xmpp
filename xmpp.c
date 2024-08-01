@@ -1277,8 +1277,6 @@ static void TestClient() {
       SendAll();
       break;
     case XMPP_ITER_READY:
-    // poll(recv, msg)
-    // if msg then SendMsg(client, msg) break end
       if (!sent) {
         xmppFormatStanza(&client, "<message to='%s' id='%s'><body>%s</body></message>", "admin@localhost", "message1", "Hello!");
         sent = true;

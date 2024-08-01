@@ -2,9 +2,9 @@
 
 #include "system.h"
 
-bool SystemPoll() {
-  return true;
-}
+//bool SystemPoll() {
+//  return true;
+//}
 
 void app_main(void)
 {

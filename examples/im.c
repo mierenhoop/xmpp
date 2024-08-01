@@ -67,6 +67,7 @@ static void InitializeConn(const char *server, const char *port) {
   mbedtls_ssl_conf_ca_chain(&conn.conf, &conn.cacert, NULL);
   mbedtls_ssl_conf_rng(&conn.conf, mbedtls_ctr_drbg_random,
                        &conn.ctr_drbg);
+  mbedtls_ssl_conf_max_tls_version(&conn.conf, MBEDTLS_SSL_VERSION_TLS1_2);
   assert(mbedtls_ssl_setup(&conn.ssl, &conn.conf) == 0);
   mbedtls_net_init(&conn.server_fd);
   assert(mbedtls_net_connect(&conn.server_fd, server, port,
@@ -283,8 +284,6 @@ void RunIm() {
   Die();
 }
 
-#ifdef IM_NATIVE 
-
 bool SystemPoll() {
   struct pollfd fds[2] = {0};
   fds[0].fd = STDIN_FILENO;
@@ -299,6 +298,8 @@ bool SystemPoll() {
     return true;
   assert(false);
 }
+
+#ifdef IM_NATIVE
 
 int main() {
   RunIm();
