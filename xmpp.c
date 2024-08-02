@@ -696,8 +696,7 @@ int xmppVerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice s) {
 }
 
 static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
-  int r;
-  r = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA1, pwd, plen, salt, slen, itrs, 20, k);
+  int r = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA1, pwd, plen, salt, slen, itrs, 20, k);
   if (r != 0) {
     LogWarn("MbedTLS PBKDF2-HMAC error: %s", mbedtls_high_level_strerr(r));
     return 0;
@@ -723,10 +722,9 @@ static int Sha1(char d[static 20], const char p[static 20]) {
   return 1;
 }
 
-static int XorSha1(char d[20], const char a[20], const char b[20]) {
+static void XorSha1(char d[20], const char a[20], const char b[20]) {
   for (int i = 0; i < 20; i++)
     d[i] = a[i] ^ b[i];
-  return 1;
 }
 
 // TODO: this flowchart can be used to reuse buffers
@@ -757,7 +755,7 @@ static int CalculateScramSha1(struct xmppSaslContext *ctx, char clientproof[stat
     && HMAC(clientkey, "Client Key", 10, saltedpwd)
     && Sha1(storedkey, clientkey)
     && HMAC(clientsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, storedkey)
-    && XorSha1(clientproof, clientkey, clientsig)
+    && (XorSha1(clientproof, clientkey, clientsig), 1)
     && HMAC(serverkey, "Server Key", 10, saltedpwd)
     && HMAC(ctx->srvsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, serverkey);
 }

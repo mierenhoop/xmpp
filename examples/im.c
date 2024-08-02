@@ -210,7 +210,7 @@ static bool IterateClient() {
       break;
     case XMPP_ITER_STANZA:
       Log("Stanza type %d", client.stanza.type);
-      if (client.stanza.type == XMPP_STANZA_MESSAGE) {
+      if (client.stanza.type == XMPP_STANZA_MESSAGE && client.stanza.message.body.p) {
         PrintMessage(&client.stanza);
       }
       break;

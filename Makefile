@@ -27,6 +27,7 @@ $(LIBOMEMO_DIR): $(LIBOMEMO_DIR).tar.gz
 CURVE_DIR=$(LIBOMEMO_DIR)/src/curve25519
 DEST_AMALG_C=$(CURVE_DIR)/amalg.c
 
+# TODO patch: typedef crypto_*int* to stdint types, remove malloc from ed25519/additions?
 curve25519.c: $(LIBOMEMO_DIR)
 	cp build/amalg.c $(DEST_AMALG_C)
 	echo "#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include <stdint.h>\n" > $@

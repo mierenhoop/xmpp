@@ -4837,6 +4837,1270 @@ void zeroize_stack()
 }
 
 
+int generalized_commit(unsigned char* R_bytes, unsigned char* r_scalar,
+            const unsigned char* labelset, const unsigned long labelset_len,
+            const unsigned char* extra, const unsigned long extra_len,
+            const unsigned char* K_bytes, const unsigned char* k_scalar,
+            const unsigned char* Z,
+            unsigned char* M_buf, const unsigned long M_start, const unsigned long M_len);
+
+
+
+
+
+
+int generalized_challenge(unsigned char* h_scalar,
+              const unsigned char* labelset, const unsigned long labelset_len,
+              const unsigned char* extra, const unsigned long extra_len,
+              const unsigned char* R_bytes,
+              const unsigned char* K_bytes,
+              unsigned char* M_buf, const unsigned long M_start, const unsigned long M_len);
+
+
+int generalized_prove(unsigned char* out_scalar,
+    const unsigned char* r_scalar,
+    const unsigned char* k_scalar,
+    const unsigned char* h_scalar);
+
+
+int generalized_solve_commitment(unsigned char* R_bytes_out, ge_p3* K_point_out,
+                     const ge_p3* B_point, const unsigned char* s_scalar,
+                     const unsigned char* K_bytes, const unsigned char* h_scalar);
+
+
+int generalized_eddsa_25519_sign(
+                  unsigned char* signature_out,
+                  const unsigned char* eddsa_25519_pubkey_bytes,
+                  const unsigned char* eddsa_25519_privkey_scalar,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* random,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len);
+
+int generalized_eddsa_25519_verify(
+                  const unsigned char* signature,
+                  const unsigned char* eddsa_25519_pubkey,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len);
+
+
+
+int generalized_veddsa_25519_sign(
+                  unsigned char* signature_out,
+                  const unsigned char* eddsa_25519_pubkey_bytes,
+                  const unsigned char* eddsa_25519_privkey_scalar,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* random,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len);
+
+int generalized_veddsa_25519_verify(
+                  unsigned char* vrf_out,
+                  const unsigned char* signature,
+                  const unsigned char* eddsa_25519_pubkey_bytes,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len);
+
+
+
+extern const unsigned char B_bytes[];
+
+unsigned char* buffer_add(unsigned char* bufptr, const unsigned char* bufend,
+                          const unsigned char* in, const unsigned long in_len);
+
+unsigned char* buffer_pad(const unsigned char* buf, unsigned char* bufptr, const unsigned char* bufend);
+
+
+int labelset_new(unsigned char* labelset, unsigned long* labelset_len, const unsigned long labelset_maxlen,
+                 const unsigned char* protocol_name, const unsigned char protocol_name_len,
+                 const unsigned char* customization_label, const unsigned char customization_label_len);
+
+int labelset_add(unsigned char* labelset, unsigned long* labelset_len, const unsigned long labelset_maxlen,
+              const unsigned char* label, const unsigned char label_len);
+
+int labelset_validate(const unsigned char* labelset, const unsigned long labelset_len);
+
+int labelset_is_empty(const unsigned char* labelset, const unsigned long labelset_len);
+int sc_isreduced(const unsigned char* s);
+
+int point_isreduced(const unsigned char* p);
+
+void ge_p3_add(ge_p3 *r, const ge_p3 *p, const ge_p3 *q);
+
+
+
+
+
+static int generalized_calculate_Bv(ge_p3* Bv_point,
+                              const unsigned char* labelset, const unsigned long labelset_len,
+                              const unsigned char* K_bytes,
+                              unsigned char* M_buf, const unsigned long M_start, const unsigned long M_len)
+{
+  unsigned char* bufptr;
+  unsigned long prefix_len = 0;
+
+  if (labelset_validate(labelset, labelset_len) != 0)
+    return -1;
+  if (Bv_point == 
+                 ((void *)0) 
+                      || K_bytes == 
+                                    ((void *)0) 
+                                         || M_buf == 
+                                                     ((void *)0)
+                                                         )
+    return -1;
+
+  prefix_len = 2*32 + labelset_len;
+  if (prefix_len > M_start)
+    return -1;
+
+  bufptr = M_buf + M_start - prefix_len;
+  bufptr = buffer_add(bufptr, M_buf + M_start, B_bytes, 32);
+  bufptr = buffer_add(bufptr, M_buf + M_start, labelset, labelset_len);
+  bufptr = buffer_add(bufptr, M_buf + M_start, K_bytes, 32);
+  if (bufptr == 
+               ((void *)0) 
+                    || bufptr != M_buf + M_start)
+    return -1;
+
+  hash_to_point(Bv_point, M_buf + M_start - prefix_len, prefix_len + M_len);
+  if (ge_isneutral(Bv_point))
+    return -1;
+  return 0;
+}
+
+static int generalized_calculate_vrf_output(unsigned char* vrf_output,
+                                     const unsigned char* labelset, const unsigned long labelset_len,
+                                     const ge_p3* cKv_point)
+{
+  unsigned char buf[1024];
+  unsigned char* bufptr = buf;
+  unsigned char* bufend = buf + 1024;
+  unsigned char cKv_bytes[32];
+  unsigned char hash[64];
+
+  if (vrf_output == 
+                   ((void *)0)
+                       )
+    return -1;
+  memset(vrf_output, 0, 32);
+
+  if (labelset_len + 2*32 > 1024)
+    return -1;
+  if (labelset_validate(labelset, labelset_len) != 0)
+    return -1;
+  if (cKv_point == 
+                  ((void *)0)
+                      )
+    return -1;
+  if (32 > 64)
+    return -1;
+
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(cKv_bytes, cKv_point);
+
+  bufptr = buffer_add(bufptr, bufend, B_bytes, 32);
+  bufptr = buffer_add(bufptr, bufend, labelset, labelset_len);
+  bufptr = buffer_add(bufptr, bufend, cKv_bytes, 32);
+  if (bufptr == 
+               ((void *)0)
+                   )
+    return -1;
+  if (bufptr - buf > 1024)
+    return -1;
+  crypto_hash_sha512(hash, buf, bufptr - buf);
+  memcpy(vrf_output, hash, 32);
+  return 0;
+}
+
+int generalized_veddsa_25519_sign(
+                  unsigned char* signature_out,
+                  const unsigned char* eddsa_25519_pubkey_bytes,
+                  const unsigned char* eddsa_25519_privkey_scalar,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* random,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len)
+{
+  unsigned char labelset[512];
+  unsigned long labelset_len = 0;
+  ge_p3 Bv_point;
+  ge_p3 Kv_point;
+  ge_p3 Rv_point;
+  unsigned char Bv_bytes[32];
+  unsigned char Kv_bytes[32];
+  unsigned char Rv_bytes[32];
+  unsigned char R_bytes[32];
+  unsigned char r_scalar[32];
+  unsigned char h_scalar[32];
+  unsigned char s_scalar[32];
+  unsigned char extra[3*32];
+  unsigned char* M_buf = 
+                        ((void *)0)
+                            ;
+  char* protocol_name = "VEdDSA_25519_SHA512_Elligator2";
+
+  if (signature_out == 
+                      ((void *)0)
+                          )
+    goto err;
+  memset(signature_out, 0, 96);
+
+  if (eddsa_25519_pubkey_bytes == 
+                                 ((void *)0)
+                                     )
+    goto err;
+  if (eddsa_25519_privkey_scalar == 
+                                   ((void *)0)
+                                       )
+    goto err;
+  if (msg == 
+            ((void *)0)
+                )
+    goto err;
+  if (customization_label == 
+                            ((void *)0) 
+                                 && customization_label_len != 0)
+    goto err;
+  if (customization_label_len > 128)
+    goto err;
+  if (msg_len > 1048576)
+    goto err;
+
+  if ((M_buf = malloc(msg_len + 2048)) == 0) {
+    goto err;
+  }
+  memcpy(M_buf + 2048, msg, msg_len);
+
+
+  if (labelset_new(labelset, &labelset_len, 512,
+                   (unsigned char*)protocol_name, strlen(protocol_name),
+                   customization_label, customization_label_len) != 0)
+    goto err;
+
+
+
+
+  labelset_add(labelset, &labelset_len, 512, (unsigned char*)"1", 1);
+  if (generalized_calculate_Bv(&Bv_point, labelset, labelset_len,
+                               eddsa_25519_pubkey_bytes, M_buf, 2048, msg_len) != 0)
+    goto err;
+  ge_scalarmult(&Kv_point, eddsa_25519_privkey_scalar, &Bv_point);
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(Bv_bytes, &Bv_point);
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(Kv_bytes, &Kv_point);
+
+
+
+  labelset[labelset_len-1] = (unsigned char)'2';
+  memcpy(extra, Bv_bytes, 32);
+  memcpy(extra + 32, Kv_bytes, 32);
+  if (generalized_commit(R_bytes, r_scalar,
+                         labelset, labelset_len,
+                         extra, 2*32,
+                         eddsa_25519_pubkey_bytes, eddsa_25519_privkey_scalar,
+                         random, M_buf, 2048, msg_len) != 0)
+    goto err;
+
+
+  ge_scalarmult(&Rv_point, r_scalar, &Bv_point);
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(Rv_bytes, &Rv_point);
+
+
+
+  labelset[labelset_len-1] = (unsigned char)'3';
+  memcpy(extra + 2*32, Rv_bytes, 32);
+  if (generalized_challenge(h_scalar,
+                            labelset, labelset_len,
+                            extra, 3*32,
+                            R_bytes, eddsa_25519_pubkey_bytes,
+                            M_buf, 2048, msg_len) != 0)
+    goto err;
+
+
+  if (generalized_prove(s_scalar, r_scalar, eddsa_25519_privkey_scalar, h_scalar) != 0)
+    goto err;
+
+
+  memcpy(signature_out, Kv_bytes, 32);
+  memcpy(signature_out + 32, h_scalar, 32);
+  memcpy(signature_out + 32 + 32, s_scalar, 32);
+
+  zeroize(r_scalar, 32);
+  zeroize_stack();
+  free(M_buf);
+  return 0;
+
+err:
+  zeroize(r_scalar, 32);
+  zeroize_stack();
+  free(M_buf);
+  return -1;
+}
+
+int generalized_veddsa_25519_verify(
+                  unsigned char* vrf_out,
+                  const unsigned char* signature,
+                  const unsigned char* eddsa_25519_pubkey_bytes,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len)
+{
+  unsigned char labelset[512];
+  unsigned long labelset_len = 0;
+  const unsigned char* Kv_bytes;
+  const unsigned char* h_scalar;
+  const unsigned char* s_scalar;
+  ge_p3 Bv_point, K_point, Kv_point, cK_point, cKv_point;
+  unsigned char Bv_bytes[32];
+  unsigned char R_calc_bytes[32];
+  unsigned char Rv_calc_bytes[32];
+  unsigned char h_calc_scalar[32];
+  unsigned char extra[3*32];
+  unsigned char* M_buf = 
+                        ((void *)0)
+                            ;
+  char* protocol_name = "VEdDSA_25519_SHA512_Elligator2";
+
+  if (vrf_out == 
+                ((void *)0)
+                    )
+    goto err;
+  memset(vrf_out, 0, 32);
+
+  if (signature == 
+                  ((void *)0)
+                      )
+    goto err;
+  if (eddsa_25519_pubkey_bytes == 
+                                 ((void *)0)
+                                     )
+    goto err;
+  if (msg == 
+            ((void *)0)
+                )
+    goto err;
+  if (customization_label == 
+                            ((void *)0) 
+                                 && customization_label_len != 0)
+    goto err;
+  if (customization_label_len > 128)
+    goto err;
+  if (msg_len > 1048576)
+    goto err;
+
+  if ((M_buf = malloc(msg_len + 2048)) == 0) {
+    goto err;
+  }
+  memcpy(M_buf + 2048, msg, msg_len);
+
+  Kv_bytes = signature;
+  h_scalar = signature + 32;
+  s_scalar = signature + 32 + 32;
+
+  if (!point_isreduced(eddsa_25519_pubkey_bytes))
+    goto err;
+  if (!point_isreduced(Kv_bytes))
+    goto err;
+  if (!sc_isreduced(h_scalar))
+    goto err;
+  if (!sc_isreduced(s_scalar))
+    goto err;
+
+
+  if (labelset_new(labelset, &labelset_len, 512,
+                   (unsigned char*)protocol_name, strlen(protocol_name),
+                   customization_label, customization_label_len) != 0)
+    goto err;
+
+
+
+  labelset_add(labelset, &labelset_len, 512, (unsigned char*)"1", 1);
+  if (generalized_calculate_Bv(&Bv_point, labelset, labelset_len,
+                               eddsa_25519_pubkey_bytes, M_buf, 2048, msg_len) != 0)
+    goto err;
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(Bv_bytes, &Bv_point);
+
+
+  if (generalized_solve_commitment(R_calc_bytes, &K_point, 
+                                                          ((void *)0)
+                                                              ,
+                                   s_scalar, eddsa_25519_pubkey_bytes, h_scalar) != 0)
+    goto err;
+
+
+  if (generalized_solve_commitment(Rv_calc_bytes, &Kv_point, &Bv_point,
+                                   s_scalar, Kv_bytes, h_scalar) != 0)
+    goto err;
+
+  ge_scalarmult_cofactor(&cK_point, &K_point);
+  ge_scalarmult_cofactor(&cKv_point, &Kv_point);
+  if (ge_isneutral(&cK_point) || ge_isneutral(&cKv_point) || ge_isneutral(&Bv_point))
+    goto err;
+
+
+
+  labelset[labelset_len-1] = (unsigned char)'3';
+  memcpy(extra, Bv_bytes, 32);
+  memcpy(extra + 32, Kv_bytes, 32);
+  memcpy(extra + 2*32, Rv_calc_bytes, 32);
+  if (generalized_challenge(h_calc_scalar,
+                            labelset, labelset_len,
+                            extra, 3*32,
+                            R_calc_bytes, eddsa_25519_pubkey_bytes,
+                            M_buf, 2048, msg_len) != 0)
+    goto err;
+
+
+  if (crypto_verify_32_ref(h_scalar, h_calc_scalar) != 0)
+    goto err;
+
+
+
+  labelset[labelset_len-1] = (unsigned char)'4';
+  if (generalized_calculate_vrf_output(vrf_out, labelset, labelset_len, &cKv_point) != 0)
+    goto err;
+
+  free(M_buf);
+  return 0;
+
+err:
+  free(M_buf);
+  return -1;
+}
+
+
+
+
+
+const unsigned char B_bytes[] = {
+  0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+  0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+  0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+  0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+};
+
+unsigned char* buffer_add(unsigned char* bufptr, const unsigned char* bufend,
+                          const unsigned char* in, const unsigned long in_len)
+{
+  unsigned long count = 0;
+
+  if (bufptr == 
+               ((void *)0) 
+                    || bufend == 
+                                 ((void *)0) 
+                                      || bufptr > bufend)
+    return 
+          ((void *)0)
+              ;
+  if (in == 
+           ((void *)0) 
+                && in_len != 0)
+    return 
+          ((void *)0)
+              ;
+  if (bufend - bufptr < in_len)
+    return 
+          ((void *)0)
+              ;
+
+  for (count=0; count < in_len; count++) {
+    if (bufptr >= bufend)
+      return 
+            ((void *)0)
+                ;
+    *bufptr++ = *in++;
+  }
+  return bufptr;
+}
+
+unsigned char* buffer_pad(const unsigned char* buf, unsigned char* bufptr, const unsigned char* bufend)
+{
+  unsigned long count = 0;
+  unsigned long pad_len = 0;
+
+  if (buf == 
+            ((void *)0) 
+                 || bufptr == 
+                              ((void *)0) 
+                                   || bufend == 
+                                                ((void *)0) 
+                                                     || bufptr >= bufend || bufptr < buf)
+    return 
+          ((void *)0)
+              ;
+
+  pad_len = (128 - ((bufptr-buf) % 128)) % 128;
+  if (bufend - bufptr < pad_len)
+    return 
+          ((void *)0)
+              ;
+
+  for (count=0; count < pad_len; count++) {
+    if (bufptr >= bufend)
+      return 
+            ((void *)0)
+                ;
+    *bufptr++ = 0;
+  }
+  return bufptr;
+}
+
+int labelset_new(unsigned char* labelset, unsigned long* labelset_len, const unsigned long labelset_maxlen,
+                 const unsigned char* protocol_name, const unsigned char protocol_name_len,
+                 const unsigned char* customization_label, const unsigned char customization_label_len)
+{
+  unsigned char* bufptr;
+
+  *labelset_len = 0;
+  if (labelset == 
+                 ((void *)0)
+                     )
+    return -1;
+  if (labelset_len == 
+                     ((void *)0)
+                         )
+    return -1;
+  if (labelset_maxlen > 512)
+    return -1;
+  if (labelset_maxlen < 3 + protocol_name_len + customization_label_len)
+    return -1;
+  if (protocol_name == 
+                      ((void *)0) 
+                           && protocol_name_len != 0)
+    return -1;
+  if (customization_label == 
+                            ((void *)0) 
+                                 && customization_label_len != 0)
+    return -1;
+  if (protocol_name_len > 128)
+    return -1;
+  if (customization_label_len > 128)
+    return -1;
+
+  bufptr = labelset;
+  *bufptr++ = 2;
+  *bufptr++ = protocol_name_len;
+  bufptr = buffer_add(bufptr, labelset + labelset_maxlen, protocol_name, protocol_name_len);
+  if (bufptr != 
+               ((void *)0) 
+                    && bufptr < labelset + labelset_maxlen)
+    *bufptr++ = customization_label_len;
+  bufptr = buffer_add(bufptr, labelset + labelset_maxlen,
+                      customization_label, customization_label_len);
+
+  if (bufptr != 
+               ((void *)0) 
+                    && bufptr - labelset == 3 + protocol_name_len + customization_label_len) {
+    *labelset_len = bufptr - labelset;
+    return 0;
+  }
+  return -1;
+}
+
+
+int labelset_add(unsigned char* labelset, unsigned long* labelset_len, const unsigned long labelset_maxlen,
+              const unsigned char* label, const unsigned char label_len)
+{
+  unsigned char* bufptr;
+  if (labelset_len == 
+                     ((void *)0)
+                         )
+    return -1;
+  if (*labelset_len > 512 || labelset_maxlen > 512)
+    return -1;
+  if (*labelset_len >= labelset_maxlen || *labelset_len + label_len + 1 > labelset_maxlen)
+    return -1;
+  if (*labelset_len < 3 || labelset_maxlen < 4)
+    return -1;
+  if (label_len > 128)
+    return -1;
+
+  labelset[0]++;
+  labelset[*labelset_len] = label_len;
+  bufptr = labelset + *labelset_len + 1;
+  bufptr = buffer_add(bufptr, labelset + labelset_maxlen, label, label_len);
+  if (bufptr == 
+               ((void *)0)
+                   )
+    return -1;
+  if (bufptr - labelset >= labelset_maxlen)
+    return -1;
+  if (bufptr - labelset != *labelset_len + 1 + label_len)
+    return -1;
+
+  *labelset_len += (1 + label_len);
+  return 0;
+}
+
+int labelset_validate(const unsigned char* labelset, const unsigned long labelset_len)
+{
+  unsigned char num_labels = 0;
+  unsigned char count = 0;
+  unsigned long offset = 0;
+  unsigned char label_len = 0;
+
+  if (labelset == 
+                 ((void *)0)
+                     )
+    return -1;
+  if (labelset_len < 3 || labelset_len > 512)
+    return -1;
+
+  num_labels = labelset[0];
+  offset = 1;
+  for (count = 0; count < num_labels; count++) {
+    label_len = labelset[offset];
+    if (label_len > 128)
+      return -1;
+    offset += 1 + label_len;
+    if (offset > labelset_len)
+      return -1;
+  }
+  if (offset != labelset_len)
+    return -1;
+  return 0;
+}
+
+int labelset_is_empty(const unsigned char* labelset, const unsigned long labelset_len)
+{
+  if (labelset_len != 3)
+    return 0;
+  return 1;
+}
+
+
+
+
+
+int generalized_xeddsa_25519_sign(unsigned char* signature_out,
+                              const unsigned char* x25519_privkey_scalar,
+                              const unsigned char* msg, const unsigned long msg_len,
+                              const unsigned char* random,
+                              const unsigned char* customization_label,
+                              const unsigned long customization_label_len);
+
+int generalized_xeddsa_25519_verify(
+                  const unsigned char* signature,
+                  const unsigned char* x25519_pubkey_bytes,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len);
+
+int generalized_xveddsa_25519_sign(
+                  unsigned char* signature_out,
+                  const unsigned char* x25519_privkey_scalar,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* random,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len);
+
+int generalized_xveddsa_25519_verify(
+                  unsigned char* vrf_out,
+                  const unsigned char* signature,
+                  const unsigned char* x25519_pubkey_bytes,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len);
+
+
+
+
+
+
+static int convert_25519_pubkey(unsigned char* ed_pubkey_bytes, const unsigned char* x25519_pubkey_bytes) {
+  fe u;
+  fe y;
+
+
+
+
+
+
+
+  if (!fe_isreduced(x25519_pubkey_bytes))
+      return -1;
+  crypto_sign_ed25519_ref10_fe_frombytes(u, x25519_pubkey_bytes);
+  fe_montx_to_edy(y, u);
+  crypto_sign_ed25519_ref10_fe_tobytes(ed_pubkey_bytes, y);
+  return 0;
+}
+
+static int calculate_25519_keypair(unsigned char* K_bytes, unsigned char* k_scalar,
+                            const unsigned char* x25519_privkey_scalar)
+{
+  unsigned char kneg[32];
+  ge_p3 ed_pubkey_point;
+  unsigned char sign_bit = 0;
+
+  if (32 != 32)
+    return -1;
+
+
+  crypto_sign_ed25519_ref10_ge_scalarmult_base(&ed_pubkey_point, x25519_privkey_scalar);
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(K_bytes, &ed_pubkey_point);
+
+
+  sign_bit = (K_bytes[31] & 0x80) >> 7;
+  memcpy(k_scalar, x25519_privkey_scalar, 32);
+  sc_neg(kneg, k_scalar);
+  sc_cmov(k_scalar, kneg, sign_bit);
+  K_bytes[31] &= 0x7F;
+
+  zeroize(kneg, 32);
+  return 0;
+}
+
+int generalized_xeddsa_25519_sign(unsigned char* signature_out,
+                              const unsigned char* x25519_privkey_scalar,
+                              const unsigned char* msg, const unsigned long msg_len,
+                              const unsigned char* random,
+                              const unsigned char* customization_label,
+                              const unsigned long customization_label_len)
+{
+  unsigned char K_bytes[32];
+  unsigned char k_scalar[32];
+  int retval = -1;
+
+  if (calculate_25519_keypair(K_bytes, k_scalar, x25519_privkey_scalar) != 0)
+    return -1;
+
+  retval = generalized_eddsa_25519_sign(signature_out,
+                                        K_bytes, k_scalar,
+                                        msg, msg_len, random,
+                                        customization_label, customization_label_len);
+  zeroize(k_scalar, 32);
+  return retval;
+}
+
+int generalized_xveddsa_25519_sign(
+                  unsigned char* signature_out,
+                  const unsigned char* x25519_privkey_scalar,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* random,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len)
+{
+  unsigned char K_bytes[32];
+  unsigned char k_scalar[32];
+  int retval = -1;
+
+  if (calculate_25519_keypair(K_bytes, k_scalar, x25519_privkey_scalar) != 0)
+    return -1;
+
+  retval = generalized_veddsa_25519_sign(signature_out, K_bytes, k_scalar,
+                                         msg, msg_len, random,
+                                         customization_label, customization_label_len);
+  zeroize(k_scalar, 32);
+  return retval;
+}
+
+int generalized_xeddsa_25519_verify(
+                  const unsigned char* signature,
+                  const unsigned char* x25519_pubkey_bytes,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len)
+{
+  unsigned char K_bytes[32];
+
+  if (convert_25519_pubkey(K_bytes, x25519_pubkey_bytes) != 0)
+      return -1;
+
+  return generalized_eddsa_25519_verify(signature, K_bytes, msg, msg_len,
+                                        customization_label, customization_label_len);
+}
+
+int generalized_xveddsa_25519_verify(
+                  unsigned char* vrf_out,
+                  const unsigned char* signature,
+                  const unsigned char* x25519_pubkey_bytes,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len)
+{
+  unsigned char K_bytes[32];
+
+  if (convert_25519_pubkey(K_bytes, x25519_pubkey_bytes) != 0)
+      return -1;
+
+  return generalized_veddsa_25519_verify(vrf_out, signature, K_bytes, msg, msg_len,
+                                         customization_label, customization_label_len);
+}
+
+
+
+
+
+
+void ge_p3_add(ge_p3 *r, const ge_p3 *p, const ge_p3 *q)
+{
+  ge_cached p_cached;
+  ge_p1p1 r_p1p1;
+
+  crypto_sign_ed25519_ref10_ge_p3_to_cached(&p_cached, p);
+  crypto_sign_ed25519_ref10_ge_add(&r_p1p1, q, &p_cached);
+  crypto_sign_ed25519_ref10_ge_p1p1_to_p3(r, &r_p1p1);
+}
+
+
+
+
+int point_isreduced(const unsigned char* p)
+{
+  unsigned char strict[32];
+
+  memmove(strict, p, 32);
+  strict[31] &= 0x7F;
+  return fe_isreduced(strict);
+}
+
+
+
+
+
+
+int sc_isreduced(const unsigned char* s)
+{
+  unsigned char strict[64];
+
+  memset(strict, 0, 64);
+  memmove(strict, s, 32);
+  crypto_sign_ed25519_ref10_sc_reduce(strict);
+  if (crypto_verify_32_ref(strict, s) != 0)
+    return 0;
+  return 1;
+}
+int generalized_commit(unsigned char* R_bytes, unsigned char* r_scalar,
+            const unsigned char* labelset, const unsigned long labelset_len,
+            const unsigned char* extra, const unsigned long extra_len,
+            const unsigned char* K_bytes, const unsigned char* k_scalar,
+            const unsigned char* Z,
+            unsigned char* M_buf, const unsigned long M_start, const unsigned long M_len)
+{
+  ge_p3 R_point;
+  unsigned char hash[64];
+  unsigned char* bufstart = 
+                           ((void *)0)
+                               ;
+  unsigned char* bufptr = 
+                         ((void *)0)
+                             ;
+  unsigned char* bufend = 
+                         ((void *)0)
+                             ;
+  unsigned long prefix_len = 0;
+
+  if (labelset_validate(labelset, labelset_len) != 0)
+    goto err;
+  if (R_bytes == 
+                ((void *)0) 
+                     || r_scalar == 
+                                    ((void *)0) 
+                                         ||
+      K_bytes == 
+                ((void *)0) 
+                     || k_scalar == 
+                                    ((void *)0) 
+                                         ||
+      Z == 
+          ((void *)0) 
+               || M_buf == 
+                           ((void *)0)
+                               )
+    goto err;
+  if (extra == 
+              ((void *)0) 
+                   && extra_len != 0)
+    goto err;
+  if (extra != 
+              ((void *)0) 
+                   && extra_len == 0)
+    goto err;
+  if (extra != 
+              ((void *)0) 
+                   && labelset_is_empty(labelset, labelset_len))
+    goto err;
+  if (64 != 64)
+    goto err;
+
+  prefix_len = 0;
+  prefix_len += 32 + labelset_len + 32;
+  prefix_len += ((128 - (prefix_len % 128)) % 128);
+  prefix_len += 32;
+  prefix_len += ((128 - (prefix_len % 128)) % 128);
+  prefix_len += labelset_len + 32 + extra_len;
+  if (prefix_len > M_start)
+    goto err;
+
+  bufstart = M_buf + M_start - prefix_len;
+  bufptr = bufstart;
+  bufend = M_buf + M_start;
+  bufptr = buffer_add(bufptr, bufend, B_bytes, 32);
+  bufptr = buffer_add(bufptr, bufend, labelset, labelset_len);
+  bufptr = buffer_add(bufptr, bufend, Z, 32);
+  bufptr = buffer_pad(bufstart, bufptr, bufend);
+  bufptr = buffer_add(bufptr, bufend, k_scalar, 32);
+  bufptr = buffer_pad(bufstart, bufptr, bufend);
+  bufptr = buffer_add(bufptr, bufend, labelset, labelset_len);
+  bufptr = buffer_add(bufptr, bufend, K_bytes, 32);
+  bufptr = buffer_add(bufptr, bufend, extra, extra_len);
+  if (bufptr != bufend || bufptr != M_buf + M_start || bufptr - bufstart != prefix_len)
+    goto err;
+
+  crypto_hash_sha512(hash, M_buf + M_start - prefix_len, prefix_len + M_len);
+  crypto_sign_ed25519_ref10_sc_reduce(hash);
+  crypto_sign_ed25519_ref10_ge_scalarmult_base(&R_point, hash);
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(R_bytes, &R_point);
+  memcpy(r_scalar, hash, 32);
+
+  zeroize(hash, 64);
+  zeroize(bufstart, prefix_len);
+  return 0;
+
+err:
+  zeroize(hash, 64);
+  zeroize(M_buf, M_start);
+  return -1;
+}
+
+
+
+
+
+
+int generalized_challenge(unsigned char* h_scalar,
+              const unsigned char* labelset, const unsigned long labelset_len,
+              const unsigned char* extra, const unsigned long extra_len,
+              const unsigned char* R_bytes,
+              const unsigned char* K_bytes,
+              unsigned char* M_buf, const unsigned long M_start, const unsigned long M_len)
+{
+  unsigned char hash[64];
+  unsigned char* bufstart = 
+                           ((void *)0)
+                               ;
+  unsigned char* bufptr = 
+                         ((void *)0)
+                             ;
+  unsigned char* bufend = 
+                         ((void *)0)
+                             ;
+  unsigned long prefix_len = 0;
+
+  if (h_scalar == 
+                 ((void *)0)
+                     )
+    goto err;
+  memset(h_scalar, 0, 32);
+
+  if (labelset_validate(labelset, labelset_len) != 0)
+    goto err;
+  if (R_bytes == 
+                ((void *)0) 
+                     || K_bytes == 
+                                   ((void *)0) 
+                                        || M_buf == 
+                                                    ((void *)0)
+                                                        )
+    goto err;
+  if (extra == 
+              ((void *)0) 
+                   && extra_len != 0)
+    goto err;
+  if (extra != 
+              ((void *)0) 
+                   && extra_len == 0)
+    goto err;
+  if (extra != 
+              ((void *)0) 
+                   && labelset_is_empty(labelset, labelset_len))
+    goto err;
+  if (64 != 64)
+    goto err;
+
+  if (labelset_is_empty(labelset, labelset_len)) {
+    if (2*32 > M_start)
+      goto err;
+    if (extra != 
+                ((void *)0) 
+                     || extra_len != 0)
+      goto err;
+    memcpy(M_buf + M_start - (2*32), R_bytes, 32);
+    memcpy(M_buf + M_start - (1*32), K_bytes, 32);
+    prefix_len = 2*32;
+  } else {
+    prefix_len = 3*32 + 2*labelset_len + extra_len;
+    if (prefix_len > M_start)
+      goto err;
+
+    bufstart = M_buf + M_start - prefix_len;
+    bufptr = bufstart;
+    bufend = M_buf + M_start;
+    bufptr = buffer_add(bufptr, bufend, B_bytes, 32);
+    bufptr = buffer_add(bufptr, bufend, labelset, labelset_len);
+    bufptr = buffer_add(bufptr, bufend, R_bytes, 32);
+    bufptr = buffer_add(bufptr, bufend, labelset, labelset_len);
+    bufptr = buffer_add(bufptr, bufend, K_bytes, 32);
+    bufptr = buffer_add(bufptr, bufend, extra, extra_len);
+
+    if (bufptr == 
+                 ((void *)0)
+                     )
+      goto err;
+    if (bufptr != bufend || bufptr != M_buf + M_start || bufptr - bufstart != prefix_len)
+      goto err;
+  }
+
+  crypto_hash_sha512(hash, M_buf + M_start - prefix_len, prefix_len + M_len);
+  crypto_sign_ed25519_ref10_sc_reduce(hash);
+  memcpy(h_scalar, hash, 32);
+  return 0;
+
+err:
+  return -1;
+}
+
+
+int generalized_prove(unsigned char* out_scalar,
+    const unsigned char* r_scalar, const unsigned char* k_scalar, const unsigned char* h_scalar)
+{
+  crypto_sign_ed25519_ref10_sc_muladd(out_scalar, h_scalar, k_scalar, r_scalar);
+  zeroize_stack();
+  return 0;
+}
+
+
+int generalized_solve_commitment(unsigned char* R_bytes_out, ge_p3* K_point_out,
+                                 const ge_p3* B_point, const unsigned char* s_scalar,
+                                 const unsigned char* K_bytes, const unsigned char* h_scalar)
+{
+
+  ge_p3 Kneg_point;
+  ge_p2 R_calc_point_p2;
+
+  ge_p3 sB;
+  ge_p3 hK;
+  ge_p3 R_calc_point_p3;
+
+  if (crypto_sign_ed25519_ref10_ge_frombytes_negate_vartime(&Kneg_point, K_bytes) != 0)
+    return -1;
+
+  if (B_point == 
+                ((void *)0)
+                    ) {
+    crypto_sign_ed25519_ref10_ge_double_scalarmult_vartime(&R_calc_point_p2, h_scalar, &Kneg_point, s_scalar);
+    crypto_sign_ed25519_ref10_ge_tobytes(R_bytes_out, &R_calc_point_p2);
+  }
+  else {
+
+    ge_scalarmult(&sB, s_scalar, B_point);
+
+
+    ge_scalarmult(&hK, h_scalar, &Kneg_point);
+
+
+    ge_p3_add(&R_calc_point_p3, &sB, &hK);
+    crypto_sign_ed25519_ref10_ge_p3_tobytes(R_bytes_out, &R_calc_point_p3);
+  }
+
+  if (K_point_out) {
+    ge_neg(K_point_out, &Kneg_point);
+  }
+
+  return 0;
+}
+
+
+int generalized_eddsa_25519_sign(
+                  unsigned char* signature_out,
+                  const unsigned char* eddsa_25519_pubkey_bytes,
+                  const unsigned char* eddsa_25519_privkey_scalar,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* random,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len)
+{
+  unsigned char labelset[512];
+  unsigned long labelset_len = 0;
+  unsigned char R_bytes[32];
+  unsigned char r_scalar[32];
+  unsigned char h_scalar[32];
+  unsigned char s_scalar[32];
+  unsigned char* M_buf = 
+                        ((void *)0)
+                            ;
+
+  if (signature_out == 
+                      ((void *)0)
+                          )
+    goto err;
+  memset(signature_out, 0, 64);
+
+  if (eddsa_25519_pubkey_bytes == 
+                                 ((void *)0)
+                                     )
+    goto err;
+  if (eddsa_25519_privkey_scalar == 
+                                   ((void *)0)
+                                       )
+    goto err;
+  if (msg == 
+            ((void *)0)
+                )
+    goto err;
+  if (customization_label == 
+                            ((void *)0) 
+                                 && customization_label_len != 0)
+    goto err;
+  if (customization_label_len > 128)
+    goto err;
+  if (msg_len > 1048576)
+    goto err;
+
+  if ((M_buf = malloc(msg_len + 2048)) == 0)
+    goto err;
+  memcpy(M_buf + 2048, msg, msg_len);
+
+  if (labelset_new(labelset, &labelset_len, 512, 
+                                                           ((void *)0)
+                                                               , 0,
+                   customization_label, customization_label_len) != 0)
+    goto err;
+
+  if (generalized_commit(R_bytes, r_scalar, labelset, labelset_len, 
+                                                                   ((void *)0)
+                                                                       , 0,
+                         eddsa_25519_pubkey_bytes, eddsa_25519_privkey_scalar,
+                         random, M_buf, 2048, msg_len) != 0)
+    goto err;
+
+  if (generalized_challenge(h_scalar, labelset, labelset_len, 
+                                                             ((void *)0)
+                                                                 , 0,
+                            R_bytes, eddsa_25519_pubkey_bytes, M_buf, 2048, msg_len) != 0)
+    goto err;
+
+  if (generalized_prove(s_scalar, r_scalar, eddsa_25519_privkey_scalar, h_scalar) != 0)
+    goto err;
+
+  memcpy(signature_out, R_bytes, 32);
+  memcpy(signature_out + 32, s_scalar, 32);
+
+  zeroize(r_scalar, 32);
+  zeroize_stack();
+  free(M_buf);
+  return 0;
+
+err:
+  zeroize(r_scalar, 32);
+  zeroize_stack();
+  free(M_buf);
+  return -1;
+}
+
+int generalized_eddsa_25519_verify(
+                  const unsigned char* signature,
+                  const unsigned char* eddsa_25519_pubkey_bytes,
+                  const unsigned char* msg,
+                  const unsigned long msg_len,
+                  const unsigned char* customization_label,
+                  const unsigned long customization_label_len)
+{
+  unsigned char labelset[512];
+  unsigned long labelset_len = 0;
+  const unsigned char* R_bytes = 
+                                ((void *)0)
+                                    ;
+  const unsigned char* s_scalar = 
+                                 ((void *)0)
+                                     ;
+  unsigned char h_scalar[32];
+  unsigned char* M_buf = 
+                        ((void *)0)
+                            ;
+  unsigned char R_calc_bytes[32];
+
+  if (signature == 
+                  ((void *)0)
+                      )
+    goto err;
+  if (eddsa_25519_pubkey_bytes == 
+                                 ((void *)0)
+                                     )
+    goto err;
+  if (msg == 
+            ((void *)0)
+                )
+    goto err;
+  if (customization_label == 
+                            ((void *)0) 
+                                 && customization_label_len != 0)
+    goto err;
+  if (customization_label_len > 128)
+    goto err;
+  if (msg_len > 1048576)
+    goto err;
+
+  if ((M_buf = malloc(msg_len + 2048)) == 0)
+    goto err;
+  memcpy(M_buf + 2048, msg, msg_len);
+
+  if (labelset_new(labelset, &labelset_len, 512, 
+                                                           ((void *)0)
+                                                               , 0,
+                   customization_label, customization_label_len) != 0)
+    goto err;
+
+  R_bytes = signature;
+  s_scalar = signature + 32;
+
+  if (!point_isreduced(eddsa_25519_pubkey_bytes))
+    goto err;
+  if (!point_isreduced(R_bytes))
+    goto err;
+  if (!sc_isreduced(s_scalar))
+    goto err;
+
+  if (generalized_challenge(h_scalar, labelset, labelset_len,
+                            
+                           ((void *)0)
+                               , 0, R_bytes, eddsa_25519_pubkey_bytes, M_buf, 2048, msg_len) != 0)
+    goto err;
+
+  if (generalized_solve_commitment(R_calc_bytes, 
+                                                ((void *)0)
+                                                    , 
+                                                      ((void *)0)
+                                                          ,
+                                   s_scalar, eddsa_25519_pubkey_bytes, h_scalar) != 0)
+    goto err;
+
+  if (crypto_verify_32_ref(R_bytes, R_calc_bytes) != 0)
+    goto err;
+
+  free(M_buf);
+  return 0;
+
+err:
+  free(M_buf);
+  return -1;
+}
+
+
 typedef uint64_t uint64;
 
 static uint64 load_bigendian(const unsigned char *x)

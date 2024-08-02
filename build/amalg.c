@@ -67,6 +67,14 @@
 #include "ed25519/additions/xeddsa.c"
 #include "ed25519/additions/zeroize.c"
 
+#include "ed25519/additions/generalized/gen_veddsa.c"
+#include "ed25519/additions/generalized/gen_labelset.c"
+#include "ed25519/additions/generalized/gen_x.c"
+#include "ed25519/additions/generalized/ge_p3_add.c"
+#include "ed25519/additions/generalized/point_isreduced.c"
+#include "ed25519/additions/generalized/sc_isreduced.c"
+#include "ed25519/additions/generalized/gen_eddsa.c"
+
 #include "ed25519/nacl_sha512/blocks.c"
 #include "ed25519/nacl_sha512/hash.c"
 
