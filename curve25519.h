@@ -4,6 +4,8 @@
 typedef int crypto_int32;
 typedef crypto_int32 fe[10];
 
+typedef uint8_t u8;
+
 void crypto_sign_ed25519_ref10_fe_frombytes(fe,const unsigned char *);
 void fe_edy_to_montx(fe u, const fe y);
 void crypto_sign_ed25519_ref10_fe_tobytes(unsigned char *,const fe);
