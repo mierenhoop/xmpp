@@ -1,3 +1,5 @@
+#include <mbedtls/hkdf.h>
+
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
@@ -30,7 +32,7 @@ struct PreKey {
 };
 
 struct PreKeyStore {
-  struct PreKey[100] keys;
+  struct PreKey keys[100];
 };
 
 struct SignedPreKey {
@@ -118,6 +120,11 @@ static void DecodePrivatePoint(PrivateKey prv, PrivateKey data) {
   memcpy(prv, data, sizeof(PrivateKey));
 }
 
+// AKA ECDHE
+static void CalculateCurveAgreement(uint8_t d[static 32], PublicKey pub, PrivateKey prv) {
+  curve25519_donna(d, prv, pub);
+}
+
 static void GenerateSignedPreKey(struct SignedPreKey *spk, struct KeyPair *idkp) {
   struct KeyPair kp;
   SerializedKey sk;
@@ -126,7 +133,7 @@ static void GenerateSignedPreKey(struct SignedPreKey *spk, struct KeyPair *idkp)
   SerializeKey(sk, kp.pub);
   SerializeKeyOmemo(omemok, kp.pub);
   CalculateCurveSignature(spk->sig, idkp->prv, sk, sizeof(SerializedKey));
-  CalculateCurveSignature(spk->omemosig, idkp->prv, omemok, sizeof(SerializedKeyOmemo));
+  CalculateCurveSignature(spk->omemosig, idkp->prv, omemok, sizeof(OmemoSerializedKey));
 }
 
 static bool VerifySignature(CurveSignature sig, PublicKey sk, const uint8_t *msg, size_t n) {
@@ -143,7 +150,25 @@ static void GetIdentityKeyPair(struct KeyPair *ouridkeypair) {
   DecodePrivatePoint(prv, ouridkeypair->prv);
 }
 
-static void ProcessBundle(struct Bundle *b) {
+static void InitSessionAlice(struct Bundle *bundle, struct Session *session, struct KeyPair *base) {
+  uint8_t res[32];
+  CalculateCurveAgreement(res, bundle->spk, session->identity.prv);
+  CalculateCurveAgreement(res, bundle->ik, base->prv);
+  CalculateCurveAgreement(res, bundle->spk, base->prv);
+
+  // TODO: select random pre key, then make shared secret for hkdf
+
+  uint8_t masterkey[64];
+  uint8_t salt[32];
+  memset(salt, 0, 32);
+  // "OMEMO X3DH" for 0.4.0+
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, sharedsecret, idk, "WhisperText", 11, masterkey, 64) == 0);
+}
+
+// When we process the bundle, we are the ones who initialize the
+// session and we are referred to as alice. Otherwise we have received
+// an initiation message and are called bob.
+static void ProcessBundle(struct Session *s, struct Bundle *b) {
   SerializedKey serspk;
   struct KeyPair ourbasekey;
   // if (version == 4) SerializedKeyOmemo()
@@ -151,5 +176,7 @@ static void ProcessBundle(struct Bundle *b) {
   if (!VerifySignature(b->spks, b->ik, serspk, sizeof(SerializedKey))) {
     puts("Wrong sig on device");
   }
-  GenerateKeyPair(&outbasekey);
+  GenerateKeyPair(&ourbasekey);
+  InitSessionAlice(b, s, &ourbasekey);
 }
+
