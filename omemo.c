@@ -44,6 +44,10 @@ struct Session {
   struct KeyPair identity;
 };
 
+struct Ratchet {
+  Key root;
+};
+
 // Random function that must not fail, if it's really not possible to
 // get random data, you should either exit the program or longjmp out.
 void SystemRandom(void *d, size_t n);
@@ -57,8 +61,9 @@ void SystemRandom(void *d, size_t n) {
 struct Bundle {
   CurveSignature spks;
   PublicKey spk, ik;
-  PublicKey prekeys[150];
-  size_t prekeysn;
+  PublicKey pk; // Randomly selected prekey
+  //PublicKey prekeys[150];
+  //size_t prekeysn;
 };
 
 static void GenerateKeyPair(struct KeyPair *kp) {
@@ -150,19 +155,28 @@ static void GetIdentityKeyPair(struct KeyPair *ouridkeypair) {
   DecodePrivatePoint(prv, ouridkeypair->prv);
 }
 
-static void InitSessionAlice(struct Bundle *bundle, struct Session *session, struct KeyPair *base) {
-  uint8_t res[32];
-  CalculateCurveAgreement(res, bundle->spk, session->identity.prv);
-  CalculateCurveAgreement(res, bundle->ik, base->prv);
-  CalculateCurveAgreement(res, bundle->spk, base->prv);
+static void CalculateSendingRatchet(struct Session *session, PublicKey spk, struct KeyPair *sendingkey, Key rootkey) {
+  uint8_t secret[32];
+  CalculateCurveAgreement(secret, spk, sendingkey->prv);
+}
 
-  // TODO: select random pre key, then make shared secret for hkdf
+static void InitSessionAlice(struct Bundle *bundle, struct Session *session, struct KeyPair *base) {
+  uint8_t secret[32*5];
+  memset(secret, 255, 32);
+  CalculateCurveAgreement(secret+32, bundle->spk, session->identity.prv);
+  CalculateCurveAgreement(secret+64, bundle->ik, base->prv);
+  CalculateCurveAgreement(secret+96, bundle->spk, base->prv);
+  CalculateCurveAgreement(secret+128, bundle->pk, base->prv);
 
   uint8_t masterkey[64];
   uint8_t salt[32];
   memset(salt, 0, 32);
   // "OMEMO X3DH" for 0.4.0+
-  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, sharedsecret, idk, "WhisperText", 11, masterkey, 64) == 0);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, masterkey, 64) == 0);
+
+  struct KeyPair sendingkey;
+  GenerateKeyPair(&sendingkey);
+  CalculateSendingRatchet(session, bundle->spk, &sendingkey, masterkey);
 }
 
 // When we process the bundle, we are the ones who initialize the
