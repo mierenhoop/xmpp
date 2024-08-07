@@ -194,6 +194,8 @@ static void ProcessBundle(struct Session *s, struct Bundle *b) {
   InitSessionAlice(b, s, &ourbasekey);
 }
 
+// Protobuf: https://protobuf.dev/programming-guides/encoding/
+
 static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *v) {
   int i = 0;
   *v = 0;
@@ -209,7 +211,7 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
 }
 
 // Only supports uint32 and len prefixed (by int32).
-struct MessageSchemaEntry {
+struct ProtobufField {
   int type;
   uint32_t v;
   const uint8_t *p;
@@ -219,17 +221,19 @@ struct MessageSchemaEntry {
 #define PB_UINT32 0
 #define PB_LEN 2
 
-// nfields MUST be <= 32
-static int ParseProtobuf(const char *s, size_t n, struct MessageSchemaEntry *fields, int nfields) {
+// nfields MUST be <= 16
+static int ParseProtobuf(const char *s, size_t n, struct ProtobufField *fields, int nfields) {
   int type, id;
   uint64_t v;
   const char *e = s + n;
-  uint32_t found;
+  uint32_t found = 0;
   while (s < e) {
+    // This is actually a varint, but we only support id < 16 and return an
+    // error otherwise, so we don't have to account for multiple-byte tags.
     type = *s & 7;
     id = *s >> 3;
     s++;
-    if (id >= nfields || type != fields[id].type & 7)
+    if (id >= nfields || type != (fields[id].type & 7))
       return -1;
     found |= 1 << id;
     if (!(s = ParseVarInt(s, e, &fields[id].v)))
@@ -240,20 +244,24 @@ static int ParseProtobuf(const char *s, size_t n, struct MessageSchemaEntry *fie
     }
   }
   for (int i = 0; i < nfields; i++) {
-    if (fields[i].type & PB_REQUIRED && !(found & (1 << i)))
+    if ((fields[i].type & PB_REQUIRED) && !(found & (1 << i)))
       return -1;
   }
   return 0;
 }
 
-static void ParseKeyExchange() {
-  struct MessageSchemaEntry fields[6] = {
+static int ParseKeyExchange(const uint8_t *s, size_t n) {
+  int r;
+  struct ProtobufField fields[6] = {
     [1] = {PB_REQUIRED | PB_UINT32},
     [2] = {PB_REQUIRED | PB_UINT32},
     [3] = {PB_REQUIRED | PB_LEN},
     [4] = {PB_REQUIRED | PB_LEN},
     [5] = {PB_REQUIRED | PB_LEN},
   };
+  if ((r = ParseProtobuf(s, n, fields, 6)))
+    return r;
+  return 0;
 }
 
 static uint8_t *FormatVarInt(uint8_t d[static 5], uint32_t v) {
@@ -265,14 +273,49 @@ static uint8_t *FormatVarInt(uint8_t d[static 5], uint32_t v) {
   return d;
 }
 
-static void TestProtobuf() {
+// id < 16 && n < 128
+static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
+  *d++ = (id << 3) | PB_LEN;
+  *d++ = n;
+  memcpy(d, b, n);
+  return d + n;
+}
+
+static void FormatKeyExchange(uint8_t *d, uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek) { // , message
+  *d++ = (1 << 3) | PB_UINT32;
+  d = FormatVarInt(d, pk_id);
+  *d++ = (2 << 3) | PB_UINT32;
+  d = FormatVarInt(d, spk_id);
+  d = FormatBytes(d, 3, ik, sizeof(PublicKey));
+  d = FormatBytes(d, 4, ek, sizeof(PublicKey));
+}
+
+static void TestParseProtobuf() {
+  struct ProtobufField fields[6] = {
+    [1] = {PB_REQUIRED | PB_UINT32},
+    [2] = {PB_REQUIRED | PB_UINT32},
+  };
+#define FatStrArgs(s) s, (sizeof(s)-1)
+  assert(!ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01"), fields, 6));
+  assert(fields[1].v == 1);
+  assert(fields[2].v == 0x80);
+  assert(ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01")+1, fields, 6));
+  assert(ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01")-1, fields, 6));
+  assert(ParseProtobuf(FatStrArgs("\x08\x01"), fields, 6));
+  assert(!ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01\x18\x01"), fields, 6));
+  assert(fields[3].v == 1);
+}
+
+static void TestFormatProtobuf() {
   uint8_t varint[5];
   assert(FormatVarInt(varint, 0) == varint + 1 && varint[0] == 0);
   assert(FormatVarInt(varint, 1) == varint + 1 && varint[0] == 1);
   assert(FormatVarInt(varint, 0x80) == varint + 2 && !memcmp(varint, "\x80\x01", 2));
+  assert(FormatVarInt(varint, 0xffffffff) == varint + 5 && !memcmp(varint, "\xff\xff\xff\xff\x0f", 5));
 }
 
 int main() {
-  TestProtobuf();
+  TestParseProtobuf();
+  TestFormatProtobuf();
   puts("Tests succeeded");
 }

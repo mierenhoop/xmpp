@@ -12,6 +12,9 @@ o/xmpp.o: xmpp.c | o
 o/test: o/xmpp.o
 	$(CC) -DXMPP_RUNTEST -o o/test yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
 
+o/test-omemo:
+	$(CC) -o o/test-omemo curve25519.c omemo.c $(CFLAGS) $(LDFLAGS)
+
 o/im: o/xmpp.o
 	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -DIM_NATIVE
 
@@ -45,6 +48,9 @@ size-esp-im: | o
 test: o/test
 	LD_LIBRARY_PATH=/usr/local/lib ./o/test
 
+test-omemo: o/test-omemo
+	LD_LIBRARY_PATH=/usr/local/lib ./o/test-omemo
+
 runim: o/im
 	LD_LIBRARY_PATH=/usr/local/lib rlwrap ./o/im
 
@@ -54,7 +60,7 @@ prosody:
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
-.PHONY: all o/test test prosody o/im runim
+.PHONY: all o/test test test-omemo o/test-omemo prosody o/im runim
 
 clean:
 	rm -rf o
