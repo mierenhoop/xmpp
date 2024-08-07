@@ -194,3 +194,85 @@ static void ProcessBundle(struct Session *s, struct Bundle *b) {
   InitSessionAlice(b, s, &ourbasekey);
 }
 
+static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *v) {
+  int i = 0;
+  *v = 0;
+  do {
+    if (s >= e)
+      return NULL;
+    *v |= (*s & 0x7f) << i;
+    i += 7;
+    if (i > 32 - 7) // will overflow
+      return NULL;
+  } while (*s++ & 0x80);
+  return s;
+}
+
+// Only supports uint32 and len prefixed (by int32).
+struct MessageSchemaEntry {
+  int type;
+  uint32_t v;
+  const uint8_t *p;
+};
+
+#define PB_REQUIRED (1 << 3)
+#define PB_UINT32 0
+#define PB_LEN 2
+
+// nfields MUST be <= 32
+static int ParseProtobuf(const char *s, size_t n, struct MessageSchemaEntry *fields, int nfields) {
+  int type, id;
+  uint64_t v;
+  const char *e = s + n;
+  uint32_t found;
+  while (s < e) {
+    type = *s & 7;
+    id = *s >> 3;
+    s++;
+    if (id >= nfields || type != fields[id].type & 7)
+      return -1;
+    found |= 1 << id;
+    if (!(s = ParseVarInt(s, e, &fields[id].v)))
+      return -1;
+    if (type == PB_LEN) {
+      fields[id].p = s;
+      s += fields[id].v;
+    }
+  }
+  for (int i = 0; i < nfields; i++) {
+    if (fields[i].type & PB_REQUIRED && !(found & (1 << i)))
+      return -1;
+  }
+  return 0;
+}
+
+static void ParseKeyExchange() {
+  struct MessageSchemaEntry fields[6] = {
+    [1] = {PB_REQUIRED | PB_UINT32},
+    [2] = {PB_REQUIRED | PB_UINT32},
+    [3] = {PB_REQUIRED | PB_LEN},
+    [4] = {PB_REQUIRED | PB_LEN},
+    [5] = {PB_REQUIRED | PB_LEN},
+  };
+}
+
+static uint8_t *FormatVarInt(uint8_t d[static 5], uint32_t v) {
+  do {
+    *d = v & 0x7f;
+    v >>= 7;
+    *d++ |= (!!v << 7);
+  } while (v);
+  return d;
+}
+
+static void TestProtobuf() {
+  uint8_t varint[5];
+  assert(FormatVarInt(varint, 0) == varint + 1 && varint[0] == 0);
+  assert(FormatVarInt(varint, 1) == varint + 1 && varint[0] == 1);
+  assert(FormatVarInt(varint, 0x80) == varint + 2 && !memcmp(varint, "\x80\x01", 2));
+}
+
+int main() {
+  TestProtobuf();
+  puts("Tests succeeded");
+}
