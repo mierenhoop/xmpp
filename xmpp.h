@@ -125,6 +125,7 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s);
 #define XMPP_STANZA_FAILURE 16
 #define XMPP_STANZA_STREAMEND 17
 #define XMPP_STANZA_ERROR 18
+#define XMPP_STANZA_STREAM 19
 
 #define XMPP_FAILURE_ABORTED                (1 << 0)
 #define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
@@ -174,6 +175,14 @@ struct xmppFailure {
   struct xmppXmlSlice text;
 };
 
+struct xmppStream {
+  struct xmppXmlSlice from, to, id;
+  int features;
+  //int optionalfeatures;
+  int requiredfeatures;
+  bool hasunknownrequired; // TODO: make this an error?
+};
+
 // XML stanza transformed into a C structure.
 // raw = full stanza xml
 // type = XMPP_STANZA_*
@@ -195,6 +204,7 @@ struct xmppStanza {
     struct xmppXmlSlice bindjid;
     struct xmppSmacksEnabled smacksenabled;
     int ack;
+    struct xmppStream stream;
   };
 };
 
