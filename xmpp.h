@@ -228,12 +228,17 @@ struct xmppSaslContext {
 // inside an element to notify that there will be no more attributes) &
 // YXML_CONTENTSTOP (when < is encountered) & possible also
 // YXML_CONTENTSTART (when > is encountered).
+// skippingdepth: when entering skipping mode (the entire buffer is
+// filled without complete stanza), skippingdepth is set to one and
+// skipping will start. It is then incremented/decremented according to
+// the XML depth until skippingdepth == 0.
 struct xmppParser {
   yxml_t x;
   char xbuf[XMPP_CONFIG_MAX_YXMLBUF_SIZE];
   jmp_buf jb;
   size_t i, n, c;
   char *p;
+  int skippingdepth;
 };
 
 // i = current end pos of xml

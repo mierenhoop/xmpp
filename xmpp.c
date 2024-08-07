@@ -986,6 +986,31 @@ static int ReturnStreamError(struct xmppClient *c, int r) {
   return r;
 }
 
+// Mostly copied from SkipUnknownXml
+static int SkipLargeStanza(struct xmppParser *p) {
+  while (p->i < p->n) {
+    yxml_ret_t r = yxml_parse(&p->x, p->p[p->i++]);
+    switch (r) {
+    case YXML_ELEMSTART:
+      p->skippingdepth++;
+      break;
+    case YXML_ELEMEND:
+      if (--p->skippingdepth == 0)
+        return 0;
+      break;
+    default:
+      if (r < 0)
+        return XMPP_EXML;
+    }
+  }
+  return XMPP_EPARTIAL;
+}
+
+static void SetupSkipping(struct xmppParser *p) {
+  p->skippingdepth = 1;
+  yxml_init(&p->x, p->xbuf, sizeof(p->xbuf));
+}
+
 // UNINIT(0)--xmppInitClient()--INIT--
 //
 // When SEND is returned, the complete out buffer (c->comp.p) with the
@@ -1011,6 +1036,13 @@ int xmppIterate(struct xmppClient *c) {
   // the OS/network stack handle caching.
   if (c->comp.n > 0)
     return XMPP_ITER_SEND;
+  if (c->parser.n && c->parser.skippingdepth) {
+    if ((r = SkipLargeStanza(&c->parser)) == XMPP_EPARTIAL)
+      return XMPP_ITER_RECV;
+    else if (r)
+      return r;
+    // else fallthrough
+  }
   if (c->state == CLIENTSTATE_UNINIT)
     return 0;
   if (c->state == CLIENTSTATE_INIT) {
@@ -1021,7 +1053,10 @@ int xmppIterate(struct xmppClient *c) {
   }
   if (c->state == CLIENTSTATE_STREAMSENT) {
     MoveStanza(&c->parser);
+    // TODO: merge ParseStream with ParseStanza?
     if (!c->parser.n || (r = xmppParseStream(&c->parser, &stream)) == XMPP_EPARTIAL) {
+      if (c->parser.n == c->parser.c)
+        return XMPP_EXML; // TODO: some other code?
       return XMPP_ITER_RECV;
     }
     if (r)
@@ -1074,6 +1109,10 @@ int xmppIterate(struct xmppClient *c) {
   if (c->parser.n) Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
   // TODO: if previous stanza handled only then read.
   if (!c->parser.n || (r = xmppParseStanza(&c->parser, st)) == XMPP_EPARTIAL) {
+    if (c->parser.n == c->parser.c) {
+      SetupSkipping(&c->parser);
+      return XMPP_ITER_OK;
+    }
     return c->isnegotiationdone ? XMPP_ITER_READY : XMPP_ITER_RECV;
   }
   if (r)
