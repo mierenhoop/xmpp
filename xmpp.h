@@ -44,6 +44,7 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s);
 #define XMPP_ESPEC -9
 // Resource binding at specified address has not succeeded.
 #define XMPP_EBIND -10
+#define XMPP_ESKIP -11
 
 // Always emit stanzas (TLS and SASL negotiation not included).
 #define XMPP_OPT_EMITSTANZA (1 << 0) 
@@ -176,7 +177,6 @@ struct xmppFailure {
 };
 
 struct xmppStream {
-  struct xmppXmlSlice from, to, id;
   int features;
   //int optionalfeatures;
   int requiredfeatures;

@@ -315,6 +315,7 @@ int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool instream) 
     st->type = XMPP_STANZA_STREAMEND;
   } else if (!strcmp(p->x.elem, "stream:stream")) {
     st->type = XMPP_STANZA_STREAM;
+    ParseCommonStanzaAttributes(p, st);
     xmppParseStream(p, &st->stream);
   } else if (!strcmp(p->x.elem, "stream:error")) {
     SkipUnknownXml(p);
@@ -427,15 +428,6 @@ static void ParseOptionalRequired(struct xmppParser *p, struct xmppStream *s, in
 // If server too slow, user should read more.
 void xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
   struct xmppXmlSlice attr;
-  while (ParseAttribute(p, &attr)) {
-    if (!strcmp(p->x.attr, "id")) {
-      memcpy(&s->id, &attr, sizeof(attr));
-    } else if (!strcmp(p->x.attr, "from")) {
-      memcpy(&s->from, &attr, sizeof(attr));
-    } else if (!strcmp(p->x.attr, "to")) {
-      memcpy(&s->to, &attr, sizeof(attr));
-    }
-  }
   if (!ParseElement(p) || strcmp(p->x.elem, "stream:features"))
     longjmp(p->jb, XMPP_ESPEC);
   while (ParseElement(p)) {
@@ -982,7 +974,7 @@ static int SkipLargeStanza(struct xmppParser *p) {
       p->skippingdepth++;
       break;
     case YXML_ELEMEND:
-      if (--p->skippingdepth == 0)
+      if (--p->skippingdepth == 1)
         return 0;
       break;
     default:
@@ -990,6 +982,8 @@ static int SkipLargeStanza(struct xmppParser *p) {
         return XMPP_EXML;
     }
   }
+  p->i = 0;
+  p->n = 0;
   return XMPP_EPARTIAL;
 }
 
@@ -1020,6 +1014,8 @@ int xmppIterate(struct xmppClient *c) {
   // always return SEND if the out buffer is not returned, do not
   // try caching to avoid prematurely filling up the entire buffer. Let
   // the OS/network stack handle caching.
+  if (c->state == CLIENTSTATE_UNINIT)
+    return 0;
   if (c->comp.n > 0)
     return XMPP_ITER_SEND;
   if (c->parser.n && c->parser.skippingdepth) {
@@ -1027,26 +1023,30 @@ int xmppIterate(struct xmppClient *c) {
       return XMPP_ITER_RECV;
     else if (r)
       return r;
-    // else fallthrough
+    return XMPP_ESKIP;
   }
-  if (c->state == CLIENTSTATE_UNINIT)
-    return 0;
   if (c->state == CLIENTSTATE_INIT) {
     if ((r = xmppFormatStream(&c->comp, c->jid.domain)))
       return ReturnRetry(c, r);
     c->state = CLIENTSTATE_STREAMSENT;
     return XMPP_ITER_SEND;
   }
-  if (c->state == CLIENTSTATE_STREAMSENT) {
-    MoveStanza(&c->parser);
-    // TODO: merge ParseStream with ParseStanza?
-    if (!c->parser.n || (r = xmppParseStanza(&c->parser, st, false)) == XMPP_EPARTIAL) {
-      if (c->parser.n == c->parser.c)
-        return XMPP_EXML; // TODO: some other code?
-      return XMPP_ITER_RECV;
+  if (c->state == CLIENTSTATE_ENDSTREAM) {
+    return xmppEndStream(c);
+  }
+  MoveStanza(&c->parser);
+  if (c->parser.n) Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
+  // TODO: if previous stanza handled only then read.
+  if (!c->parser.n || (r = xmppParseStanza(&c->parser, st, c->state != CLIENTSTATE_STREAMSENT)) == XMPP_EPARTIAL) {
+    if (c->parser.n == c->parser.c) {
+      SetupSkipping(&c->parser);
+      return XMPP_ITER_OK;
     }
-    if (r)
-      return r;
+    return c->isnegotiationdone ? XMPP_ITER_READY : XMPP_ITER_RECV;
+  }
+  if (r)
+    return r;
+  if (c->state == CLIENTSTATE_STREAMSENT) {
     if (st->type != XMPP_STANZA_STREAM)
       return XMPP_ESPEC;
     struct xmppStream stream;
@@ -1092,21 +1092,6 @@ int xmppIterate(struct xmppClient *c) {
     c->state = CLIENTSTATE_BIND;
     return XMPP_ITER_SEND;
   }
-  if (c->state == CLIENTSTATE_ENDSTREAM) {
-    return xmppEndStream(c);
-  }
-  MoveStanza(&c->parser);
-  if (c->parser.n) Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
-  // TODO: if previous stanza handled only then read.
-  if (!c->parser.n || (r = xmppParseStanza(&c->parser, st, true)) == XMPP_EPARTIAL) {
-    if (c->parser.n == c->parser.c) {
-      SetupSkipping(&c->parser);
-      return XMPP_ITER_OK;
-    }
-    return c->isnegotiationdone ? XMPP_ITER_READY : XMPP_ITER_RECV;
-  }
-  if (r)
-    return r;
   if (!c->isnegotiationdone) { // TODO: remove isnegotiationdone and just use state?
     switch (c->state) {
     case CLIENTSTATE_STARTTLS:
@@ -1372,10 +1357,8 @@ static void TestXml() {
       "</stream:features>"
       );
   assert(xmppParseStanza(&p, &st, false) == 0);
-  struct xmppStream str;
-  memcpy(&str, &st.stream, sizeof(struct xmppStream));
-  assert(str.to.p && !strncmp(str.to.p, "juliet@im.example.com", str.to.rawn));
-  assert(str.to.rawn == str.to.n);
+  assert(st.to.p && !strncmp(st.to.p, "juliet@im.example.com", st.to.rawn));
+  assert(st.to.rawn == st.to.n);
   assert(FindElement("proceed", 7, "p=proceed f=failure") == 'p');
   assert(FindElement("failure", 7, "p=proceed f=failure") == 'f');
   assert(FindElement("", 0, "p=proceed f=failure") == XMPP_EXML);
@@ -1405,11 +1388,14 @@ static void ExpectUntil(int goal, const char *exp) {
       exp += client.comp.n;
       client.comp.n = 0;
       break;
-    case XMPP_ITER_READY:
-    case XMPP_ITER_RECV:
-      return;
+    case XMPP_ITER_OK:
+      break;
+    default:
+      Log("Expected goal %d, but got %d", goal, r);
+      assert(false);
     }
   }
+  assert(false);
 }
 
 static void Send(const char *s) {
@@ -1417,32 +1403,43 @@ static void Send(const char *s) {
   client.parser.n += strlen(s);
 }
 
-static void Test() {
+static void SetupStream() {
   xmppInitClient(&client, "admin@localhost/resource", XMPP_OPT_FORCEPLAIN);
-  ExpectUntil(0, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
+  ExpectUntil(XMPP_ITER_RECV, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
   Send("<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='some-stream-id' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>");
-  ExpectUntil(0, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
+  ExpectUntil(XMPP_ITER_RECV, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
   Send("<proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
   ExpectUntil(XMPP_ITER_STARTTLS, "");
-  ExpectUntil(0, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
+  ExpectUntil(XMPP_ITER_RECV, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
   Send("<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='some-stream-id-2' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism><mechanism>SCRAM-SHA-1-PLUS</mechanism><mechanism>PLAIN</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>");
   ExpectUntil(XMPP_ITER_GIVEPWD, "");
   xmppSupplyPassword(&client, "adminpass");
-  ExpectUntil(0, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>AGFkbWluAGFkbWlucGFzcw==</auth>");
+  ExpectUntil(XMPP_ITER_RECV, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>AGFkbWluAGFkbWlucGFzcw==</auth>");
   Send("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>");
-  ExpectUntil(0, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
+  ExpectUntil(XMPP_ITER_RECV, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
   Send("<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='8824a41e-dca3-4770-888f-493f858ce800' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><required/></bind><session xmlns='urn:ietf:params:xml:ns:xmpp-session'><optional/></session><sub xmlns='urn:xmpp:features:pre-approval'/><c ver='WmLhVdPgNBF2TJv5X+4p6F0IMeM=' hash='sha-1' xmlns='http://jabber.org/protocol/caps' node='http://prosody.im'/><ver xmlns='urn:xmpp:features:rosterver'/><csi xmlns='urn:xmpp:csi:0'/><sm xmlns='urn:xmpp:sm:2'><optional/></sm><sm xmlns='urn:xmpp:sm:3'><optional/></sm></stream:features>");
-  ExpectUntil(0, "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>resource</resource></bind></iq>");
+  ExpectUntil(XMPP_ITER_RECV, "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>resource</resource></bind></iq>");
   Send("<iq type='result' id='bind'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>admin@localhost/resource</jid></bind></iq>");
-  ExpectUntil(0, "<enable xmlns='urn:xmpp:sm:3' resume='true'/>");
+  ExpectUntil(XMPP_ITER_READY, "<enable xmlns='urn:xmpp:sm:3' resume='true'/>");
   Send("<enabled resume='true' max='600' xmlns='urn:xmpp:sm:3' id='sm-id'/>");
+}
+
+static void TestSkipper() {
+  SetupStream();
+  client.parser.c = 10;
+  strcpy(client.parser.p, "<message><");
+  client.parser.n = 10;
+  ExpectUntil(XMPP_ITER_RECV, "");
+  strcpy(client.parser.p, "/message>");
+  client.parser.n = 9;
+  ExpectUntil(XMPP_ESKIP, "");
 }
 
 int main() {
   puts("Starting tests");
   TestClient();
   TestXml();
-  //Test();
+  TestSkipper();
   puts("All tests passed");
   return 0;
 }
