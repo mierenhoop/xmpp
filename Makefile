@@ -1,7 +1,7 @@
 LDFLAGS= -lmbedtls -lmbedcrypto -lmbedx509
 CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign -fmax-errors=4 -I.
 
-all: o/test o/im
+all: o/test o/im o/test-omemo
 
 o:
 	mkdir -p o

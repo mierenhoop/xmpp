@@ -14,6 +14,7 @@ static const uint8_t basepoint[32] = {9};
 
 typedef uint8_t Key[32];
 typedef Key PrivateKey;
+// TODO: are all PublicKey's actually serialized keys here?
 typedef Key PublicKey;
 typedef Key EdKey;
 // struct IdentityKey {PublicKey pub; EdKey ed; };
@@ -40,22 +41,20 @@ struct SignedPreKey {
   CurveSignature sig, omemosig;
 };
 
+// TODO: pack for serialization?
 struct Session {
   struct KeyPair identity;
 };
 
 struct Ratchet {
   Key root;
+  Key chain;
 };
 
 // Random function that must not fail, if it's really not possible to
 // get random data, you should either exit the program or longjmp out.
 void SystemRandom(void *d, size_t n);
 // void SystemRandom(void *d, size_t n) { esp_fill_random(d, n); }
-
-void SystemRandom(void *d, size_t n) {
-  assert(getrandom(d, n, 0) == n);
-}
 
 // Note: spk will be the serialized version in the XML bundle: 0x05 prepended making 33 bytes.
 struct Bundle {
@@ -155,17 +154,40 @@ static void GetIdentityKeyPair(struct KeyPair *ouridkeypair) {
   DecodePrivatePoint(prv, ouridkeypair->prv);
 }
 
-static void CalculateSendingRatchet(struct Session *session, PublicKey spk, struct KeyPair *sendingkey, Key rootkey) {
-  uint8_t secret[32];
-  CalculateCurveAgreement(secret, spk, sendingkey->prv);
+// CKs, mk = KDF_CK(CKs)
+// header = HEADER(DHs, PN, Ns)
+// Ns += 1
+// return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
+static void EncryptRatchet(struct Ratchet *ratchet) {
+  uint8_t salt[32], output[80];
+  memset(salt, 0, 32);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, ratchet->chain, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
+  memcpy(ratchet->chain, output, 32);
 }
 
+// RK, CKs = KDF_RK(SK, DH(DHs, DHr))
+static void CalculateSendingRatchet(struct Session *session, PublicKey spk, struct KeyPair *sendingkey, struct Ratchet *ratchet) {
+  uint8_t secret[32], masterkey[64];
+  CalculateCurveAgreement(secret, spk, sendingkey->prv);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ratchet->root, sizeof(Key), secret, sizeof(secret), "WhisperRatchet", 14, masterkey, 64) == 0);
+  memcpy(ratchet->root, masterkey, sizeof(Key));
+  memcpy(ratchet->chain, masterkey+32, 32);
+}
+
+// DH1 = DH(IKA, SPKB)
+// DH2 = DH(EKA, IKB)
+// DH3 = DH(EKA, SPKB)
+// DH4 = DH(EKA, OPKB)
+// SK = KDF(DH1 || DH2 || DH3 || DH4)
+//
+// DHs = GENERATE_DH()
 static void InitSessionAlice(struct Bundle *bundle, struct Session *session, struct KeyPair *base) {
   uint8_t secret[32*5];
   memset(secret, 255, 32);
   CalculateCurveAgreement(secret+32, bundle->spk, session->identity.prv);
   CalculateCurveAgreement(secret+64, bundle->ik, base->prv);
   CalculateCurveAgreement(secret+96, bundle->spk, base->prv);
+  // OMEMO mandates that the bundle MUST contain a prekey.
   CalculateCurveAgreement(secret+128, bundle->pk, base->prv);
 
   uint8_t masterkey[64];
@@ -174,9 +196,11 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
   // "OMEMO X3DH" for 0.4.0+
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, masterkey, 64) == 0);
 
+  struct Ratchet ratchet;
+  memcpy(ratchet.root, masterkey, sizeof(Key));
   struct KeyPair sendingkey;
   GenerateKeyPair(&sendingkey);
-  CalculateSendingRatchet(session, bundle->spk, &sendingkey, masterkey);
+  CalculateSendingRatchet(session, bundle->spk, &sendingkey, &ratchet);
 }
 
 // When we process the bundle, we are the ones who initialize the
@@ -290,6 +314,31 @@ static void FormatKeyExchange(uint8_t *d, uint32_t pk_id, uint32_t spk_id, Publi
   d = FormatBytes(d, 4, ek, sizeof(PublicKey));
 }
 
+// OMEMOMessage.proto without ciphertext
+static uint8_t *FormatMessageHeader(uint8_t d[46], uint32_t n, uint32_t pn, PublicKey dh_pub) {
+  *d++ = (1 << 3) | PB_UINT32;
+  d = FormatVarInt(d, n);
+  *d++ = (2 << 3) | PB_UINT32;
+  d = FormatVarInt(d, pn);
+  return FormatBytes(d, 3, dh_pub, sizeof(PublicKey));
+}
+
+// Tests
+
+// In the tests we spoof the random source as a hacky way to generate
+// the exact private key we want.
+static bool testrand;
+static uint8_t testrandsrc[100];
+
+void SystemRandom(void *d, size_t n) {
+  if (testrand) {
+    assert(n <= sizeof(testrandsrc));
+    memcpy(d, testrandsrc, n);
+  } else {
+    assert(getrandom(d, n, 0) == n);
+  }
+}
+
 static void TestParseProtobuf() {
   struct ProtobufField fields[6] = {
     [1] = {PB_REQUIRED | PB_UINT32},
@@ -314,8 +363,64 @@ static void TestFormatProtobuf() {
   assert(FormatVarInt(varint, 0xffffffff) == varint + 5 && !memcmp(varint, "\xff\xff\xff\xff\x0f", 5));
 }
 
+static void CopyHex(uint8_t *d, char *hex) {
+  int n = strlen(hex);
+  assert(n % 2 == 0);
+  n /= 2;
+  for (int i = 0; i < n; i++) {
+    sscanf(hex+(i*2), "%02hhx", d+i);
+  }
+}
+
+static void TestCurve25519() {
+  struct KeyPair kpa, kpb, exp;
+  uint8_t shared[32], expshared[32];
+  testrand = true;
+  CopyHex(testrandsrc, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+  CopyHex(exp.prv, "70076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c6a");
+  CopyHex(exp.pub, "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
+  GenerateKeyPair(&kpa);
+  assert(!memcmp(exp.prv, kpa.prv, 32));
+  assert(!memcmp(exp.pub, kpa.pub, 32));
+  CopyHex(testrandsrc, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b");
+  CopyHex(exp.prv, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b");
+  CopyHex(exp.pub, "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
+  GenerateKeyPair(&kpb);
+  assert(!memcmp(exp.prv, kpb.prv, 32));
+  assert(!memcmp(exp.pub, kpb.pub, 32));
+  CopyHex(expshared, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
+  CalculateCurveAgreement(shared, kpb.pub, kpa.prv);
+  assert(!memcmp(expshared, shared, 32));
+  CalculateCurveAgreement(shared, kpa.pub, kpb.prv);
+  assert(!memcmp(expshared, shared, 32));
+  testrand = false;
+}
+
+static void TestSignature() {
+  Key prv, pub;
+  CurveSignature sig, expsig;
+  uint8_t msg[12];
+  testrand = true;
+  CopyHex(prv, "48a8892cc4e49124b7b57d94fa15becfce071830d6449004685e387"
+               "c62409973");
+  CopyHex(pub, "55f1bfede27b6a03e0dd389478ffb01462e5c52dbbac32cf870f00a"
+               "f1ed9af3a");
+  CopyHex(msg, "617364666173646661736466");
+  CopyHex(expsig, "2bc06c745acb8bae10fbc607ee306084d0c28e2b3bb819133392"
+                  "473431291fd0dfa9c7f11479996cf520730d2901267387e08d85"
+                  "bbf2af941590e3035a545285");
+  CalculateCurveSignature(sig, prv, msg, 12);
+  // TODO: skip this test for now as OMEMO uses xed25519 and old libsignal uses curve25519
+  //assert(!memcmp(expsig, sig, sizeof(CurveSignature)));
+  assert(VerifySignature(expsig, pub, msg, 12));
+  memset(sig, 0, 64);
+  assert(!VerifySignature(sig, pub, msg, 12));
+}
+
 int main() {
   TestParseProtobuf();
   TestFormatProtobuf();
+  TestCurve25519();
+  TestSignature();
   puts("Tests succeeded");
 }
