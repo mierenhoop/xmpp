@@ -886,7 +886,6 @@ static int SendPing(struct xmppClient *c, const char *to) {
   return 0;
 }
 
-// Coindcidentally the only function that allocates on the heap.
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd) {
   int r;
   if (c->state == CLIENTSTATE_SASLPWD) {
@@ -1424,6 +1423,7 @@ static void SetupStream() {
   Send("<enabled resume='true' max='600' xmlns='urn:xmpp:sm:3' id='sm-id'/>");
 }
 
+// TODO: maybe we should send ESKIP at the beginning instead of the end.
 static void TestSkipper() {
   SetupStream();
   client.parser.c = 10;

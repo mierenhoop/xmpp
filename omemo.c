@@ -37,6 +37,7 @@ struct PreKeyStore {
 };
 
 struct SignedPreKey {
+  uint32_t id;
   struct KeyPair kp;
   CurveSignature sig, omemosig;
 };
@@ -75,10 +76,14 @@ static void GenerateKeyPair(struct KeyPair *kp) {
   curve25519_donna(kp->pub, kp->prv, basepoint);
 }
 
+static void GeneratePreKey(struct PreKey *pk, uint32_t id) {
+    pk->id = id;
+    GenerateKeyPair(&pk->kp);
+}
+
 static void GeneratePreKeys(struct PreKeyStore *store) {
   for (int i = 0; i < 100; i++) {
-    GenerateKeyPair(&store->keys[i].kp);
-    store->keys[i].id = i;
+    GeneratePreKey(&store->keys[i], i);
   }
 }
 
@@ -101,11 +106,12 @@ static void SerializeKeyOmemo(OmemoSerializedKey sk, Key pub) {
 }
 
 static int CalculateCurveSignature(CurveSignature cs, Key signprv, const uint8_t *msg, size_t n) {
+  // TODO: OMEMO uses xed25519 and old libsignal uses curve25519
   uint8_t rnd[sizeof(CurveSignature)];
   SystemRandom(rnd, sizeof(rnd));
   // TODO: change this function so it doesn't fail
-  if (xed25519_sign(cs, signprv, msg, n, rnd) < 0)
-    return -1;
+  assert(xed25519_sign(cs, signprv, msg, n, rnd) >= 0);
+  //assert(curve25519_sign(cs, signprv, msg, n, rnd) >= 0);
   return 0;
 }
 
@@ -129,13 +135,13 @@ static void CalculateCurveAgreement(uint8_t d[static 32], PublicKey pub, Private
   curve25519_donna(d, prv, pub);
 }
 
-static void GenerateSignedPreKey(struct SignedPreKey *spk, struct KeyPair *idkp) {
-  struct KeyPair kp;
+static void GenerateSignedPreKey(struct SignedPreKey *spk, uint32_t id, struct KeyPair *idkp) {
   SerializedKey sk;
   OmemoSerializedKey omemok;
-  GenerateKeyPair(&kp);
-  SerializeKey(sk, kp.pub);
-  SerializeKeyOmemo(omemok, kp.pub);
+  spk->id = id;
+  GenerateKeyPair(&spk->kp);
+  SerializeKey(sk, spk->kp.pub);
+  SerializeKeyOmemo(omemok, spk->kp.pub);
   CalculateCurveSignature(spk->sig, idkp->prv, sk, sizeof(SerializedKey));
   CalculateCurveSignature(spk->omemosig, idkp->prv, omemok, sizeof(OmemoSerializedKey));
 }
@@ -206,16 +212,17 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
 // When we process the bundle, we are the ones who initialize the
 // session and we are referred to as alice. Otherwise we have received
 // an initiation message and are called bob.
-static void ProcessBundle(struct Session *s, struct Bundle *b) {
+static int ProcessBundle(struct Session *s, struct Bundle *b) {
   SerializedKey serspk;
   struct KeyPair ourbasekey;
   // if (version == 4) SerializedKeyOmemo()
   SerializeKey(serspk, b->spk);
   if (!VerifySignature(b->spks, b->ik, serspk, sizeof(SerializedKey))) {
-    puts("Wrong sig on device");
+     return -1;
   }
   GenerateKeyPair(&ourbasekey);
   InitSessionAlice(b, s, &ourbasekey);
+  return 0;
 }
 
 // Protobuf: https://protobuf.dev/programming-guides/encoding/
@@ -410,17 +417,43 @@ static void TestSignature() {
                   "473431291fd0dfa9c7f11479996cf520730d2901267387e08d85"
                   "bbf2af941590e3035a545285");
   CalculateCurveSignature(sig, prv, msg, 12);
-  // TODO: skip this test for now as OMEMO uses xed25519 and old libsignal uses curve25519
-  //assert(!memcmp(expsig, sig, sizeof(CurveSignature)));
   assert(VerifySignature(expsig, pub, msg, 12));
+  assert(VerifySignature(sig, pub, msg, 12));
   memset(sig, 0, 64);
   assert(!VerifySignature(sig, pub, msg, 12));
+  testrand = false;
 }
 
+static void TestSession() {
+  struct KeyPair ida;
+  struct PreKey pka;
+  struct SignedPreKey spka;
+  GenerateKeyPair(&ida);
+  GeneratePreKey(&pka, 1337);
+  GenerateSignedPreKey(&spka, 1, &ida);
+
+  struct Bundle bundle;
+  memcpy(bundle.spks, spka.sig, sizeof(CurveSignature));
+  memcpy(bundle.spk, spka.kp.pub, sizeof(PublicKey));
+  memcpy(bundle.ik, ida.pub, sizeof(PublicKey));
+  memcpy(bundle.pk, pka.kp.pub, sizeof(PublicKey));
+
+  struct Session session;
+  assert(ProcessBundle(&session, &bundle) == 0);
+}
+
+#define RunTest(t)                                                     \
+  do {                                                                 \
+    puts("\e[34mRunning test " #t "\e[0m");                            \
+    Test##t();                                                         \
+    puts("\e[32mFinished test " #t "\e[0m");                           \
+  } while (0)
+
 int main() {
-  TestParseProtobuf();
-  TestFormatProtobuf();
-  TestCurve25519();
-  TestSignature();
-  puts("Tests succeeded");
+  RunTest(ParseProtobuf);
+  RunTest(FormatProtobuf);
+  RunTest(Curve25519);
+  RunTest(Signature);
+  RunTest(Session);
+  puts("All tests succeeded");
 }
