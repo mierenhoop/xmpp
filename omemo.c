@@ -14,7 +14,6 @@ static const uint8_t basepoint[32] = {9};
 
 typedef uint8_t Key[32];
 typedef Key PrivateKey;
-// TODO: are all PublicKey's actually serialized keys here?
 typedef Key PublicKey;
 typedef Key EdKey;
 // struct IdentityKey {PublicKey pub; EdKey ed; };
@@ -42,14 +41,26 @@ struct SignedPreKey {
   CurveSignature sig, omemosig;
 };
 
+struct MessageKey {
+  bool exists;
+  uint32_t nr;
+  Key dh;
+  Key mk;
+};
+
+struct State {
+  struct KeyPair dhs;
+  PublicKey dhr;
+  Key rk, cks, ckr;
+  uint32_t ns, nr, pn;
+  struct MessageKey skipped[2000]; // TODO: make this a ring buffer
+};
+
 // TODO: pack for serialization?
 struct Session {
   struct KeyPair identity;
-};
-
-struct Ratchet {
-  Key root;
-  Key chain;
+  PublicKey remoteidentity;
+  struct State state;
 };
 
 // Random function that must not fail, if it's really not possible to
@@ -152,32 +163,35 @@ static bool VerifySignature(CurveSignature sig, PublicKey sk, const uint8_t *msg
 
 // What this function would do in libomemo-c is get the identity keypair
 // from a callback and memcpy everything.
-static void GetIdentityKeyPair(struct KeyPair *ouridkeypair) {
-  PublicKey pub;
-  PrivateKey prv;
-  // TODO: check if it's always plain pub key and not ed or Serialized
-  DecodePointMont(pub, ouridkeypair->pub);
-  DecodePrivatePoint(prv, ouridkeypair->prv);
-}
+//static void GetIdentityKeyPair(struct KeyPair *ouridkeypair) {
+//  PublicKey pub;
+//  PrivateKey prv;
+//  // TODO: check if it's always plain pub key and not ed or Serialized
+//  DecodePointMont(pub, ouridkeypair->pub);
+//  DecodePrivatePoint(prv, ouridkeypair->prv);
+//}
 
 // CKs, mk = KDF_CK(CKs)
 // header = HEADER(DHs, PN, Ns)
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
-static void EncryptRatchet(struct Ratchet *ratchet) {
-  uint8_t salt[32], output[80];
+static void EncryptRatchet(struct Session *session) {
+  uint8_t salt[32], output[80];//, ad[33*2+1];
   memset(salt, 0, 32);
-  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, ratchet->chain, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
-  memcpy(ratchet->chain, output, 32);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, session->state.cks, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
+  memcpy(session->state.cks, output, 32);
+  //SerializeKey(ad, session->identity.pub);
+  //SerializeKey(ad+33, session->remoteidentity);
+  //ad[33*2] = (3 << 4) | 3;
 }
 
 // RK, CKs = KDF_RK(SK, DH(DHs, DHr))
-static void CalculateSendingRatchet(struct Session *session, PublicKey spk, struct KeyPair *sendingkey, struct Ratchet *ratchet) {
+static void CalculateSendingRatchet(struct Session *session) {
   uint8_t secret[32], masterkey[64];
-  CalculateCurveAgreement(secret, spk, sendingkey->prv);
-  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ratchet->root, sizeof(Key), secret, sizeof(secret), "WhisperRatchet", 14, masterkey, 64) == 0);
-  memcpy(ratchet->root, masterkey, sizeof(Key));
-  memcpy(ratchet->chain, masterkey+32, 32);
+  CalculateCurveAgreement(secret, session->state.dhr, session->state.dhs.prv);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), session->state.rk, sizeof(Key), secret, sizeof(secret), "WhisperRatchet", 14, masterkey, 64) == 0);
+  memcpy(session->state.rk, masterkey, sizeof(Key));
+  memcpy(session->state.cks, masterkey+32, 32);
 }
 
 // DH1 = DH(IKA, SPKB)
@@ -202,11 +216,10 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
   // "OMEMO X3DH" for 0.4.0+
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, masterkey, 64) == 0);
 
-  struct Ratchet ratchet;
-  memcpy(ratchet.root, masterkey, sizeof(Key));
-  struct KeyPair sendingkey;
-  GenerateKeyPair(&sendingkey);
-  CalculateSendingRatchet(session, bundle->spk, &sendingkey, &ratchet);
+  memcpy(session->state.rk, masterkey, sizeof(Key));
+  memcpy(session->state.dhr, bundle->spk, sizeof(Key));
+  GenerateKeyPair(&session->state.dhs);
+  CalculateSendingRatchet(session);
 }
 
 // When we process the bundle, we are the ones who initialize the
@@ -221,8 +234,13 @@ static int ProcessBundle(struct Session *s, struct Bundle *b) {
      return -1;
   }
   GenerateKeyPair(&ourbasekey);
+  memset(&s->state, 0, sizeof(struct State));
+  memcpy(s->remoteidentity, b->ik, sizeof(PublicKey));
   InitSessionAlice(b, s, &ourbasekey);
   return 0;
+}
+
+static void ProcessPreKeyMessage() {
 }
 
 // Protobuf: https://protobuf.dev/programming-guides/encoding/
@@ -330,6 +348,9 @@ static uint8_t *FormatMessageHeader(uint8_t d[46], uint32_t n, uint32_t pn, Publ
   return FormatBytes(d, 3, dh_pub, sizeof(PublicKey));
 }
 
+static void EncryptMessage(struct State *state, struct Session *session) {
+}
+
 // Tests
 
 // In the tests we spoof the random source as a hacky way to generate
@@ -425,21 +446,21 @@ static void TestSignature() {
 }
 
 static void TestSession() {
-  struct KeyPair ida;
-  struct PreKey pka;
-  struct SignedPreKey spka;
-  GenerateKeyPair(&ida);
-  GeneratePreKey(&pka, 1337);
-  GenerateSignedPreKey(&spka, 1, &ida);
+  struct KeyPair idb;
+  struct PreKey pkb;
+  struct SignedPreKey spkb;
+  GenerateKeyPair(&idb);
+  GeneratePreKey(&pkb, 1337);
+  GenerateSignedPreKey(&spkb, 1, &idb);
 
-  struct Bundle bundle;
-  memcpy(bundle.spks, spka.sig, sizeof(CurveSignature));
-  memcpy(bundle.spk, spka.kp.pub, sizeof(PublicKey));
-  memcpy(bundle.ik, ida.pub, sizeof(PublicKey));
-  memcpy(bundle.pk, pka.kp.pub, sizeof(PublicKey));
+  struct Bundle bundleb;
+  memcpy(bundleb.spks, spkb.sig, sizeof(CurveSignature));
+  memcpy(bundleb.spk, spkb.kp.pub, sizeof(PublicKey));
+  memcpy(bundleb.ik, idb.pub, sizeof(PublicKey));
+  memcpy(bundleb.pk, pkb.kp.pub, sizeof(PublicKey));
 
-  struct Session session;
-  assert(ProcessBundle(&session, &bundle) == 0);
+  struct Session sessiona;
+  assert(ProcessBundle(&sessiona, &bundleb) == 0);
 }
 
 #define RunTest(t)                                                     \
