@@ -1,4 +1,5 @@
 #include <mbedtls/hkdf.h>
+#include <mbedtls/aes.h>
 
 #include <stdint.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 static const uint8_t basepoint[32] = {9};
 
 typedef uint8_t Key[32];
+// TODO: we can just use Key for everthing
 typedef Key PrivateKey;
 typedef Key PublicKey;
 typedef Key EdKey;
@@ -56,11 +58,19 @@ struct State {
   struct MessageKey skipped[2000]; // TODO: make this a ring buffer
 };
 
+#define PAYLOAD_SIZE 32
+#define HEADER_MAXSIZE (2+32+1+5+1+5)
+#define FULLMSG_MAXSIZE (HEADER_MAXSIZE+2+PAYLOAD_SIZE)
+#define ENCRYPTED_MAXSIZE (1+FULLMSG_MAXSIZE+8)
+
 // TODO: pack for serialization?
 struct Session {
   struct KeyPair identity;
   PublicKey remoteidentity;
   struct State state;
+  uint8_t payload[PAYLOAD_SIZE]; // TODO: move somewhere else
+  uint8_t encrypted[ENCRYPTED_MAXSIZE];
+  size_t encryptedsz;
 };
 
 // Random function that must not fail, if it's really not possible to
@@ -171,18 +181,42 @@ static bool VerifySignature(CurveSignature sig, PublicKey sk, const uint8_t *msg
 //  DecodePrivatePoint(prv, ouridkeypair->prv);
 //}
 
+
+static uint8_t *FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs);
+static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n);
+
+
 // CKs, mk = KDF_CK(CKs)
 // header = HEADER(DHs, PN, Ns)
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
+// macinput      [   33   |   33   |   1   | <=46 |2|PAYLOAD_SIZE]
+//                identity identity version header    encrypted   mac[:8]
+// session->encrypted              [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
 static void EncryptRatchet(struct Session *session) {
-  uint8_t salt[32], output[80];//, ad[33*2+1];
+  uint8_t salt[32], output[80], macinput[33*2+1+FULLMSG_MAXSIZE], mac[32], encrypted[PAYLOAD_SIZE];
+  mbedtls_aes_context aes;
   memset(salt, 0, 32);
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, session->state.cks, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
   memcpy(session->state.cks, output, 32);
-  //SerializeKey(ad, session->identity.pub);
-  //SerializeKey(ad+33, session->remoteidentity);
-  //ad[33*2] = (3 << 4) | 3;
+
+  SerializeKey(macinput, session->identity.pub);
+  SerializeKey(macinput+33, session->remoteidentity);
+  macinput[33*2] = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
+  int n = FormatMessageHeader(macinput+33*2+1, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
+
+  assert(mbedtls_aes_setkey_enc(&aes, output, 128) == 0);
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, PAYLOAD_SIZE, output+64, session->payload, encrypted) == 0);
+  // TODO: we should inline this function, size is constant anyways
+  n = FormatBytes(macinput+n, 4, encrypted, PAYLOAD_SIZE) - macinput;
+
+  int encsz = n - 33*2;
+  memcpy(session->encrypted, macinput+33*2, encsz);
+  assert(mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), output+32, 32, macinput, n, mac) == 0);
+  memcpy(session->encrypted+encsz, mac, 8);
+  session->encryptedsz = encsz + 8;
+
+  session->state.ns++;
 }
 
 // RK, CKs = KDF_RK(SK, DH(DHs, DHr))
@@ -213,7 +247,6 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
   uint8_t masterkey[64];
   uint8_t salt[32];
   memset(salt, 0, 32);
-  // "OMEMO X3DH" for 0.4.0+
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, masterkey, 64) == 0);
 
   memcpy(session->state.rk, masterkey, sizeof(Key));
@@ -228,7 +261,7 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
 static int ProcessBundle(struct Session *s, struct Bundle *b) {
   SerializedKey serspk;
   struct KeyPair ourbasekey;
-  // if (version == 4) SerializedKeyOmemo()
+  memset(s, 0, sizeof(struct Session));
   SerializeKey(serspk, b->spk);
   if (!VerifySignature(b->spks, b->ik, serspk, sizeof(SerializedKey))) {
      return -1;
@@ -236,7 +269,12 @@ static int ProcessBundle(struct Session *s, struct Bundle *b) {
   GenerateKeyPair(&ourbasekey);
   memset(&s->state, 0, sizeof(struct State));
   memcpy(s->remoteidentity, b->ik, sizeof(PublicKey));
+  memset(s->payload, 0xcc, PAYLOAD_SIZE); // just some recognizable constant
   InitSessionAlice(b, s, &ourbasekey);
+  EncryptRatchet(s);
+  for (int i = 0; i < PAYLOAD_SIZE; i++)
+    printf("%02x", s->encrypted[i]);
+  puts("");
   return 0;
 }
 
@@ -323,6 +361,7 @@ static uint8_t *FormatVarInt(uint8_t d[static 5], uint32_t v) {
 }
 
 // id < 16 && n < 128
+// sizeof(d) == 2+n
 static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
   *d++ = (id << 3) | PB_LEN;
   *d++ = n;
@@ -339,16 +378,14 @@ static void FormatKeyExchange(uint8_t *d, uint32_t pk_id, uint32_t spk_id, Publi
   d = FormatBytes(d, 4, ek, sizeof(PublicKey));
 }
 
-// OMEMOMessage.proto without ciphertext
-static uint8_t *FormatMessageHeader(uint8_t d[46], uint32_t n, uint32_t pn, PublicKey dh_pub) {
-  *d++ = (1 << 3) | PB_UINT32;
-  d = FormatVarInt(d, n);
+// WhisperMessage without ciphertext
+// HEADER(dh_pair, pn, n)
+static uint8_t *FormatMessageHeader(uint8_t d[46], uint32_t n, uint32_t pn, PublicKey dhs) {
+  FormatBytes(d, 1, dhs, sizeof(PublicKey));
   *d++ = (2 << 3) | PB_UINT32;
-  d = FormatVarInt(d, pn);
-  return FormatBytes(d, 3, dh_pub, sizeof(PublicKey));
-}
-
-static void EncryptMessage(struct State *state, struct Session *session) {
+  d = FormatVarInt(d, n);
+  *d++ = (3 << 3) | PB_UINT32;
+  return FormatVarInt(d, pn);
 }
 
 // Tests
