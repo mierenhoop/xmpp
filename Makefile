@@ -45,6 +45,7 @@ esp-im: | o
 size-esp-im: | o
 	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im size-files
 
+# TODO: remove LD_LIBRARY_PATH, it's needed for MbedTls being installed in /usr/local.
 test: o/test
 	LD_LIBRARY_PATH=/usr/local/lib ./o/test
 

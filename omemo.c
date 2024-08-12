@@ -60,16 +60,21 @@ struct State {
 
 #define PAYLOAD_SIZE 32
 #define HEADER_MAXSIZE (2+32+1+5+1+5)
-#define FULLMSG_MAXSIZE (HEADER_MAXSIZE+2+PAYLOAD_SIZE)
-#define ENCRYPTED_MAXSIZE (1+FULLMSG_MAXSIZE+8)
+#define FULLMSG_MAXSIZE (1+HEADER_MAXSIZE+2+PAYLOAD_SIZE)
+#define ENCRYPTED_MAXSIZE (FULLMSG_MAXSIZE+8)
+#define PREKEYHEADER_SIZE (1+18+34*2+2)
 
 // TODO: pack for serialization?
 struct Session {
   struct KeyPair identity;
   PublicKey remoteidentity;
   struct State state;
-  uint8_t payload[PAYLOAD_SIZE]; // TODO: move somewhere else
-  uint8_t encrypted[ENCRYPTED_MAXSIZE];
+  bool dontsendprekeys;
+};
+
+struct EncryptedMessage {
+  uint8_t payload[PAYLOAD_SIZE];
+  uint8_t encrypted[PREKEYHEADER_SIZE+ENCRYPTED_MAXSIZE];
   size_t encryptedsz;
 };
 
@@ -83,6 +88,7 @@ struct Bundle {
   CurveSignature spks;
   PublicKey spk, ik;
   PublicKey pk; // Randomly selected prekey
+  uint32_t pk_id, spk_id;
   //PublicKey prekeys[150];
   //size_t prekeysn;
 };
@@ -183,6 +189,7 @@ static bool VerifySignature(CurveSignature sig, PublicKey sk, const uint8_t *msg
 
 
 static uint8_t *FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs);
+static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_SIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz);
 static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n);
 
 
@@ -192,31 +199,32 @@ static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n);
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
 // macinput      [   33   |   33   |   1   | <=46 |2|PAYLOAD_SIZE]
 //                identity identity version header    encrypted   mac[:8]
-// session->encrypted              [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
-static void EncryptRatchet(struct Session *session) {
-  uint8_t salt[32], output[80], macinput[33*2+1+FULLMSG_MAXSIZE], mac[32], encrypted[PAYLOAD_SIZE];
+// msg->encrypted                  [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
+// TODO: keep sending prekeymessages until we receive something
+static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg) {
+  uint8_t salt[32], output[80], macinput[33*2+FULLMSG_MAXSIZE], mac[32], encrypted[PAYLOAD_SIZE];
   mbedtls_aes_context aes;
   memset(salt, 0, 32);
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, session->state.cks, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
-  memcpy(session->state.cks, output, 32);
 
   SerializeKey(macinput, session->identity.pub);
   SerializeKey(macinput+33, session->remoteidentity);
-  macinput[33*2] = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
-  int n = FormatMessageHeader(macinput+33*2+1, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
+  int n = FormatMessageHeader(macinput+33*2, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
 
   assert(mbedtls_aes_setkey_enc(&aes, output, 128) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, PAYLOAD_SIZE, output+64, session->payload, encrypted) == 0);
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, PAYLOAD_SIZE, output+64, msg->payload, encrypted) == 0);
   // TODO: we should inline this function, size is constant anyways
   n = FormatBytes(macinput+n, 4, encrypted, PAYLOAD_SIZE) - macinput;
 
   int encsz = n - 33*2;
-  memcpy(session->encrypted, macinput+33*2, encsz);
+  memcpy(msg->encrypted, macinput+33*2, encsz);
   assert(mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), output+32, 32, macinput, n, mac) == 0);
-  memcpy(session->encrypted+encsz, mac, 8);
-  session->encryptedsz = encsz + 8;
+  memcpy(msg->encrypted+encsz, mac, 8);
+  msg->encryptedsz = encsz + 8;
 
+  // nothing can fail anymore so we save the new state
   session->state.ns++;
+  memcpy(session->state.cks, output, 32);
 }
 
 // RK, CKs = KDF_RK(SK, DH(DHs, DHr))
@@ -258,7 +266,9 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
 // When we process the bundle, we are the ones who initialize the
 // session and we are referred to as alice. Otherwise we have received
 // an initiation message and are called bob.
-static int ProcessBundle(struct Session *s, struct Bundle *b) {
+// session is initialized in this function
+// msg->payload contains the payload that will be encrypted into msg->encrypted with size msg->encryptedsz (when this function returns 0)
+static int ProcessBundle(struct Session *s, struct Bundle *b, struct EncryptedMessage *msg) {
   SerializedKey serspk;
   struct KeyPair ourbasekey;
   memset(s, 0, sizeof(struct Session));
@@ -269,16 +279,23 @@ static int ProcessBundle(struct Session *s, struct Bundle *b) {
   GenerateKeyPair(&ourbasekey);
   memset(&s->state, 0, sizeof(struct State));
   memcpy(s->remoteidentity, b->ik, sizeof(PublicKey));
-  memset(s->payload, 0xcc, PAYLOAD_SIZE); // just some recognizable constant
   InitSessionAlice(b, s, &ourbasekey);
-  EncryptRatchet(s);
-  for (int i = 0; i < PAYLOAD_SIZE; i++)
-    printf("%02x", s->encrypted[i]);
-  puts("");
+  EncryptRatchet(s, msg);
+  if (!s->dontsendprekeys) {
+    memmove(msg->encrypted+PREKEYHEADER_SIZE, msg->encrypted, msg->encryptedsz);
+    FormatPreKeyMessage(msg->encrypted, b->pk_id, b->spk_id, s->identity.pub, ourbasekey.pub, msg->encryptedsz);
+    msg->encryptedsz += PREKEYHEADER_SIZE;
+  }
+
   return 0;
 }
 
-static void ProcessPreKeyMessage() {
+// msg->encrypted contains the payload with size msg->encryptedsz that will be decrypted into msg->payload (when this function returns 0)
+static void ProcessPreKeyMessage(struct Session *session, struct EncryptedMessage *msg) {
+  char *p = msg->encrypted;
+  char *e = p+msg->encryptedsz;
+  assert(e-p >= PREKEYHEADER_SIZE);
+  assert(*p++ == ((3 << 4) | 3));
 }
 
 // Protobuf: https://protobuf.dev/programming-guides/encoding/
@@ -308,12 +325,12 @@ struct ProtobufField {
 #define PB_UINT32 0
 #define PB_LEN 2
 
-// nfields MUST be <= 16
 static int ParseProtobuf(const char *s, size_t n, struct ProtobufField *fields, int nfields) {
   int type, id;
   uint64_t v;
   const char *e = s + n;
   uint32_t found = 0;
+  assert(nfields <= 16);
   while (s < e) {
     // This is actually a varint, but we only support id < 16 and return an
     // error otherwise, so we don't have to account for multiple-byte tags.
@@ -360,27 +377,37 @@ static uint8_t *FormatVarInt(uint8_t d[static 5], uint32_t v) {
   return d;
 }
 
-// id < 16 && n < 128
 // sizeof(d) == 2+n
 static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
+  assert(id < 16 && n < 128);
   *d++ = (id << 3) | PB_LEN;
   *d++ = n;
   memcpy(d, b, n);
   return d + n;
 }
 
-static void FormatKeyExchange(uint8_t *d, uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek) { // , message
+// PreKeyWhisperMessage without message (it should be appended right after this call)
+// ek = basekey
+static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_SIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz) {
+  assert(msgsz < 128);
+  *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
+  *d++ = (5 << 3) | PB_UINT32;
+  d = FormatVarInt(d, 0xcc); // TODO: registration id
   *d++ = (1 << 3) | PB_UINT32;
   d = FormatVarInt(d, pk_id);
-  *d++ = (2 << 3) | PB_UINT32;
+  *d++ = (6 << 3) | PB_UINT32;
   d = FormatVarInt(d, spk_id);
   d = FormatBytes(d, 3, ik, sizeof(PublicKey));
-  d = FormatBytes(d, 4, ek, sizeof(PublicKey));
+  d = FormatBytes(d, 2, ek, sizeof(PublicKey));
+  *d++ = (4 << 3) | PB_LEN;
+  *d++ = msgsz;
+  return d;
 }
 
 // WhisperMessage without ciphertext
 // HEADER(dh_pair, pn, n)
-static uint8_t *FormatMessageHeader(uint8_t d[46], uint32_t n, uint32_t pn, PublicKey dhs) {
+static uint8_t *FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs) {
+  *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
   FormatBytes(d, 1, dhs, sizeof(PublicKey));
   *d++ = (2 << 3) | PB_UINT32;
   d = FormatVarInt(d, n);
@@ -497,7 +524,9 @@ static void TestSession() {
   memcpy(bundleb.pk, pkb.kp.pub, sizeof(PublicKey));
 
   struct Session sessiona;
-  assert(ProcessBundle(&sessiona, &bundleb) == 0);
+  struct EncryptedMessage msg;
+  memset(msg.payload, 0xcc, PAYLOAD_SIZE);
+  assert(ProcessBundle(&sessiona, &bundleb, &msg) == 0);
 }
 
 #define RunTest(t)                                                     \
