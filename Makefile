@@ -67,7 +67,7 @@ prosody: test/localhost.crt
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
-.PHONY: prosody runim clean full-clean
+.PHONY: prosody stop-prosody test test-omemo runim clean full-clean
 
 clean:
 	rm -rf o

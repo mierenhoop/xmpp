@@ -29,6 +29,14 @@ static void TestParseProtobuf() {
   assert(ParseProtobuf(FatStrArgs("\x08\x01"), fields, 6));
   assert(!ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01\x18\x01"), fields, 6));
   assert(fields[3].v == 1);
+  memset(fields, 0, sizeof(fields));
+  fields[1].type = PB_REQUIRED | PB_LEN;
+  fields[2].type = PB_REQUIRED | PB_UINT32;
+  assert(!ParseProtobuf(FatStrArgs("\x0a\x04\xcc\xcc\xcc\xcc\x10\x01"), fields, 6));
+  assert(fields[1].v == 4);
+  assert(fields[1].p && !memcmp(fields[1].p, "\xcc\xcc\xcc\xcc", 4));
+  assert(fields[2].v == 1);
+  assert(ParseProtobuf(FatStrArgs("\x10\x01\x0a\x04\xcc\xcc\xcc"), fields, 6));
 }
 
 static void TestFormatProtobuf() {
@@ -93,24 +101,42 @@ static void TestSignature() {
   testrand = false;
 }
 
+// TODO: move this to the library?
+static void SetupStore(struct Store *store) {
+  memset(store, 0, sizeof(struct Store));
+  GenerateIdentityKeyPair(&store->identity);
+  GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
+  for (int i = 0; i < NUMPREKEYS; i++) {
+    GeneratePreKey(store->prekeys+i, i+1);
+  }
+}
+
+// This would in reality parse the bundle's XML instead of their store.
+static void ParseBundle(struct Bundle *bundle, struct Store *store) {
+  int pk_id = 42; // Something truly random :)
+  memcpy(bundle->spks, store->cursignedprekey.sig, sizeof(CurveSignature));
+  memcpy(bundle->spk, store->cursignedprekey.kp.pub, sizeof(PublicKey));
+  memcpy(bundle->ik, store->identity.pub, sizeof(PublicKey));
+  memcpy(bundle->pk, store->prekeys[pk_id-1].kp.pub, sizeof(PublicKey));
+  assert(store->prekeys[pk_id-1].id == 42);
+  bundle->pk_id = store->prekeys[pk_id-1].id;
+  bundle->spk_id = store->cursignedprekey.id;
+}
+
 static void TestSession() {
-  struct KeyPair idb;
-  struct PreKey pkb;
-  struct SignedPreKey spkb;
-  GenerateKeyPair(&idb);
-  GeneratePreKey(&pkb, 1337);
-  GenerateSignedPreKey(&spkb, 1, &idb);
+  struct Store storea, storeb;
+  SetupStore(&storea);
+  SetupStore(&storeb);
 
   struct Bundle bundleb;
-  memcpy(bundleb.spks, spkb.sig, sizeof(CurveSignature));
-  memcpy(bundleb.spk, spkb.kp.pub, sizeof(PublicKey));
-  memcpy(bundleb.ik, idb.pub, sizeof(PublicKey));
-  memcpy(bundleb.pk, pkb.kp.pub, sizeof(PublicKey));
+  ParseBundle(&bundleb, &storeb);
 
-  struct Session sessiona;
+  struct Session sessiona, sessionb;
   struct EncryptedMessage msg;
   memset(msg.payload, 0xcc, PAYLOAD_SIZE);
-  assert(ProcessBundle(&sessiona, &bundleb, &msg) == 0);
+  assert(ProcessBundle(&sessiona, &storea, &bundleb, &msg) == 0);
+
+  ProcessPreKeyMessage(&sessionb, &storeb, &msg);
 }
 
 #define RunTest(t)                                                     \

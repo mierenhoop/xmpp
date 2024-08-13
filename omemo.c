@@ -20,7 +20,6 @@ typedef Key PublicKey;
 typedef Key EdKey;
 // struct IdentityKey {PublicKey pub; EdKey ed; };
 typedef uint8_t SerializedKey[1+32];
-typedef uint8_t OmemoSerializedKey[32];
 typedef uint8_t CurveSignature[64];
 
 struct KeyPair {
@@ -33,14 +32,10 @@ struct PreKey {
   struct KeyPair kp;
 };
 
-struct PreKeyStore {
-  struct PreKey keys[100];
-};
-
 struct SignedPreKey {
   uint32_t id;
   struct KeyPair kp;
-  CurveSignature sig, omemosig;
+  CurveSignature sig;
 };
 
 struct MessageKey {
@@ -64,11 +59,21 @@ struct State {
 #define ENCRYPTED_MAXSIZE (FULLMSG_MAXSIZE+8)
 #define PREKEYHEADER_SIZE (1+18+34*2+2)
 
+#define NUMPREKEYS 100
+
+// As the spec notes, a spk should be kept for one more rotation.
+// If prevsignedprekey doesn't exist, its id is 0. Therefore a valid id is always >= 1;
+struct Store {
+  struct KeyPair identity;
+  struct SignedPreKey cursignedprekey, prevsignedprekey;
+  struct PreKey prekeys[NUMPREKEYS];
+};
+
 // TODO: pack for serialization?
 struct Session {
-  struct KeyPair identity;
   PublicKey remoteidentity;
   struct State state;
+  struct Store *store;
   bool dontsendprekeys;
 };
 
@@ -120,7 +125,6 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
   return s;
 }
 
-
 static int ParseProtobuf(const char *s, size_t n, struct ProtobufField *fields, int nfields) {
   int type, id;
   uint64_t v;
@@ -143,6 +147,8 @@ static int ParseProtobuf(const char *s, size_t n, struct ProtobufField *fields, 
       s += fields[id].v;
     }
   }
+  if (s > e)
+    return -1;
   for (int i = 0; i < nfields; i++) {
     if ((fields[i].type & PB_REQUIRED) && !(found & (1 << i)))
       return -1;
@@ -226,12 +232,6 @@ static void GeneratePreKey(struct PreKey *pk, uint32_t id) {
     GenerateKeyPair(&pk->kp);
 }
 
-static void GeneratePreKeys(struct PreKeyStore *store) {
-  for (int i = 0; i < 100; i++) {
-    GeneratePreKey(&store->keys[i], i);
-  }
-}
-
 static void GenerateIdentityKeyPair(struct KeyPair *kp) {
   GenerateKeyPair(kp);
 }
@@ -244,10 +244,6 @@ static void GenerateRegistrationId(uint32_t *id) {
 static void SerializeKey(SerializedKey k, Key pub) {
   k[0] = 5;
   memcpy(k+1, pub, sizeof(SerializedKey)-1);
-}
-
-static void SerializeKeyOmemo(OmemoSerializedKey sk, Key pub) {
-  memcpy(sk, pub, sizeof(OmemoSerializedKey));
 }
 
 static int CalculateCurveSignature(CurveSignature cs, Key signprv, const uint8_t *msg, size_t n) {
@@ -282,13 +278,10 @@ static void CalculateCurveAgreement(uint8_t d[static 32], PublicKey pub, Private
 
 static void GenerateSignedPreKey(struct SignedPreKey *spk, uint32_t id, struct KeyPair *idkp) {
   SerializedKey sk;
-  OmemoSerializedKey omemok;
   spk->id = id;
   GenerateKeyPair(&spk->kp);
   SerializeKey(sk, spk->kp.pub);
-  SerializeKeyOmemo(omemok, spk->kp.pub);
   CalculateCurveSignature(spk->sig, idkp->prv, sk, sizeof(SerializedKey));
-  CalculateCurveSignature(spk->omemosig, idkp->prv, omemok, sizeof(OmemoSerializedKey));
 }
 
 static bool VerifySignature(CurveSignature sig, PublicKey sk, const uint8_t *msg, size_t n) {
@@ -319,7 +312,7 @@ static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg
   memset(salt, 0, 32);
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, session->state.cks, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
 
-  SerializeKey(macinput, session->identity.pub);
+  SerializeKey(macinput, session->store->identity.pub);
   SerializeKey(macinput+33, session->remoteidentity);
   int n = FormatMessageHeader(macinput+33*2, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
 
@@ -358,7 +351,7 @@ static void CalculateSendingRatchet(struct Session *session) {
 static void InitSessionAlice(struct Bundle *bundle, struct Session *session, struct KeyPair *base) {
   uint8_t secret[32*5];
   memset(secret, 255, 32);
-  CalculateCurveAgreement(secret+32, bundle->spk, session->identity.prv);
+  CalculateCurveAgreement(secret+32, bundle->spk, session->store->identity.prv);
   CalculateCurveAgreement(secret+64, bundle->ik, base->prv);
   CalculateCurveAgreement(secret+96, bundle->spk, base->prv);
   // OMEMO mandates that the bundle MUST contain a prekey.
@@ -380,10 +373,11 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
 // an initiation message and are called bob.
 // session is initialized in this function
 // msg->payload contains the payload that will be encrypted into msg->encrypted with size msg->encryptedsz (when this function returns 0)
-static int ProcessBundle(struct Session *s, struct Bundle *b, struct EncryptedMessage *msg) {
+static int ProcessBundle(struct Session *s, struct Store *store, struct Bundle *b, struct EncryptedMessage *msg) {
   SerializedKey serspk;
   struct KeyPair ourbasekey;
   memset(s, 0, sizeof(struct Session));
+  s->store = store;
   SerializeKey(serspk, b->spk);
   if (!VerifySignature(b->spks, b->ik, serspk, sizeof(SerializedKey))) {
      return -1;
@@ -395,17 +389,84 @@ static int ProcessBundle(struct Session *s, struct Bundle *b, struct EncryptedMe
   EncryptRatchet(s, msg);
   if (!s->dontsendprekeys) {
     memmove(msg->encrypted+PREKEYHEADER_SIZE, msg->encrypted, msg->encryptedsz);
-    FormatPreKeyMessage(msg->encrypted, b->pk_id, b->spk_id, s->identity.pub, ourbasekey.pub, msg->encryptedsz);
-    msg->encryptedsz += PREKEYHEADER_SIZE;
+    int headersz = FormatPreKeyMessage(msg->encrypted, b->pk_id, b->spk_id, s->store->identity.pub, ourbasekey.pub, msg->encryptedsz) - msg->encrypted;
+    msg->encryptedsz += headersz;
   }
 
   return 0;
 }
 
+static struct PreKey *FindPreKey(struct Store *store, uint32_t pk_id) {
+  for (int i = 0; i < NUMPREKEYS; i++) {
+    if (store->prekeys[i].id == pk_id)
+      return store->prekeys+i;
+  }
+  return NULL;
+}
+
+static struct SignedPreKey *FindSignedPreKey(struct Store *store, uint32_t spk_id) {
+  if (spk_id == 0)
+    return NULL;
+  if (store->cursignedprekey.id == spk_id)
+    return &store->cursignedprekey;
+  if (store->prevsignedprekey.id == spk_id)
+    return &store->prevsignedprekey;
+  return NULL;
+}
+
+static void RotateSignedPreKey(struct Store *store) {
+  memcpy(&store->prevsignedprekey, &store->cursignedprekey, sizeof(struct SignedPreKey));
+  // TODO: after uint32_t wrap, skip 0
+  GenerateSignedPreKey(&store->cursignedprekey, store->prevsignedprekey.id+1, &store->identity);
+}
+
 // msg->encrypted contains the payload with size msg->encryptedsz that will be decrypted into msg->payload (when this function returns 0)
-static void ProcessPreKeyMessage(struct Session *session, struct EncryptedMessage *msg) {
+static void ProcessPreKeyMessage(struct Session *session, struct Store *store, struct EncryptedMessage *msg) {
   char *p = msg->encrypted;
   char *e = p+msg->encryptedsz;
   assert(e-p >= PREKEYHEADER_SIZE);
   assert(*p++ == ((3 << 4) | 3));
+  memset(session, 0, sizeof(struct Session));
+  session->store = store;
+  // PreKeyWhisperMessage
+  struct ProtobufField fields[7] = {
+    [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
+    [1] = {PB_REQUIRED | PB_UINT32}, // prekeyid
+    [6] = {PB_REQUIRED | PB_UINT32}, // signedprekeyid
+    [2] = {PB_REQUIRED | PB_LEN}, // basekey
+    [3] = {PB_REQUIRED | PB_LEN}, // identitykey
+    [4] = {PB_REQUIRED | PB_LEN}, // message
+  };
+  assert(ParseProtobuf(p, e-p, fields, 7) == 0);
+  // if () return -1;
+  // later remove this prekey
+  struct PreKey *pk = FindPreKey(session->store, fields[1].v);
+  // if (!pk) return -1;
+  assert(pk);
+  struct SignedPreKey *spk = FindSignedPreKey(session->store, fields[6].v);
+  // if (!spk) return -1;
+  assert(spk);
+
+  Key basekey, ik;
+  assert(fields[2].v == sizeof(Key));
+  memcpy(basekey, fields[2].p, sizeof(Key));
+  assert(fields[3].v == sizeof(Key));
+  memcpy(ik, fields[3].p, sizeof(Key));
+
+  // Taken from InitSessionAlice
+  uint8_t secret[32*5];
+  memset(secret, 255, 32);
+  CalculateCurveAgreement(secret+32, basekey, session->store->identity.prv);
+  CalculateCurveAgreement(secret+64, ik, spk->kp.prv);
+  CalculateCurveAgreement(secret+96, basekey, spk->kp.prv);
+  CalculateCurveAgreement(secret+128, basekey, pk->kp.prv);
+
+  uint8_t masterkey[64];
+  uint8_t salt[32];
+  memset(salt, 0, 32);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, masterkey, 64) == 0);
+
+  // TODO: ?
+  memcpy(session->state.rk, masterkey, sizeof(Key));
+  //?? memcpy(session->state.dhr, bundle->spk, sizeof(Key));
 }
