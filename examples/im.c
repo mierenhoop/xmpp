@@ -15,7 +15,7 @@
 #include <stdbool.h>
 
 #include "xmpp.h"
-#include "cacert.inc"
+#include "test/cacert.inc"
 
 #include "system.h"
 

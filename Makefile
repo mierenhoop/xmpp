@@ -9,19 +9,21 @@ o:
 o/xmpp.o: xmpp.c | o
 	$(CC) -c -o $@ $(CFLAGS) xmpp.c
 
-o/test: o/xmpp.o
-	$(CC) -DXMPP_RUNTEST -o o/test yxml.c xmpp.c $(CFLAGS) $(LDFLAGS)
+o/test: o/xmpp.o test/cacert.inc
+	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) $(LDFLAGS)
 
-o/test-omemo:
-	$(CC) -o o/test-omemo curve25519.c omemo.c $(CFLAGS) $(LDFLAGS)
+o/test-omemo: curve25519.c test/omemo.c omemo.c | o
+	$(CC) -o o/test-omemo curve25519.c test/omemo.c $(CFLAGS) $(LDFLAGS)
 
-o/im: o/xmpp.o
+o/im: o/xmpp.o examples/im.c test/cacert.inc
 	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -DIM_NATIVE
 
 LIBOMEMO_DIR=o/libomemo-c-0.5.0
 
 $(LIBOMEMO_DIR).tar.gz: | o
 	wget -O $@ https://github.com/dino/libomemo-c/archive/refs/tags/v0.5.0.tar.gz
+	echo "03195a24ef7a86c339cdf9069d7f7569ed511feaf55e853bfcb797d2698ba983  $@" \
+		| sha256sum -c -
 
 $(LIBOMEMO_DIR): $(LIBOMEMO_DIR).tar.gz
 	tar -xzf $< -C o
@@ -36,6 +38,12 @@ curve25519.c: $(LIBOMEMO_DIR)
 	echo "#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include <stdint.h>\n" > $@
 	cpp $(DEST_AMALG_C) -I $(CURVE_DIR)/ed25519/nacl_includes/ -I $(CURVE_DIR)/ed25519/additions/ -I $(CURVE_DIR)/ed25519 \
 		| awk '/# 5 .*amalg\.c.*/ {k=1} /# / {next} k {print $0}' >> $@
+
+test/localhost.crt:
+	openssl req -new -x509 -key test/localhost.key -out $@ -days 3650 -config test/localhost.cnf
+
+test/cacert.inc: test/localhost.crt
+	(cat test/localhost.crt; printf "\0") | xxd -i -name cacert_pem > $@
 
 ESPIDF_DOCKERCMD=docker run --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp espressif/idf idf.py
 
@@ -55,13 +63,16 @@ test-omemo: o/test-omemo
 runim: o/im
 	LD_LIBRARY_PATH=/usr/local/lib rlwrap ./o/im
 
-prosody:
+prosody: test/localhost.crt
 	docker-compose -f test/docker-compose.yml up -d --build
 
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
-.PHONY: all o/test test test-omemo o/test-omemo prosody o/im runim
+.PHONY: all o/test test test-omemo o/test-omemo prosody o/im runim clean full-clean
 
 clean:
 	rm -rf o
+
+full-clean: clean
+	rm -f test/cacert.inc test/localhost.crt curve25519.c
