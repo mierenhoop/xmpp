@@ -60,3 +60,12 @@ Run the im (instant messenger) example:
 
 Compile the esp-idf version of the im:
  $ make esp-im
+
+Using this library for your own project:
+ Copy over `/xmpp.c`, `/xmpp.h`, `/yxml.c` and `/yxml.h` to your
+ project.
+ If you want to use OMEMO, copy over `/omemo.c`, `/omemo.h`,
+ `/curve25519.c` and `/curve25519.h`.
+ Either way, you must link against libmbedcrypto (and/or configure your
+ mbedtls build to only include the needed functions TODO: specify
+ which).

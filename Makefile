@@ -1,4 +1,3 @@
-LDFLAGS= -lmbedtls -lmbedcrypto -lmbedx509
 CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign -fmax-errors=4 -I.
 
 all: o/test o/im o/test-omemo
@@ -9,31 +8,30 @@ o:
 o/xmpp.o: xmpp.c | o
 	$(CC) -c -o $@ $(CFLAGS) xmpp.c
 
+# TODO: when we eventually move away from integration tests in
+# test/xmpp.c (keep those integrations tests in the IM example), we can
+# remove mbedtls and mbedx509
 o/test: o/xmpp.o test/cacert.inc
-	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) $(LDFLAGS)
+	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
 
-o/test-omemo: curve25519.c test/omemo.c omemo.c | o
-	$(CC) -o o/test-omemo curve25519.c test/omemo.c $(CFLAGS) $(LDFLAGS)
+o/test-omemo: test/omemo.c omemo.c | o curve25519.c
+	$(CC) -o o/test-omemo curve25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
 
 o/im: o/xmpp.o examples/im.c test/cacert.inc
-	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) $(LDFLAGS) -DIM_NATIVE
+	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
 
 LIBOMEMO_DIR=o/libomemo-c-0.5.0
-
-$(LIBOMEMO_DIR).tar.gz: | o
-	wget -O $@ https://github.com/dino/libomemo-c/archive/refs/tags/v0.5.0.tar.gz
-	echo "03195a24ef7a86c339cdf9069d7f7569ed511feaf55e853bfcb797d2698ba983  $@" \
-		| sha256sum -c -
-
-$(LIBOMEMO_DIR): $(LIBOMEMO_DIR).tar.gz
-	tar -xzf $< -C o
-	patch -d $(LIBOMEMO_DIR) -p1 < build/amalg.patch
 
 CURVE_DIR=$(LIBOMEMO_DIR)/src/curve25519
 DEST_AMALG_C=$(CURVE_DIR)/amalg.c
 
 # TODO patch: typedef crypto_*int* to stdint types, remove malloc from ed25519/additions?
-curve25519.c: $(LIBOMEMO_DIR)
+curve25519.c: | o
+	wget -O $(LIBOMEMO_DIR).tar.gz https://github.com/dino/libomemo-c/archive/refs/tags/v0.5.0.tar.gz
+	echo "03195a24ef7a86c339cdf9069d7f7569ed511feaf55e853bfcb797d2698ba983  $(LIBOMEMO_DIR).tar.gz" \
+		| sha256sum -c -
+	tar -xzf $(LIBOMEMO_DIR).tar.gz -C o
+	patch -d $(LIBOMEMO_DIR) -p1 < build/amalg.patch
 	cp build/amalg.c $(DEST_AMALG_C)
 	echo "#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include <stdint.h>\n" > $@
 	cpp $(DEST_AMALG_C) -I $(CURVE_DIR)/ed25519/nacl_includes/ -I $(CURVE_DIR)/ed25519/additions/ -I $(CURVE_DIR)/ed25519 \
@@ -69,7 +67,7 @@ prosody: test/localhost.crt
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
-.PHONY: all o/test test test-omemo o/test-omemo prosody o/im runim clean full-clean
+.PHONY: prosody runim clean full-clean
 
 clean:
 	rm -rf o
