@@ -57,7 +57,7 @@ struct State {
 #define HEADER_MAXSIZE (2+32+1+5+1+5)
 #define FULLMSG_MAXSIZE (1+HEADER_MAXSIZE+2+PAYLOAD_SIZE)
 #define ENCRYPTED_MAXSIZE (FULLMSG_MAXSIZE+8)
-#define PREKEYHEADER_SIZE (1+18+34*2+2)
+#define PREKEYHEADER_MAXSIZE (1+18+34*2+2)
 
 #define NUMPREKEYS 100
 
@@ -79,7 +79,7 @@ struct Session {
 
 struct EncryptedMessage {
   uint8_t payload[PAYLOAD_SIZE];
-  uint8_t encrypted[PREKEYHEADER_SIZE+ENCRYPTED_MAXSIZE];
+  uint8_t encrypted[PREKEYHEADER_MAXSIZE+ENCRYPTED_MAXSIZE];
   size_t encryptedsz;
 };
 
@@ -125,10 +125,10 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
   return s;
 }
 
-static int ParseProtobuf(const char *s, size_t n, struct ProtobufField *fields, int nfields) {
+static int ParseProtobuf(const uint8_t *s, size_t n, struct ProtobufField *fields, int nfields) {
   int type, id;
   uint64_t v;
-  const char *e = s + n;
+  const uint8_t *e = s + n;
   uint32_t found = 0;
   assert(nfields <= 16);
   while (s < e) {
@@ -190,7 +190,7 @@ static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
 
 // PreKeyWhisperMessage without message (it should be appended right after this call)
 // ek = basekey
-static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_SIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz) {
+static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz) {
   assert(msgsz < 128);
   *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
   *d++ = (5 << 3) | PB_UINT32;
@@ -210,7 +210,7 @@ static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_SIZE], uint32_t pk_id
 // HEADER(dh_pair, pn, n)
 static uint8_t *FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs) {
   *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
-  FormatBytes(d, 1, dhs, sizeof(PublicKey));
+  d = FormatBytes(d, 1, dhs, sizeof(PublicKey));
   *d++ = (2 << 3) | PB_UINT32;
   d = FormatVarInt(d, n);
   *d++ = (3 << 3) | PB_UINT32;
@@ -388,8 +388,10 @@ static int ProcessBundle(struct Session *s, struct Store *store, struct Bundle *
   InitSessionAlice(b, s, &ourbasekey);
   EncryptRatchet(s, msg);
   if (!s->dontsendprekeys) {
-    memmove(msg->encrypted+PREKEYHEADER_SIZE, msg->encrypted, msg->encryptedsz);
+    // [message 00...] -> [00... message] -> [header 00... message] -> [header message]
+    memmove(msg->encrypted+PREKEYHEADER_MAXSIZE, msg->encrypted, msg->encryptedsz);
     int headersz = FormatPreKeyMessage(msg->encrypted, b->pk_id, b->spk_id, s->store->identity.pub, ourbasekey.pub, msg->encryptedsz) - msg->encrypted;
+    memmove(msg->encrypted+headersz, msg->encrypted+PREKEYHEADER_MAXSIZE, msg->encryptedsz);
     msg->encryptedsz += headersz;
   }
 
@@ -420,12 +422,28 @@ static void RotateSignedPreKey(struct Store *store) {
   GenerateSignedPreKey(&store->cursignedprekey, store->prevsignedprekey.id+1, &store->identity);
 }
 
+static void DecryptMessage(struct Session *session, const uint8_t *p, const uint8_t *e) {
+  assert(e-p > 0 && *p++ == ((3 << 4) | 3));
+  assert(e-p >= 8);
+  e -= 8;
+  const uint8_t *mac = e;
+  struct ProtobufField fields[5] = {
+    [1] = {PB_REQUIRED | PB_LEN}, // ek
+    [2] = {PB_REQUIRED | PB_UINT32}, // n
+    [3] = {PB_REQUIRED | PB_UINT32}, // pn
+    [4] = {PB_REQUIRED | PB_LEN}, // ciphertext
+  };
+  //for (const uint8_t *i=p;i<e;i++)
+  //  printf("%02x", *i);
+  //puts("");
+  assert(!ParseProtobuf(p, e-p, fields, 5));
+}
+
 // msg->encrypted contains the payload with size msg->encryptedsz that will be decrypted into msg->payload (when this function returns 0)
 static void ProcessPreKeyMessage(struct Session *session, struct Store *store, struct EncryptedMessage *msg) {
-  char *p = msg->encrypted;
-  char *e = p+msg->encryptedsz;
-  assert(e-p >= PREKEYHEADER_SIZE);
-  assert(*p++ == ((3 << 4) | 3));
+  uint8_t *p = msg->encrypted;
+  uint8_t *e = p+msg->encryptedsz;
+  assert(e-p > 0 && *p++ == ((3 << 4) | 3));
   memset(session, 0, sizeof(struct Session));
   session->store = store;
   // PreKeyWhisperMessage
@@ -469,4 +487,6 @@ static void ProcessPreKeyMessage(struct Session *session, struct Store *store, s
   // TODO: ?
   memcpy(session->state.rk, masterkey, sizeof(Key));
   //?? memcpy(session->state.dhr, bundle->spk, sizeof(Key));
+
+  DecryptMessage(session, fields[4].p, fields[4].p+fields[4].v);
 }
