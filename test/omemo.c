@@ -40,11 +40,11 @@ static void TestParseProtobuf() {
 }
 
 static void TestFormatProtobuf() {
-  uint8_t varint[5];
-  assert(FormatVarInt(varint, 0) == varint + 1 && varint[0] == 0);
-  assert(FormatVarInt(varint, 1) == varint + 1 && varint[0] == 1);
-  assert(FormatVarInt(varint, 0x80) == varint + 2 && !memcmp(varint, "\x80\x01", 2));
-  assert(FormatVarInt(varint, 0xffffffff) == varint + 5 && !memcmp(varint, "\xff\xff\xff\xff\x0f", 5));
+  uint8_t varint[6];
+  assert(FormatVarInt(varint, 1, 0x00) == varint + 2 && !memcmp(varint, "\x08\x00", 2));
+  assert(FormatVarInt(varint, 1, 0x01) == varint + 2 && !memcmp(varint, "\x08\x01", 2));
+  assert(FormatVarInt(varint, 1, 0x80) == varint + 3 && !memcmp(varint, "\x08\x80\x01", 3));
+  assert(FormatVarInt(varint, 1, 0xffffffff) == varint + 6 && !memcmp(varint, "\x08\xff\xff\xff\xff\x0f", 6));
 }
 
 static void CopyHex(uint8_t *d, char *hex) {

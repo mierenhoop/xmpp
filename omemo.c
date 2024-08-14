@@ -54,7 +54,7 @@ struct State {
 };
 
 #define PAYLOAD_SIZE 32
-#define HEADER_MAXSIZE (2+32+1+5+1+5)
+#define HEADER_MAXSIZE (2+32+2*6)
 #define FULLMSG_MAXSIZE (1+HEADER_MAXSIZE+2+PAYLOAD_SIZE)
 #define ENCRYPTED_MAXSIZE (FULLMSG_MAXSIZE+8)
 #define PREKEYHEADER_MAXSIZE (1+18+34*2+2)
@@ -71,6 +71,7 @@ struct Store {
 
 // TODO: pack for serialization?
 struct Session {
+  int flags;
   PublicKey remoteidentity;
   struct State state;
   struct Store *store;
@@ -127,7 +128,7 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
 
 static int ParseProtobuf(const uint8_t *s, size_t n, struct ProtobufField *fields, int nfields) {
   int type, id;
-  uint64_t v;
+  uint32_t v;
   const uint8_t *e = s + n;
   uint32_t found = 0;
   assert(nfields <= 16);
@@ -140,8 +141,11 @@ static int ParseProtobuf(const uint8_t *s, size_t n, struct ProtobufField *field
     if (id >= nfields || type != (fields[id].type & 7))
       return -1;
     found |= 1 << id;
-    if (!(s = ParseVarInt(s, e, &fields[id].v)))
+    if (!(s = ParseVarInt(s, e, &v)))
       return -1;
+    //if (fields[id].v && v != fields[id].v)
+    //  return -1;
+    fields[id].v = v;
     if (type == PB_LEN) {
       fields[id].p = s;
       s += fields[id].v;
@@ -170,7 +174,9 @@ static int ParseKeyExchange(const uint8_t *s, size_t n) {
   return 0;
 }
 
-static uint8_t *FormatVarInt(uint8_t d[static 5], uint32_t v) {
+static uint8_t *FormatVarInt(uint8_t d[static 6], int id, uint32_t v) {
+  assert(id < 16);
+  *d++ = (id << 3) | PB_UINT32;
   do {
     *d = v & 0x7f;
     v >>= 7;
@@ -193,12 +199,9 @@ static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
 static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz) {
   assert(msgsz < 128);
   *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
-  *d++ = (5 << 3) | PB_UINT32;
-  d = FormatVarInt(d, 0xcc); // TODO: registration id
-  *d++ = (1 << 3) | PB_UINT32;
-  d = FormatVarInt(d, pk_id);
-  *d++ = (6 << 3) | PB_UINT32;
-  d = FormatVarInt(d, spk_id);
+  d = FormatVarInt(d, 5, 0xcc); // TODO: registration id
+  d = FormatVarInt(d, 1, pk_id);
+  d = FormatVarInt(d, 6, spk_id);
   d = FormatBytes(d, 3, ik, sizeof(PublicKey));
   d = FormatBytes(d, 2, ek, sizeof(PublicKey));
   *d++ = (4 << 3) | PB_LEN;
@@ -211,10 +214,14 @@ static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk
 static uint8_t *FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs) {
   *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
   d = FormatBytes(d, 1, dhs, sizeof(PublicKey));
-  *d++ = (2 << 3) | PB_UINT32;
-  d = FormatVarInt(d, n);
-  *d++ = (3 << 3) | PB_UINT32;
-  return FormatVarInt(d, pn);
+  d = FormatVarInt(d, 2, n);
+  return FormatVarInt(d, 3, pn);
+}
+
+static void DumpHex(const uint8_t *p, int n, const char *msg) {
+  for (int i=0;i<n;i++)
+    printf("%02x", p[i]);
+  printf(" << %s\n", msg);
 }
 
 static void GenerateKeyPair(struct KeyPair *kp) {
@@ -288,6 +295,24 @@ static bool VerifySignature(CurveSignature sig, PublicKey sk, const uint8_t *msg
   return curve25519_verify(sig, sk, msg, n) == 0;
 }
 
+// AD = Encode(IKA) || Encode(IKB)
+static void GetAd(uint8_t ad[66], Key ika, Key ikb) {
+  SerializeKey(ad, ika);
+  SerializeKey(ad+33, ikb);
+}
+
+static void Encrypt(uint8_t out[static PAYLOAD_SIZE], const uint8_t in[static PAYLOAD_SIZE], Key key, uint8_t iv[static 16]) {
+  mbedtls_aes_context aes;
+  assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, PAYLOAD_SIZE, iv, in, out) == 0);
+}
+
+static void Decrypt(uint8_t out[static PAYLOAD_SIZE], const uint8_t in[static PAYLOAD_SIZE], Key key, uint8_t iv[static 16]) {
+  mbedtls_aes_context aes;
+  assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, PAYLOAD_SIZE, iv, in, out) == 0);
+}
+
 // What this function would do in libomemo-c is get the identity keypair
 // from a callback and memcpy everything.
 //static void GetIdentityKeyPair(struct KeyPair *ouridkeypair) {
@@ -308,16 +333,16 @@ static bool VerifySignature(CurveSignature sig, PublicKey sk, const uint8_t *msg
 // TODO: keep sending prekeymessages until we receive something
 static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg) {
   uint8_t salt[32], output[80], macinput[33*2+FULLMSG_MAXSIZE], mac[32], encrypted[PAYLOAD_SIZE];
-  mbedtls_aes_context aes;
   memset(salt, 0, 32);
+  DumpHex(session->state.cks, 32, "cks");
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, session->state.cks, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
 
-  SerializeKey(macinput, session->store->identity.pub);
-  SerializeKey(macinput+33, session->remoteidentity);
-  int n = FormatMessageHeader(macinput+33*2, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
+  GetAd(macinput, session->store->identity.pub, session->remoteidentity);
+  int n = FormatMessageHeader(macinput+66, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
 
-  assert(mbedtls_aes_setkey_enc(&aes, output, 128) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, PAYLOAD_SIZE, output+64, msg->payload, encrypted) == 0);
+  DumpHex(msg->payload, PAYLOAD_SIZE, "plaintext");
+
+  Encrypt(encrypted, msg->payload, output, output+64);
   // TODO: we should inline this function, size is constant anyways
   n = FormatBytes(macinput+n, 4, encrypted, PAYLOAD_SIZE) - macinput;
 
@@ -333,12 +358,29 @@ static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg
 }
 
 // RK, CKs = KDF_RK(SK, DH(DHs, DHr))
-static void CalculateSendingRatchet(struct Session *session) {
+static void CalculateSendingRatchet(struct State *state, Key rk, Key ck) {
   uint8_t secret[32], masterkey[64];
-  CalculateCurveAgreement(secret, session->state.dhr, session->state.dhs.prv);
-  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), session->state.rk, sizeof(Key), secret, sizeof(secret), "WhisperRatchet", 14, masterkey, 64) == 0);
-  memcpy(session->state.rk, masterkey, sizeof(Key));
-  memcpy(session->state.cks, masterkey+32, 32);
+  CalculateCurveAgreement(secret, state->dhr, state->dhs.prv);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), state->rk, sizeof(Key), secret, sizeof(secret), "WhisperRatchet", 14, masterkey, 64) == 0);
+  memcpy(rk, masterkey, sizeof(Key));
+  memcpy(ck, masterkey+32, 32);
+}
+
+// DH1 = DH(IKA, SPKB)
+// DH2 = DH(EKA, IKB)
+// DH3 = DH(EKA, SPKB)
+// DH4 = DH(EKA, OPKB)
+// SK = KDF(DH1 || DH2 || DH3 || DH4)
+static void GetSharedSecret(Key sk, Key ika, Key eka, Key ikb, Key spkb, Key opkb) {
+  uint8_t secret[32*5], salt[32];
+  memset(secret, 0xff, 32);
+  CalculateCurveAgreement(secret+32, spkb, ika);
+  CalculateCurveAgreement(secret+64, ikb, eka);
+  CalculateCurveAgreement(secret+96, spkb, eka);
+  // OMEMO mandates that the bundle MUST contain a prekey.
+  CalculateCurveAgreement(secret+128, opkb, eka);
+  memset(salt, 0, 32);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) == 0);
 }
 
 // DH1 = DH(IKA, SPKB)
@@ -365,7 +407,23 @@ static void InitSessionAlice(struct Bundle *bundle, struct Session *session, str
   memcpy(session->state.rk, masterkey, sizeof(Key));
   memcpy(session->state.dhr, bundle->spk, sizeof(Key));
   GenerateKeyPair(&session->state.dhs);
-  CalculateSendingRatchet(session);
+  CalculateSendingRatchet(&session->state, session->state.rk, session->state.cks);
+}
+
+// state.DHs = GENERATE_DH()
+// state.DHr = bob_dh_public_key
+// state.RK, state.CKs = KDF_RK(SK, DH(state.DHs, state.DHr)) 
+// state.CKr = None
+// state.Ns = 0
+// state.Nr = 0
+// state.PN = 0
+// state.MKSKIPPED = {}
+static void RatchetInitAlice(struct State *state, Key sk, Key somekey) {
+  memset(state, 0, sizeof(struct State));
+  GenerateKeyPair(&state->dhs);
+  memcpy(state->rk, sk, 32);
+  memcpy(state->dhr, somekey, 32);
+  CalculateSendingRatchet(state, state->rk, state->cks);
 }
 
 // When we process the bundle, we are the ones who initialize the
@@ -422,6 +480,23 @@ static void RotateSignedPreKey(struct Store *store) {
   GenerateSignedPreKey(&store->cursignedprekey, store->prevsignedprekey.id+1, &store->identity);
 }
 
+// PN = Ns
+// Ns = 0
+// Nr = 0
+// DHr = dh
+// RK, CKr = KDF_RK(RK, DH(DHs, DHr))
+// DHs = GENERATE_DH()
+// RK, CKs = KDF_RK(RK, DH(DHs, DHr))
+static void DHRatchet(struct Session *session, const Key dh) {
+  session->state.pn = session->state.ns;
+  session->state.ns = 0;
+  session->state.nr = 0;
+  memcpy(session->state.dhr, dh, 32);
+  CalculateSendingRatchet(&session->state, session->state.rk, session->state.ckr);
+  GenerateKeyPair(&session->state.dhs);
+  CalculateSendingRatchet(&session->state, session->state.rk, session->state.cks);
+}
+
 static void DecryptMessage(struct Session *session, const uint8_t *p, const uint8_t *e) {
   assert(e-p > 0 && *p++ == ((3 << 4) | 3));
   assert(e-p >= 8);
@@ -433,10 +508,24 @@ static void DecryptMessage(struct Session *session, const uint8_t *p, const uint
     [3] = {PB_REQUIRED | PB_UINT32}, // pn
     [4] = {PB_REQUIRED | PB_LEN}, // ciphertext
   };
-  //for (const uint8_t *i=p;i<e;i++)
-  //  printf("%02x", *i);
-  //puts("");
+
   assert(!ParseProtobuf(p, e-p, fields, 5));
+  assert(fields[1].v == 32); // TODO: put size check in ParseProtobuf?
+  // if (!(state->session.state & SESSION_INITIALIZED))
+  DHRatchet(session, fields[1].p);
+
+  DumpHex(session->state.cks, 32, "cks");
+  uint8_t salt[32], output[80], macinput[33*2+FULLMSG_MAXSIZE], decrypted[PAYLOAD_SIZE];
+  memset(salt, 0, 32);
+  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, session->state.cks, sizeof(Key), "WhisperMessageKeys", 18, output, 80) == 0);
+  SerializeKey(macinput, session->store->identity.pub);
+  SerializeKey(macinput+33, session->remoteidentity);
+  int n = FormatMessageHeader(macinput+33*2, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
+
+  assert(fields[4].v == PAYLOAD_SIZE);
+  Decrypt(decrypted, fields[4].p, output, output+64);
+  DumpHex(decrypted, PAYLOAD_SIZE, "decrypted");
+  session->state.nr++;
 }
 
 // msg->encrypted contains the payload with size msg->encryptedsz that will be decrypted into msg->payload (when this function returns 0)
@@ -465,17 +554,17 @@ static void ProcessPreKeyMessage(struct Session *session, struct Store *store, s
   // if (!spk) return -1;
   assert(spk);
 
-  Key basekey, ik;
+  Key basekey;
   assert(fields[2].v == sizeof(Key));
   memcpy(basekey, fields[2].p, sizeof(Key));
   assert(fields[3].v == sizeof(Key));
-  memcpy(ik, fields[3].p, sizeof(Key));
+  memcpy(session->remoteidentity, fields[3].p, sizeof(Key));
 
   // Taken from InitSessionAlice
   uint8_t secret[32*5];
   memset(secret, 255, 32);
   CalculateCurveAgreement(secret+32, basekey, session->store->identity.prv);
-  CalculateCurveAgreement(secret+64, ik, spk->kp.prv);
+  CalculateCurveAgreement(secret+64, session->remoteidentity, spk->kp.prv);
   CalculateCurveAgreement(secret+96, basekey, spk->kp.prv);
   CalculateCurveAgreement(secret+128, basekey, pk->kp.prv);
 
