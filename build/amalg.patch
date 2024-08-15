@@ -1,3 +1,22 @@
+diff --git a/src/curve25519/curve25519-donna.c b/src/curve25519/curve25519-donna.c
+index f2c2ac5..e4d901e 100644
+--- a/src/curve25519/curve25519-donna.c
++++ b/src/curve25519/curve25519-donna.c
+@@ -850,7 +850,7 @@ crecip(limb *out, const limb *z) {
+   /* 2^255 - 21 */ fmul(out,t1,z11);
+ }
+ 
+-int
++void
+ curve25519_donna(u8 *mypublic, const u8 *secret, const u8 *basepoint) {
+   limb bp[10], x[10], z[11], zmone[10];
+   uint8_t e[32];
+@@ -866,5 +866,4 @@ curve25519_donna(u8 *mypublic, const u8 *secret, const u8 *basepoint) {
+   crecip(zmone, z);
+   fmul(z, x, zmone);
+   fcontract(mypublic, z);
+-  return 0;
+ }
 diff --git a/src/curve25519/ed25519/additions/compare.c b/src/curve25519/ed25519/additions/compare.c
 index 8b1e313..9478032 100644
 --- a/src/curve25519/ed25519/additions/compare.c
@@ -9,6 +28,62 @@ index 8b1e313..9478032 100644
 +#undef F
    return (1 & ((differentbits - 1) >> 8)) - 1;
  }
+diff --git a/src/curve25519/ed25519/additions/curve_sigs.c b/src/curve25519/ed25519/additions/curve_sigs.c
+index 3254724..db41840 100644
+--- a/src/curve25519/ed25519/additions/curve_sigs.c
++++ b/src/curve25519/ed25519/additions/curve_sigs.c
+@@ -5,21 +5,15 @@
+ #include "crypto_sign.h"
+ #include "crypto_additions.h"
+ 
+-int curve25519_sign(unsigned char* signature_out,
++void curve25519_sign(unsigned char* signature_out,
+                     const unsigned char* curve25519_privkey,
+                     const unsigned char* msg, const unsigned long msg_len,
+-                    const unsigned char* random)
++                    const unsigned char* random, unsigned char *sigbuf)
+ {
+   ge_p3 ed_pubkey_point; /* Ed25519 pubkey point */
+   unsigned char ed_pubkey[32]; /* Ed25519 encoded pubkey */
+-  unsigned char *sigbuf; /* working buffer */
+   unsigned char sign_bit = 0;
+ 
+-  if ((sigbuf = malloc(msg_len + 128)) == 0) {
+-    memset(signature_out, 0, 64);
+-    return -1;
+-  }
+-
+   /* Convert the Curve25519 privkey to an Ed25519 public key */
+   ge_scalarmult_base(&ed_pubkey_point, curve25519_privkey);
+   ge_p3_tobytes(ed_pubkey, &ed_pubkey_point);
+@@ -33,9 +27,6 @@ int curve25519_sign(unsigned char* signature_out,
+   /* Encode the sign bit into signature (in unused high bit of S) */
+    signature_out[63] &= 0x7F; /* bit should be zero already, but just in case */
+    signature_out[63] |= sign_bit;
+-
+-   free(sigbuf);
+-   return 0;
+ }
+ 
+ int curve25519_verify(const unsigned char* signature,
+diff --git a/src/curve25519/ed25519/additions/curve_sigs.h b/src/curve25519/ed25519/additions/curve_sigs.h
+index a2d819a..72cc7ec 100644
+--- a/src/curve25519/ed25519/additions/curve_sigs.h
++++ b/src/curve25519/ed25519/additions/curve_sigs.h
+@@ -2,11 +2,10 @@
+ #ifndef __CURVE_SIGS_H__
+ #define __CURVE_SIGS_H__
+ 
+-/* returns 0 on success */
+-int curve25519_sign(unsigned char* signature_out, /* 64 bytes */
++void curve25519_sign(unsigned char* signature_out, /* 64 bytes */
+                      const unsigned char* curve25519_privkey, /* 32 bytes */
+                      const unsigned char* msg, const unsigned long msg_len, /* <= 256 bytes */
+-                     const unsigned char* random); /* 64 bytes */
++                     const unsigned char* random, unsigned char *sigbuf); /* 64 bytes */
+ 
+ /* returns 0 on success */
+ int curve25519_verify(const unsigned char* signature, /* 64 bytes */
 diff --git a/src/curve25519/ed25519/additions/fe_mont_rhs.c b/src/curve25519/ed25519/additions/fe_mont_rhs.c
 index bc83936..0f5c71a 100644
 --- a/src/curve25519/ed25519/additions/fe_mont_rhs.c

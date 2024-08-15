@@ -10,14 +10,16 @@ void crypto_sign_ed25519_ref10_fe_frombytes(fe,const unsigned char *);
 void fe_edy_to_montx(fe u, const fe y);
 void crypto_sign_ed25519_ref10_fe_tobytes(unsigned char *,const fe);
 void fe_montx_to_edy(fe y, const fe u);
-int curve25519_donna(u8 *mypublic, const u8 *secret, const u8 *basepoint);
+void curve25519_donna(u8 *mypublic, const u8 *secret, const u8 *basepoint);
 int ed25519_verify(const unsigned char* signature,
                       const unsigned char* curve25519_pubkey,
                       const unsigned char* msg, const unsigned long msg_len);
-int curve25519_sign(unsigned char* signature_out,
+// sigbuf MUST be of size msglen + 128
+void curve25519_sign(unsigned char* signature_out,
                      const unsigned char* curve25519_privkey,
                      const unsigned char* msg, const unsigned long msg_len,
-                     const unsigned char* random);
+                     const unsigned char* random, unsigned char *sigbuf);
+// TODO: we might want to change from heap to stack here too
 int curve25519_verify(const unsigned char* signature,
                       const unsigned char* curve25519_pubkey,
                       const unsigned char* msg, const unsigned long msg_len);

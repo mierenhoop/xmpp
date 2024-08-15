@@ -230,7 +230,6 @@ static void GenerateKeyPair(struct KeyPair *kp) {
   kp->prv[0] &= 248;
   kp->prv[31] &= 127;
   kp->prv[31] |= 64;
-  // It always returns 0, no err checking needed.
   curve25519_donna(kp->pub, kp->prv, basepoint);
 }
 
@@ -260,7 +259,7 @@ static int CalculateCurveSignature(CurveSignature cs, Key signprv, uint8_t *msg,
   SystemRandom(rnd, sizeof(rnd));
   // TODO: change this function so it doesn't fail, n will always be 33, so we will need to allocate buffer of 33+128 and pass it.
   //assert(xed25519_sign(cs, signprv, msg, n, rnd) >= 0);
-  assert(curve25519_sign(cs, signprv, msg, n, rnd) >= 0);
+  curve25519_sign(cs, signprv, msg, n, rnd, buf);
   return 0;
 }
 
@@ -314,7 +313,6 @@ static void Decrypt(uint8_t out[static PAYLOAD_SIZE], const uint8_t in[static PA
   assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, PAYLOAD_SIZE, iv, in, out) == 0);
 }
 
-// TODO: we don't actually have to pack this right?
 struct __attribute__((__packed__)) DeriveChainKeyOutput  {
   Key ck, mk;
   uint8_t iv[16];
@@ -349,7 +347,7 @@ static void DeriveChainKey(struct DeriveChainKeyOutput *out, Key ck) {
 // msg->encrypted                  [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
 // TODO: keep sending prekeymessages until we receive something
 static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg) {
-  uint8_t macinput[33*2+FULLMSG_MAXSIZE], mac[32], encrypted[PAYLOAD_SIZE];
+  uint8_t macinput[66+FULLMSG_MAXSIZE], mac[32];
   DumpHex(session->state.cks, 32, "cks");
   struct DeriveChainKeyOutput kdfout;
   DeriveChainKey(&kdfout, session->state.cks);
@@ -359,15 +357,17 @@ static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg
 
   DumpHex(msg->payload, PAYLOAD_SIZE, "plaintext");
 
+  macinput[n++] = (4 << 3) | PB_LEN;
+  assert(PAYLOAD_SIZE < 128);
+  macinput[n++] = PAYLOAD_SIZE;
   DumpHex(kdfout.ck, 32, "encrypt ck");
   DumpHex(kdfout.ck, 16, "encrypt iv");
-  Encrypt(encrypted, msg->payload, kdfout.ck, kdfout.iv);
-  DumpHex(encrypted, PAYLOAD_SIZE, "encrypted");
-  // TODO: we should inline this function, size is constant anyways
-  n = FormatBytes(macinput+n, 4, encrypted, PAYLOAD_SIZE) - macinput;
+  Encrypt(macinput+n, msg->payload, kdfout.ck, kdfout.iv);
+  DumpHex(macinput+n, PAYLOAD_SIZE, "encrypted");
+  n += PAYLOAD_SIZE;
 
-  int encsz = n - 33*2;
-  memcpy(msg->encrypted, macinput+33*2, encsz);
+  int encsz = n - 66;
+  memcpy(msg->encrypted, macinput+66, encsz);
   assert(mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), kdfout.mk, 32, macinput, n, mac) == 0);
   memcpy(msg->encrypted+encsz, mac, 8);
   msg->encryptedsz = encsz + 8;

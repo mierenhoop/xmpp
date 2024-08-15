@@ -3971,11 +3971,10 @@ int crypto_verify_32_ref(const unsigned char *x, const unsigned char *y)
 
 
 
-
-int curve25519_sign(unsigned char* signature_out,
+void curve25519_sign(unsigned char* signature_out,
                      const unsigned char* curve25519_privkey,
                      const unsigned char* msg, const unsigned long msg_len,
-                     const unsigned char* random);
+                     const unsigned char* random, unsigned char *sigbuf);
 
 
 int curve25519_verify(const unsigned char* signature,
@@ -4025,20 +4024,14 @@ int crypto_sign_open_modified(
   const unsigned char *pk
   );
 
-int curve25519_sign(unsigned char* signature_out,
+void curve25519_sign(unsigned char* signature_out,
                     const unsigned char* curve25519_privkey,
                     const unsigned char* msg, const unsigned long msg_len,
-                    const unsigned char* random)
+                    const unsigned char* random, unsigned char *sigbuf)
 {
   ge_p3 ed_pubkey_point;
   unsigned char ed_pubkey[32];
-  unsigned char *sigbuf;
   unsigned char sign_bit = 0;
-
-  if ((sigbuf = malloc(msg_len + 128)) == 0) {
-    memset(signature_out, 0, 64);
-    return -1;
-  }
 
 
   crypto_sign_ed25519_ref10_ge_scalarmult_base(&ed_pubkey_point, curve25519_privkey);
@@ -4053,9 +4046,6 @@ int curve25519_sign(unsigned char* signature_out,
 
    signature_out[63] &= 0x7F;
    signature_out[63] |= sign_bit;
-
-   free(sigbuf);
-   return 0;
 }
 
 int curve25519_verify(const unsigned char* signature,
@@ -7094,7 +7084,7 @@ crecip(limb *out, const limb *z) {
                    fmul(out,t1,z11);
 }
 
-int
+void
 curve25519_donna(u8 *mypublic, const u8 *secret, const u8 *basepoint) {
   limb bp[10], x[10], z[11], zmone[10];
   uint8_t e[32];
@@ -7110,5 +7100,4 @@ curve25519_donna(u8 *mypublic, const u8 *secret, const u8 *basepoint) {
   crecip(zmone, z);
   fmul(z, x, zmone);
   fcontract(mypublic, z);
-  return 0;
 }
