@@ -253,13 +253,14 @@ static void SerializeKey(SerializedKey k, Key pub) {
   memcpy(k+1, pub, sizeof(SerializedKey)-1);
 }
 
-static int CalculateCurveSignature(CurveSignature cs, Key signprv, const uint8_t *msg, size_t n) {
+static int CalculateCurveSignature(CurveSignature cs, Key signprv, uint8_t *msg, size_t n) {
   // TODO: OMEMO uses xed25519 and old libsignal uses curve25519
-  uint8_t rnd[sizeof(CurveSignature)];
+  assert(n <= 33);
+  uint8_t rnd[sizeof(CurveSignature)], buf[33+128];
   SystemRandom(rnd, sizeof(rnd));
-  // TODO: change this function so it doesn't fail
-  assert(xed25519_sign(cs, signprv, msg, n, rnd) >= 0);
-  //assert(curve25519_sign(cs, signprv, msg, n, rnd) >= 0);
+  // TODO: change this function so it doesn't fail, n will always be 33, so we will need to allocate buffer of 33+128 and pass it.
+  //assert(xed25519_sign(cs, signprv, msg, n, rnd) >= 0);
+  assert(curve25519_sign(cs, signprv, msg, n, rnd) >= 0);
   return 0;
 }
 
@@ -390,17 +391,18 @@ static void DeriveRootKey(struct State *state, Key rk, Key ck) {
 // DH3 = DH(EKA, SPKB)
 // DH4 = DH(EKA, OPKB)
 // SK = KDF(DH1 || DH2 || DH3 || DH4)
-static void GetSharedSecret(Key sk, Key ika, Key ska, Key eka, const Key ikb, const Key spkb, const Key opkb) {
+static void GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const Key ikb, const Key spkb, const Key opkb) {
   uint8_t secret[32*5] = {0}, salt[32];
   memset(secret, 0xff, 32);
-  // TODO: put all them back, swap the first two if alice/bob
-  //CalculateCurveAgreement(secret+32, spkb, ika);
-  //CalculateCurveAgreement(secret+64, ikb, ska);
+  // When we are bob, we must swap the first two.
+  isbob = !!isbob;
+  CalculateCurveAgreement(secret+32+32*isbob, spkb, ika);
+  CalculateCurveAgreement(secret+64-32*isbob, ikb, ska);
   CalculateCurveAgreement(secret+96, spkb, ska);
+  // OMEMO mandates that the bundle MUST contain a prekey.
+  CalculateCurveAgreement(secret+128, opkb, eka);
   for (int i = 32; i < 32*5; i+=32)
     DumpHex(secret+i, 32, " << secret");
-  // OMEMO mandates that the bundle MUST contain a prekey.
-  //CalculateCurveAgreement(secret+128, opkb, eka);
   memset(salt, 0, 32);
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) == 0);
 }
@@ -439,7 +441,7 @@ static int ProcessBundle(struct Session *s, struct Store *store, struct Bundle *
   memset(&s->state, 0, sizeof(struct State));
   memcpy(s->remoteidentity, b->ik, sizeof(PublicKey));
   Key sk;
-  GetSharedSecret(sk, s->store->identity.prv, eka.prv, eka.prv, b->ik, b->spk, b->pk);
+  GetSharedSecret(sk, false, s->store->identity.prv, eka.prv, eka.prv, b->ik, b->spk, b->pk);
   DumpHex(sk, 32, "alice sk");
   DumpHex(s->store->identity.pub, 32, "alice ik");
   DumpHex(eka.pub, 32, "alice ek");
@@ -477,10 +479,18 @@ static struct SignedPreKey *FindSignedPreKey(struct Store *store, uint32_t spk_i
   return NULL;
 }
 
+static inline uint32_t IncrementWrapSkipZero(uint32_t n) {
+  n++;
+  return n + !n;
+}
+
 static void RotateSignedPreKey(struct Store *store) {
-  memcpy(&store->prevsignedprekey, &store->cursignedprekey, sizeof(struct SignedPreKey));
-  // TODO: after uint32_t wrap, skip 0
-  GenerateSignedPreKey(&store->cursignedprekey, store->prevsignedprekey.id+1, &store->identity);
+  memcpy(&store->prevsignedprekey, &store->cursignedprekey,
+         sizeof(struct SignedPreKey));
+  GenerateSignedPreKey(
+      &store->cursignedprekey,
+      IncrementWrapSkipZero(store->prevsignedprekey.id),
+      &store->identity);
 }
 
 // PN = Ns
@@ -505,7 +515,7 @@ static void RatchetInitBob(struct State *state, Key sk, struct KeyPair *ekb) {
   memcpy(state->rk, sk, 32);
 }
 
-static void DecryptMessage(struct Session *session, const uint8_t *p, const uint8_t *e) {
+static void DecryptMessage(struct Session *session, uint8_t decrypted[PAYLOAD_SIZE], const uint8_t *p, const uint8_t *e) {
   assert(e-p > 0 && *p++ == ((3 << 4) | 3));
   assert(e-p >= 8);
   e -= 8;
@@ -524,7 +534,7 @@ static void DecryptMessage(struct Session *session, const uint8_t *p, const uint
   DHRatchet(session, fields[1].p);
 
   DumpHex(session->state.cks, 32, "cks");
-  uint8_t macinput[33*2+FULLMSG_MAXSIZE], decrypted[PAYLOAD_SIZE];
+  uint8_t macinput[33*2+FULLMSG_MAXSIZE];
 
   struct DeriveChainKeyOutput kdfout;
   DeriveChainKey(&kdfout, session->state.ckr);
@@ -575,7 +585,7 @@ static void ProcessPreKeyMessage(struct Session *session, struct Store *store, s
   memcpy(session->remoteidentity, fields[3].p, sizeof(Key));
 
   Key sk;
-  GetSharedSecret(sk, session->store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p, fields[2].p, fields[2].p);
+  GetSharedSecret(sk, true, session->store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p, fields[2].p, fields[2].p);
   DumpHex(sk, 32, "bob sk");
   DumpHex(session->store->identity.pub, 32, "bob ik");
   DumpHex(spk->kp.pub, 32, "bob spk");
@@ -588,5 +598,5 @@ static void ProcessPreKeyMessage(struct Session *session, struct Store *store, s
   //DumpHex(fields[2].p, 32, "bob sk");
   RatchetInitBob(&session->state, sk, &pk->kp);
 
-  DecryptMessage(session, fields[4].p, fields[4].p+fields[4].v);
+  DecryptMessage(session, msg->payload, fields[4].p, fields[4].p+fields[4].v);
 }

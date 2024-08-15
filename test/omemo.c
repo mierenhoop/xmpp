@@ -132,11 +132,17 @@ static void TestSession() {
   ParseBundle(&bundleb, &storeb);
 
   struct Session sessiona, sessionb;
+  uint8_t payload[PAYLOAD_SIZE];
+  memset(payload, 0xcc, PAYLOAD_SIZE);
   struct EncryptedMessage msg;
-  memset(msg.payload, 0xcc, PAYLOAD_SIZE);
+  memcpy(msg.payload, payload, PAYLOAD_SIZE);
   assert(ProcessBundle(&sessiona, &storea, &bundleb, &msg) == 0);
+  memset(msg.payload, 0, PAYLOAD_SIZE);
+  assert(msg.encryptedsz > 0);
 
   ProcessPreKeyMessage(&sessionb, &storeb, &msg);
+
+  assert(!memcmp(payload, msg.payload, PAYLOAD_SIZE));
 }
 
 #define RunTest(t)                                                     \
