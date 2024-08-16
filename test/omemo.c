@@ -132,17 +132,28 @@ static void TestSession() {
   ParseBundle(&bundleb, &storeb);
 
   struct Session sessiona, sessionb;
-  uint8_t payload[PAYLOAD_SIZE];
-  memset(payload, 0xcc, PAYLOAD_SIZE);
-  struct EncryptedMessage msg;
-  memcpy(msg.payload, payload, PAYLOAD_SIZE);
-  assert(ProcessBundle(&sessiona, &storea, &bundleb, &msg) == 0);
-  memset(msg.payload, 0, PAYLOAD_SIZE);
-  assert(msg.encryptedsz > 0);
+  Payload realpayload, payload;
+  struct PreKeyMessage msg;
+  memset(realpayload, 0xcc, PAYLOAD_SIZE);
+  memcpy(payload, realpayload, PAYLOAD_SIZE);
+  assert(EncryptFirstMessage(&sessiona, &storea, &bundleb, &msg, payload) == 0);
+  memset(payload, 0, PAYLOAD_SIZE);
+  assert(msg.n > 0);
 
-  ProcessPreKeyMessage(&sessionb, &storeb, &msg);
+  assert(DecryptPreKeyMessage(&sessionb, &storeb, payload, msg.p, msg.n) == 0);
+  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 
-  assert(!memcmp(payload, msg.payload, PAYLOAD_SIZE));
+  memset(realpayload, 0xdd, PAYLOAD_SIZE);
+  memcpy(payload, realpayload, PAYLOAD_SIZE);
+  assert(EncryptRatchet(&sessionb, &msg, payload) == 0);
+  DecryptMessage(&sessiona, payload, msg.p, msg.n);
+  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+
+  memset(realpayload, 0xee, PAYLOAD_SIZE);
+  memcpy(payload, realpayload, PAYLOAD_SIZE);
+  assert(EncryptRatchet(&sessiona, &msg, payload) == 0);
+  DecryptMessage(&sessionb, payload, msg.p, msg.n);
+  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 }
 
 #define RunTest(t)                                                     \

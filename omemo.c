@@ -61,6 +61,14 @@ struct State {
 
 #define NUMPREKEYS 100
 
+typedef uint8_t Payload[PAYLOAD_SIZE];
+
+// TODO: GenericMessage? we could reuse this for normal OMEMOMessages, they just don't include the PreKey header.
+struct PreKeyMessage {
+  uint8_t p[PREKEYHEADER_MAXSIZE+ENCRYPTED_MAXSIZE];
+  size_t n;
+};
+
 // As the spec notes, a spk should be kept for one more rotation.
 // If prevsignedprekey doesn't exist, its id is 0. Therefore a valid id is always >= 1;
 struct Store {
@@ -76,12 +84,6 @@ struct Session {
   struct State state;
   struct Store *store;
   bool dontsendprekeys;
-};
-
-struct EncryptedMessage {
-  uint8_t payload[PAYLOAD_SIZE];
-  uint8_t encrypted[PREKEYHEADER_MAXSIZE+ENCRYPTED_MAXSIZE];
-  size_t encryptedsz;
 };
 
 // Random function that must not fail, if it's really not possible to
@@ -301,13 +303,14 @@ static void GetAd(uint8_t ad[66], Key ika, Key ikb) {
   SerializeKey(ad+33, ikb);
 }
 
-static void Encrypt(uint8_t out[static PAYLOAD_SIZE], const uint8_t in[static PAYLOAD_SIZE], Key key, uint8_t iv[static 16]) {
+static void Encrypt(Payload out, const Payload in, Key key, uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
+  // These functions won't fail, so we can skip error checking.
   assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
   assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, PAYLOAD_SIZE, iv, in, out) == 0);
 }
 
-static void Decrypt(uint8_t out[static PAYLOAD_SIZE], const uint8_t in[static PAYLOAD_SIZE], Key key, uint8_t iv[static 16]) {
+static void Decrypt(Payload out, const Payload in, Key key, uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
   assert(mbedtls_aes_setkey_dec(&aes, key, 256) == 0);
   assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, PAYLOAD_SIZE, iv, in, out) == 0);
@@ -322,6 +325,7 @@ _Static_assert(sizeof(struct DeriveChainKeyOutput) == 80);
 static void DeriveChainKey(struct DeriveChainKeyOutput *out, Key ck) {
   uint8_t salt[32];
   memset(salt, 0, 32);
+  // TODO: check error MBEDTLS_ERR_MD_ALLOC_FAILED
   assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
                       salt, 32, ck, sizeof(Key), "WhisperMessageKeys",
                       18, (uint8_t *)out,
@@ -346,7 +350,7 @@ static void DeriveChainKey(struct DeriveChainKeyOutput *out, Key ck) {
 //                identity identity version header    encrypted   mac[:8]
 // msg->encrypted                  [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
 // TODO: keep sending prekeymessages until we receive something
-static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg) {
+static int EncryptRatchet(struct Session *session, struct PreKeyMessage *msg, Payload payload) {
   uint8_t macinput[66+FULLMSG_MAXSIZE], mac[32];
   DumpHex(session->state.cks, 32, "cks");
   struct DeriveChainKeyOutput kdfout;
@@ -355,26 +359,28 @@ static void EncryptRatchet(struct Session *session, struct EncryptedMessage *msg
   GetAd(macinput, session->store->identity.pub, session->remoteidentity);
   int n = FormatMessageHeader(macinput+66, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
 
-  DumpHex(msg->payload, PAYLOAD_SIZE, "plaintext");
+  DumpHex(payload, PAYLOAD_SIZE, "plaintext");
 
   macinput[n++] = (4 << 3) | PB_LEN;
   assert(PAYLOAD_SIZE < 128);
   macinput[n++] = PAYLOAD_SIZE;
   DumpHex(kdfout.ck, 32, "encrypt ck");
   DumpHex(kdfout.ck, 16, "encrypt iv");
-  Encrypt(macinput+n, msg->payload, kdfout.ck, kdfout.iv);
+  Encrypt(macinput+n, payload, kdfout.ck, kdfout.iv);
   DumpHex(macinput+n, PAYLOAD_SIZE, "encrypted");
   n += PAYLOAD_SIZE;
 
   int encsz = n - 66;
-  memcpy(msg->encrypted, macinput+66, encsz);
-  assert(mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), kdfout.mk, 32, macinput, n, mac) == 0);
-  memcpy(msg->encrypted+encsz, mac, 8);
-  msg->encryptedsz = encsz + 8;
+  memcpy(msg->p, macinput+66, encsz);
+  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), kdfout.mk, 32, macinput, n, mac) != 0)
+    return -1;
+  memcpy(msg->p+encsz, mac, 8);
+  msg->n = encsz + 8;
 
   // nothing can fail anymore so we save the new state
   session->state.ns++;
   memcpy(session->state.cks, kdfout.ck, 32);
+  return 0;
 }
 
 // RK, CKs = KDF_RK(SK, DH(DHs, DHr))
@@ -391,7 +397,7 @@ static void DeriveRootKey(struct State *state, Key rk, Key ck) {
 // DH3 = DH(EKA, SPKB)
 // DH4 = DH(EKA, OPKB)
 // SK = KDF(DH1 || DH2 || DH3 || DH4)
-static void GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const Key ikb, const Key spkb, const Key opkb) {
+static int GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const Key ikb, const Key spkb, const Key opkb) {
   uint8_t secret[32*5] = {0}, salt[32];
   memset(secret, 0xff, 32);
   // When we are bob, we must swap the first two.
@@ -404,7 +410,9 @@ static void GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const
   for (int i = 32; i < 32*5; i+=32)
     DumpHex(secret+i, 32, " << secret");
   memset(salt, 0, 32);
-  assert(mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) == 0);
+  if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) != 0)
+    return -1;
+  return 0;
 }
 
 // state.DHs = GENERATE_DH()
@@ -428,7 +436,7 @@ static void RatchetInitAlice(struct State *state, Key sk, Key ekb) {
 // an initiation message and are called bob.
 // session is initialized in this function
 // msg->payload contains the payload that will be encrypted into msg->encrypted with size msg->encryptedsz (when this function returns 0)
-static int ProcessBundle(struct Session *s, struct Store *store, struct Bundle *b, struct EncryptedMessage *msg) {
+static int EncryptFirstMessage(struct Session *s, struct Store *store, struct Bundle *b, struct PreKeyMessage *msg, Payload payload) {
   SerializedKey serspk;
   memset(s, 0, sizeof(struct Session));
   s->store = store;
@@ -441,7 +449,8 @@ static int ProcessBundle(struct Session *s, struct Store *store, struct Bundle *
   memset(&s->state, 0, sizeof(struct State));
   memcpy(s->remoteidentity, b->ik, sizeof(PublicKey));
   Key sk;
-  GetSharedSecret(sk, false, s->store->identity.prv, eka.prv, eka.prv, b->ik, b->spk, b->pk);
+  if (GetSharedSecret(sk, false, s->store->identity.prv, eka.prv, eka.prv, b->ik, b->spk, b->pk))
+    return -1;
   DumpHex(sk, 32, "alice sk");
   DumpHex(s->store->identity.pub, 32, "alice ik");
   DumpHex(eka.pub, 32, "alice ek");
@@ -449,13 +458,14 @@ static int ProcessBundle(struct Session *s, struct Store *store, struct Bundle *
   DumpHex(b->spk, 32, "bob spk");
   DumpHex(b->pk, 32, "bob pk");
   RatchetInitAlice(&s->state, sk, b->pk);
-  EncryptRatchet(s, msg);
+  if (EncryptRatchet(s, msg, payload))
+    return -1;
   if (!s->dontsendprekeys) {
     // [message 00...] -> [00... message] -> [header 00... message] -> [header message]
-    memmove(msg->encrypted+PREKEYHEADER_MAXSIZE, msg->encrypted, msg->encryptedsz);
-    int headersz = FormatPreKeyMessage(msg->encrypted, b->pk_id, b->spk_id, s->store->identity.pub, eka.pub, msg->encryptedsz) - msg->encrypted;
-    memmove(msg->encrypted+headersz, msg->encrypted+PREKEYHEADER_MAXSIZE, msg->encryptedsz);
-    msg->encryptedsz += headersz;
+    memmove(msg->p+PREKEYHEADER_MAXSIZE, msg->p, msg->n);
+    int headersz = FormatPreKeyMessage(msg->p, b->pk_id, b->spk_id, s->store->identity.pub, eka.pub, msg->n) - msg->p;
+    memmove(msg->p+headersz, msg->p+PREKEYHEADER_MAXSIZE, msg->n);
+    msg->n += headersz;
   }
 
   return 0;
@@ -515,7 +525,8 @@ static void RatchetInitBob(struct State *state, Key sk, struct KeyPair *ekb) {
   memcpy(state->rk, sk, 32);
 }
 
-static void DecryptMessage(struct Session *session, uint8_t decrypted[PAYLOAD_SIZE], const uint8_t *p, const uint8_t *e) {
+static void DecryptMessage(struct Session *session, Payload decrypted, const uint8_t *msg, size_t msgn) {
+  const uint8_t *p = msg, *e = msg+msgn;
   assert(e-p > 0 && *p++ == ((3 << 4) | 3));
   assert(e-p >= 8);
   e -= 8;
@@ -552,10 +563,10 @@ static void DecryptMessage(struct Session *session, uint8_t decrypted[PAYLOAD_SI
   session->state.nr++;
 }
 
-// msg->encrypted contains the payload with size msg->encryptedsz that will be decrypted into msg->payload (when this function returns 0)
-static void ProcessPreKeyMessage(struct Session *session, struct Store *store, struct EncryptedMessage *msg) {
-  uint8_t *p = msg->encrypted;
-  uint8_t *e = p+msg->encryptedsz;
+static int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload payload, uint8_t *msg, size_t msgn) {
+  assert(msgn);
+  uint8_t *p = msg;
+  uint8_t *e = p+msgn;
   assert(e-p > 0 && *p++ == ((3 << 4) | 3));
   memset(session, 0, sizeof(struct Session));
   session->store = store;
@@ -568,35 +579,33 @@ static void ProcessPreKeyMessage(struct Session *session, struct Store *store, s
     [3] = {PB_REQUIRED | PB_LEN}, // identitykey
     [4] = {PB_REQUIRED | PB_LEN}, // message
   };
-  assert(ParseProtobuf(p, e-p, fields, 7) == 0);
-  // if () return -1;
+  if (ParseProtobuf(p, e-p, fields, 7))
+    return -1;
+  if (fields[2].v != sizeof(Key))
+    return -1;
+  if (fields[3].v != sizeof(Key))
+    return -1;
   // later remove this prekey
   struct PreKey *pk = FindPreKey(session->store, fields[1].v);
-  // if (!pk) return -1;
-  assert(pk);
+  if (!pk)
+    return -1;
   struct SignedPreKey *spk = FindSignedPreKey(session->store, fields[6].v);
-  // if (!spk) return -1;
-  assert(spk);
+  if (!spk)
+    return -1;
 
-  //Key basekey;
-  assert(fields[2].v == sizeof(Key));
-  //memcpy(basekey, fields[2].p, sizeof(Key));
-  assert(fields[3].v == sizeof(Key));
   memcpy(session->remoteidentity, fields[3].p, sizeof(Key));
 
   Key sk;
-  GetSharedSecret(sk, true, session->store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p, fields[2].p, fields[2].p);
+  if (GetSharedSecret(sk, true, session->store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p, fields[2].p, fields[2].p))
+    return -1;
   DumpHex(sk, 32, "bob sk");
   DumpHex(session->store->identity.pub, 32, "bob ik");
   DumpHex(spk->kp.pub, 32, "bob spk");
   DumpHex(pk->kp.pub, 32, "bob ek");
   DumpHex(fields[3].p, 32, "alice ik");
   DumpHex(fields[2].p, 32, "alice ek");
-  //DumpHex(spk->kp.prv, 32, "bob sk");
-  //DumpHex(pk->kp.prv, 32, "bob sk");
-  //DumpHex(fields[3].p, 32, "bob sk");
-  //DumpHex(fields[2].p, 32, "bob sk");
   RatchetInitBob(&session->state, sk, &pk->kp);
 
-  DecryptMessage(session, msg->payload, fields[4].p, fields[4].p+fields[4].v);
+  DecryptMessage(session, payload, fields[4].p, fields[4].v);
+  return 0;
 }
