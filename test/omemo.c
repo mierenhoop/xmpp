@@ -141,6 +141,9 @@ static void ParseBundle(struct Bundle *bundle, struct Store *store) {
   bundle->spk_id = store->cursignedprekey.id;
 }
 
+struct TestSetup {
+};
+
 static void TestSession() {
   struct Store storea, storeb;
   SetupStore(&storea);
@@ -169,8 +172,8 @@ static void TestSession() {
 
   memset(realpayload, 0xee, PAYLOAD_SIZE);
   memcpy(payload, realpayload, PAYLOAD_SIZE);
-  assert(EncryptRatchet(&sessiona, &msg, payload) == 0);
-  assert(DecryptMessage(&sessionb, payload, msg.p, msg.n) == 0);
+  assert(EncryptRatchet(&sessionb, &msg, payload) == 0);
+  assert(DecryptMessage(&sessiona, payload, msg.p, msg.n) == 0);
   assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 }
 
