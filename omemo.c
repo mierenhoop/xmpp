@@ -11,6 +11,9 @@
 
 #include "curve25519.h"
 
+#define OMEMO_EPROTOBUF (-1)
+#define OMEMO_ECRYPTO (-2)
+
 static const uint8_t basepoint[32] = {9};
 
 typedef uint8_t Key[32];
@@ -128,6 +131,20 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
   return s;
 }
 
+// ParseProtobuf parses string `s` with length `n` containing Protobuf
+// data. For each field encountered it does the following:
+// - Make sure the field number can be stored in `fields` and that the
+//   type corresponds with the one specified in the associated field.
+// - Mark the field number as found which later will be used to check whether
+//   all required fields are found.
+// - Parse the value.
+// - If there already is a non-zero value specified in the field, it is
+//   used to check whether the parsed value is the same.
+// `nfields` is the amount of fields in the `fields` array. It should have the value of the highest possible
+// field number + 1. `nfields` must be less than or equal to 16 because
+// we only support a single byte field number, the number is stored like
+// this in the byte: 0nnnnttt where n is the field number and t is the
+// type.
 static int ParseProtobuf(const uint8_t *s, size_t n, struct ProtobufField *fields, int nfields) {
   int type, id;
   uint32_t v;
@@ -141,12 +158,12 @@ static int ParseProtobuf(const uint8_t *s, size_t n, struct ProtobufField *field
     id = *s >> 3;
     s++;
     if (id >= nfields || type != (fields[id].type & 7))
-      return -1;
+      return OMEMO_EPROTOBUF;
     found |= 1 << id;
     if (!(s = ParseVarInt(s, e, &v)))
-      return -1;
-    //if (fields[id].v && v != fields[id].v)
-    //  return -1;
+      return OMEMO_EPROTOBUF;
+    if (fields[id].v && v != fields[id].v)
+      return OMEMO_EPROTOBUF;
     fields[id].v = v;
     if (type == PB_LEN) {
       fields[id].p = s;
@@ -154,25 +171,11 @@ static int ParseProtobuf(const uint8_t *s, size_t n, struct ProtobufField *field
     }
   }
   if (s > e)
-    return -1;
+    return OMEMO_EPROTOBUF;
   for (int i = 0; i < nfields; i++) {
     if ((fields[i].type & PB_REQUIRED) && !(found & (1 << i)))
-      return -1;
+      return OMEMO_EPROTOBUF;
   }
-  return 0;
-}
-
-static int ParseKeyExchange(const uint8_t *s, size_t n) {
-  int r;
-  struct ProtobufField fields[6] = {
-    [1] = {PB_REQUIRED | PB_UINT32},
-    [2] = {PB_REQUIRED | PB_UINT32},
-    [3] = {PB_REQUIRED | PB_LEN},
-    [4] = {PB_REQUIRED | PB_LEN},
-    [5] = {PB_REQUIRED | PB_LEN},
-  };
-  if ((r = ParseProtobuf(s, n, fields, 6)))
-    return r;
   return 0;
 }
 
@@ -198,26 +201,28 @@ static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
 
 // PreKeyWhisperMessage without message (it should be appended right after this call)
 // ek = basekey
-static uint8_t *FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz) {
+static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz) {
   assert(msgsz < 128);
-  *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
-  d = FormatVarInt(d, 5, 0xcc); // TODO: registration id
-  d = FormatVarInt(d, 1, pk_id);
-  d = FormatVarInt(d, 6, spk_id);
-  d = FormatBytes(d, 3, ik, sizeof(PublicKey));
-  d = FormatBytes(d, 2, ek, sizeof(PublicKey));
-  *d++ = (4 << 3) | PB_LEN;
-  *d++ = msgsz;
-  return d;
+  uint8_t *p = d;
+  *p++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
+  p = FormatVarInt(p, 5, 0xcc); // TODO: registration id
+  p = FormatVarInt(p, 1, pk_id);
+  p = FormatVarInt(p, 6, spk_id);
+  p = FormatBytes(p, 3, ik, sizeof(PublicKey));
+  p = FormatBytes(p, 2, ek, sizeof(PublicKey));
+  *p++ = (4 << 3) | PB_LEN;
+  *p++ = msgsz;
+  return p - d;
 }
 
 // WhisperMessage without ciphertext
 // HEADER(dh_pair, pn, n)
-static uint8_t *FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs) {
-  *d++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
-  d = FormatBytes(d, 1, dhs, sizeof(PublicKey));
-  d = FormatVarInt(d, 2, n);
-  return FormatVarInt(d, 3, pn);
+static size_t FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs) {
+  uint8_t *p = d;
+  *p++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
+  p = FormatBytes(p, 1, dhs, sizeof(PublicKey));
+  p = FormatVarInt(p, 2, n);
+  return FormatVarInt(p, 3, pn) - d;
 }
 
 static void DumpHex(const uint8_t *p, int n, const char *msg) {
@@ -357,7 +362,8 @@ static int EncryptRatchet(struct Session *session, struct PreKeyMessage *msg, Pa
   DeriveChainKey(&kdfout, session->state.cks);
 
   GetAd(macinput, session->store->identity.pub, session->remoteidentity);
-  int n = FormatMessageHeader(macinput+66, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
+  int n = 66;
+  n += FormatMessageHeader(macinput+n, session->state.ns, session->state.pn, session->state.dhs.pub);
 
   DumpHex(payload, PAYLOAD_SIZE, "plaintext");
 
@@ -411,7 +417,7 @@ static int GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const 
     DumpHex(secret+i, 32, " << secret");
   memset(salt, 0, 32);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) != 0)
-    return -1;
+    return OMEMO_ECRYPTO;
   return 0;
 }
 
@@ -463,7 +469,7 @@ static int EncryptFirstMessage(struct Session *s, struct Store *store, struct Bu
   if (!s->dontsendprekeys) {
     // [message 00...] -> [00... message] -> [header 00... message] -> [header message]
     memmove(msg->p+PREKEYHEADER_MAXSIZE, msg->p, msg->n);
-    int headersz = FormatPreKeyMessage(msg->p, b->pk_id, b->spk_id, s->store->identity.pub, eka.pub, msg->n) - msg->p;
+    int headersz = FormatPreKeyMessage(msg->p, b->pk_id, b->spk_id, s->store->identity.pub, eka.pub, msg->n);
     memmove(msg->p+headersz, msg->p+PREKEYHEADER_MAXSIZE, msg->n);
     msg->n += headersz;
   }
@@ -525,44 +531,46 @@ static void RatchetInitBob(struct State *state, Key sk, struct KeyPair *ekb) {
   memcpy(state->rk, sk, 32);
 }
 
-static void DecryptMessage(struct Session *session, Payload decrypted, const uint8_t *msg, size_t msgn) {
+static int DecryptMessage(struct Session *session, Payload decrypted, const uint8_t *msg, size_t msgn) {
   const uint8_t *p = msg, *e = msg+msgn;
-  assert(e-p > 0 && *p++ == ((3 << 4) | 3));
-  assert(e-p >= 8);
+  if (msgn < 9 || *p++ != ((3 << 4) | 3))
+    return -1;
   e -= 8;
   const uint8_t *mac = e;
   struct ProtobufField fields[5] = {
-    [1] = {PB_REQUIRED | PB_LEN}, // ek
+    [1] = {PB_REQUIRED | PB_LEN, 32}, // ek
     [2] = {PB_REQUIRED | PB_UINT32}, // n
     [3] = {PB_REQUIRED | PB_UINT32}, // pn
-    [4] = {PB_REQUIRED | PB_LEN}, // ciphertext
+    [4] = {PB_REQUIRED | PB_LEN, PAYLOAD_SIZE}, // ciphertext
   };
 
-  assert(!ParseProtobuf(p, e-p, fields, 5));
-  assert(fields[1].v == 32); // TODO: put size check in ParseProtobuf?
+  if (ParseProtobuf(p, e-p, fields, 5))
+    return -1;
+  // these checks should already be handled by ParseProtobuf, just to make sure...
+  assert(fields[1].v == 32);
+  assert(fields[4].v == PAYLOAD_SIZE);
   // if (!(state->session.state & SESSION_INITIALIZED))
 
   DHRatchet(session, fields[1].p);
 
   DumpHex(session->state.cks, 32, "cks");
-  uint8_t macinput[33*2+FULLMSG_MAXSIZE];
 
   struct DeriveChainKeyOutput kdfout;
   DeriveChainKey(&kdfout, session->state.ckr);
   memcpy(session->state.ckr, kdfout.ck, 32);
 
-  GetAd(macinput, session->store->identity.pub, session->remoteidentity);
-  int n = FormatMessageHeader(macinput+66, session->state.ns, session->state.pn, session->state.dhs.pub) - macinput;
-
-  assert(fields[4].v == PAYLOAD_SIZE);
   DumpHex(kdfout.ck, 32, "decrypt ck");
   DumpHex(kdfout.ck, 16, "decrypt iv");
   DumpHex(fields[4].p, PAYLOAD_SIZE, "encrypted");
   Decrypt(decrypted, fields[4].p, kdfout.ck, kdfout.iv);
   DumpHex(decrypted, PAYLOAD_SIZE, "decrypted");
   session->state.nr++;
+
+  return 0;
 }
 
+// Decrypt the (usually) first message and start/initialize a session.
+// TODO: the prekey message can be sent multiple times, what should we do then?
 static int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload payload, uint8_t *msg, size_t msgn) {
   assert(msgn);
   uint8_t *p = msg;
@@ -575,16 +583,14 @@ static int DecryptPreKeyMessage(struct Session *session, struct Store *store, Pa
     [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
     [1] = {PB_REQUIRED | PB_UINT32}, // prekeyid
     [6] = {PB_REQUIRED | PB_UINT32}, // signedprekeyid
-    [2] = {PB_REQUIRED | PB_LEN}, // basekey
-    [3] = {PB_REQUIRED | PB_LEN}, // identitykey
+    [2] = {PB_REQUIRED | PB_LEN, 32}, // basekey/ek
+    [3] = {PB_REQUIRED | PB_LEN, 32}, // identitykey/ik
     [4] = {PB_REQUIRED | PB_LEN}, // message
   };
   if (ParseProtobuf(p, e-p, fields, 7))
     return -1;
-  if (fields[2].v != sizeof(Key))
-    return -1;
-  if (fields[3].v != sizeof(Key))
-    return -1;
+  assert(fields[2].v == 32);
+  assert(fields[3].v == 32);
   // later remove this prekey
   struct PreKey *pk = FindPreKey(session->store, fields[1].v);
   if (!pk)

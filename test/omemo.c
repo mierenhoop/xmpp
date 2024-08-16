@@ -15,6 +15,13 @@ void SystemRandom(void *d, size_t n) {
   }
 }
 
+static void ClearFieldValues(struct ProtobufField *fields, int nfields) {
+  for (int i = 0; i < nfields; i++) {
+    fields[i].v = 0;
+    fields[i].p = NULL;
+  }
+}
+
 static void TestParseProtobuf() {
   struct ProtobufField fields[6] = {
     [1] = {PB_REQUIRED | PB_UINT32},
@@ -24,9 +31,13 @@ static void TestParseProtobuf() {
   assert(!ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01"), fields, 6));
   assert(fields[1].v == 1);
   assert(fields[2].v == 0x80);
+  ClearFieldValues(fields, 6);
   assert(ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01")+1, fields, 6));
+  ClearFieldValues(fields, 6);
   assert(ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01")-1, fields, 6));
+  ClearFieldValues(fields, 6);
   assert(ParseProtobuf(FatStrArgs("\x08\x01"), fields, 6));
+  ClearFieldValues(fields, 6);
   assert(!ParseProtobuf(FatStrArgs("\x08\x01\x10\x80\x01\x18\x01"), fields, 6));
   assert(fields[3].v == 1);
   memset(fields, 0, sizeof(fields));
@@ -36,7 +47,14 @@ static void TestParseProtobuf() {
   assert(fields[1].v == 4);
   assert(fields[1].p && !memcmp(fields[1].p, "\xcc\xcc\xcc\xcc", 4));
   assert(fields[2].v == 1);
+  ClearFieldValues(fields, 6);
   assert(ParseProtobuf(FatStrArgs("\x10\x01\x0a\x04\xcc\xcc\xcc"), fields, 6));
+  ClearFieldValues(fields, 6);
+  fields[1].v = 3;
+  assert(!ParseProtobuf(FatStrArgs("\x10\x01\x0a\x03\xcc\xcc\xcc"), fields, 6));
+  ClearFieldValues(fields, 6);
+  fields[1].v = 2;
+  assert(ParseProtobuf(FatStrArgs("\x10\x01\x0a\x03\xcc\xcc\xcc"), fields, 6));
 }
 
 static void TestFormatProtobuf() {
@@ -146,13 +164,13 @@ static void TestSession() {
   memset(realpayload, 0xdd, PAYLOAD_SIZE);
   memcpy(payload, realpayload, PAYLOAD_SIZE);
   assert(EncryptRatchet(&sessionb, &msg, payload) == 0);
-  DecryptMessage(&sessiona, payload, msg.p, msg.n);
+  assert(DecryptMessage(&sessiona, payload, msg.p, msg.n) == 0);
   assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 
   memset(realpayload, 0xee, PAYLOAD_SIZE);
   memcpy(payload, realpayload, PAYLOAD_SIZE);
   assert(EncryptRatchet(&sessiona, &msg, payload) == 0);
-  DecryptMessage(&sessionb, payload, msg.p, msg.n);
+  assert(DecryptMessage(&sessionb, payload, msg.p, msg.n) == 0);
   assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 }
 
