@@ -141,6 +141,16 @@ static void ParseBundle(struct Bundle *bundle, struct Store *store) {
   bundle->spk_id = store->cursignedprekey.id;
 }
 
+static void TestEncryption() {
+  const uint8_t *msg = "Hello there!";
+  size_t n = strlen(msg);
+  uint8_t encrypted[100], decrypted[100], iv[12];
+  Payload payload;
+  EncryptRealMessage(encrypted, payload, iv, msg, n);
+  DecryptRealMessage(decrypted, payload, PAYLOAD_SIZE, iv, encrypted, n);
+  assert(!memcmp(msg, decrypted, n));
+}
+
 struct TestSetup {
 };
 
@@ -166,14 +176,14 @@ static void TestSession() {
 
   memset(realpayload, 0xdd, PAYLOAD_SIZE);
   memcpy(payload, realpayload, PAYLOAD_SIZE);
-  assert(EncryptRatchet(&sessionb, &msg, payload) == 0);
-  assert(DecryptMessage(&sessiona, payload, msg.p, msg.n) == 0);
+  assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
+  assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
   assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 
   memset(realpayload, 0xee, PAYLOAD_SIZE);
   memcpy(payload, realpayload, PAYLOAD_SIZE);
-  assert(EncryptRatchet(&sessionb, &msg, payload) == 0);
-  assert(DecryptMessage(&sessiona, payload, msg.p, msg.n) == 0);
+  assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
+  assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
   assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 }
 
@@ -189,6 +199,7 @@ int main() {
   RunTest(FormatProtobuf);
   RunTest(Curve25519);
   RunTest(Signature);
+  RunTest(Encryption);
   RunTest(Session);
   puts("All tests succeeded");
 }
