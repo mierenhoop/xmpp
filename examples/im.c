@@ -16,6 +16,7 @@
 
 #include "xmpp.h"
 #include "test/cacert.inc"
+#include "omemo.h"
 
 #include "system.h"
 
@@ -96,13 +97,13 @@ static void SendAll() {
   int n, i = 0;
   do {
     if (client.features & XMPP_STREAMFEATURE_STARTTLS)
-      n = mbedtls_ssl_write(&conn.ssl, client.comp.p+i, client.comp.n-i);
+      n = mbedtls_ssl_write(&conn.ssl, client.builder.p+i, client.builder.n-i);
     else
-      n = mbedtls_net_send(&conn.server_fd, client.comp.p+i, client.comp.n-i);
+      n = mbedtls_net_send(&conn.server_fd, client.builder.p+i, client.builder.n-i);
     i += n;
   } while (n > 0);
-  client.comp.n = 0;
-  memset(client.comp.p, 0, client.comp.c); // just in case
+  client.builder.n = 0;
+  memset(client.builder.p, 0, client.builder.c); // just in case
 }
 
 static void Handshake() {
@@ -166,6 +167,14 @@ static void PrintMessage(struct xmppStanza *st) {
   fflush(stdout);
 }
 
+static void ParseSpecificStanza(struct xmppStanza *st) {
+  struct xmppParser parser;
+  memset(&parser, 0, sizeof(struct xmppParser));
+  parser.p = st->raw.p;
+  parser.c = parser.n = st->raw.rawn;
+  assert(!setjmp(parser.jb));
+}
+
 // returns true if stream is done for
 static bool IterateClient() {
   int r;
@@ -173,7 +182,7 @@ static bool IterateClient() {
   while ((r = xmppIterate(&client))) {
     switch (r) {
     case XMPP_ITER_SEND:
-      Log("Out: \e[32m%.*s\e[0m", (int)client.comp.n, client.comp.p);
+      Log("Out: \e[32m%.*s\e[0m", (int)client.builder.n, client.builder.p);
       SendAll();
       break;
     case XMPP_ITER_READY:

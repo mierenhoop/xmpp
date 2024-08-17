@@ -22,7 +22,7 @@
 // p can be null!
 struct xmppXmlSlice {
   int type;
-  const char *p;
+  char *p;
   size_t n, rawn; // TODO: n -> realn, rawn -> n
 };
 
@@ -270,7 +270,7 @@ struct xmppClient {
   struct xmppSaslContext saslctx;
   struct xmppStanza stanza;
   struct xmppParser parser;
-  struct xmppXmlComposer comp;
+  struct xmppXmlComposer builder;
   int opts;
   bool isnegotiationdone;
   int state;
@@ -293,7 +293,7 @@ static inline int xmppIncrementAck(struct xmppClient *c, int r) {
   return 0;
 }
 
-#define xmppFormatStanza(c, fmt, ...) xmppIncrementAck(c, FormatXml(&(c)->comp, fmt "[<r xmlns='urn:xmpp:sm:3'/>]" __VA_OPT__(,)  __VA_ARGS__, ((c)->features & XMPP_STREAMFEATURE_SMACKS)))
+#define xmppFormatStanza(c, fmt, ...) xmppIncrementAck(c, FormatXml(&(c)->builder, fmt "[<r xmlns='urn:xmpp:sm:3'/>]" __VA_OPT__(,)  __VA_ARGS__, ((c)->features & XMPP_STREAMFEATURE_SMACKS)))
 
 int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...);
 
@@ -312,5 +312,10 @@ int xmppIterate(struct xmppClient *c);
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd);
 int xmppSendMessage(struct xmppClient *c, const char *to, const char *body);
 int xmppEndStream(struct xmppClient *c);
+
+void xmppParseUnknown(struct xmppParser *p);
+int xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc);
+void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc);
+int xmppParseElement(struct xmppParser *p);
 
 #endif
