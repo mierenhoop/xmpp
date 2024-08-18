@@ -100,26 +100,6 @@ static void TestCurve25519() {
   testrand = false;
 }
 
-static void sign_modified(uint8_t *sm, uint8_t *m, size_t mlen, uint8_t *sk, uint8_t *pk, uint8_t *rnd) {
-  sm[0] = 0xfe;
-  memset(sm+1, 0xff, 31);
-  memmove(sm+mlen+64, rnd, 64);
-}
-
-static void c25519_sign(CurveSignature sig, const Key prv, const uint8_t *msg, size_t msgn, const uint8_t rnd[64]) {
-  assert(msgn <= 33);
-  Key ed;
-  uint8_t sigbuf[33+128];
-  int sign = 0;
-  sign = ed[31] & 0x80;
-
-  // sign modified (sigbuf, msg, msg_len, prv, ed, rnd)
-  // memmove(sig, sigbuf, 64)
-
-  sig[63] &= 0x7f;
-  sig[63] |= sign;
-}
-
 void crypto_sign_ed25519_ref10_ge_scalarmult_base(void*,const    unsigned char *);
 void crypto_sign_ed25519_ref10_ge_p3_tobytes(unsigned char *,void*);
 
@@ -137,7 +117,34 @@ static void OurMontToEd(Key ed, Key prv) {
   uint8_t y[F25519_SIZE];
   ed25519_unproject(x, y, &p);
   ed25519_pack(ed, x, y);
-  DumpHex(ed, 32, "sec");
+}
+
+static void c25519_sign(CurveSignature sig, const Key prv, const uint8_t *msg, size_t msgn) {
+  assert(msgn <= 33);
+  Key ed;
+  uint8_t msgbuf[33+64];
+  int sign = 0;
+  memcpy(msgbuf, msg, msgn);
+  SystemRandom(msgbuf+msgn, 64);
+
+  OurMontToEd(ed, prv);
+  sign = ed[31] & 0x80;
+
+  edsign_sign_modified(sig, ed, prv, msgbuf, 12);
+
+  sig[63] &= 0x7f;
+  sig[63] |= sign;
+}
+
+static bool c25519_verify(CurveSignature sig, const Key pub, const uint8_t *msg, size_t msgn) {
+  Key ed;
+  morph25519_mx2ey(ed, pub);
+  ed[31] &= 0x7f;
+  ed[31] |= sig[63] & 0x80;
+  CurveSignature sig2;
+  memcpy(sig2, sig, 64);
+  sig2[63] &= 0x7f;
+  return !!edsign_verify(sig2, ed, msg, msgn);
 }
 
 int crypto_sign_modified( unsigned char *sm, const unsigned char *m,unsigned long long mlen, const unsigned char *sk, const unsigned char* pk, const unsigned char* random);
@@ -181,11 +188,15 @@ static void TestSignature() {
   CopyHex(expsig, "2bc06c745acb8bae10fbc607ee306084d0c28e2b3bb819133392"
                   "473431291fd0dfa9c7f11479996cf520730d2901267387e08d85"
                   "bbf2af941590e3035a545285");
-  CalculateCurveSignature(sig, prv, msg, 12);
-  assert(VerifySignature(expsig, pub, msg, 12));
-  assert(VerifySignature(sig, pub, msg, 12));
+  //CalculateCurveSignature(sig, prv, msg, 12);
+  c25519_sign(sig, prv, msg, 12);
+  assert(c25519_verify(expsig, pub, msg, 12));
+  assert(c25519_verify(sig, pub, msg, 12));
+  //assert(VerifySignature(expsig, pub, msg, 12));
+  //assert(VerifySignature(sig, pub, msg, 12));
   memset(sig, 0, 64);
-  assert(!VerifySignature(sig, pub, msg, 12));
+  //assert(!VerifySignature(sig, pub, msg, 12));
+  assert(!c25519_verify(sig, pub, msg, 12));
   testrand = false;
 }
 

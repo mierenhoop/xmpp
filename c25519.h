@@ -379,6 +379,8 @@ static inline int morph25519_eparity(const uint8_t *edwards_x)
 uint8_t morph25519_m2e(uint8_t *ex, uint8_t *ey,
 		       const uint8_t *mx, int parity);
 
+void morph25519_mx2ey(uint8_t *ey, const uint8_t *mx);
+
 #endif
 /* SHA512
  * Daniel Beer <dlbeer@gmail.com>, 22 Apr 2014

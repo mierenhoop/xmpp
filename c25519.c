@@ -589,9 +589,6 @@ void edsign_sign(uint8_t *signature, const uint8_t *pub,
 	memcpy(signature + 32, s, 32);
 }
 
-void crypto_sign_ed25519_ref10_sc_muladd(void*,void*,void*,void*);
-
-
 // we expect message to be suffixed with 64 bytes of random data, while len contains the original message length
 void edsign_sign_modified(uint8_t *signature, const uint8_t *pub,
 		 const uint8_t *secret,
@@ -621,11 +618,12 @@ void edsign_sign_modified(uint8_t *signature, const uint8_t *pub,
 	/* Compute z = H(R, A, M) */
 	hash_message(z, signature, pub, message, len);
 
+	fprime_from_bytes(e, secret, 32, ed25519_order);
+
 	/* Compute s = ze + k */
   // TODO: it probably does the module too often
-	//fprime_mul(s, z, secret, ed25519_order);
-	//fprime_add(s, k, ed25519_order);
-  crypto_sign_ed25519_ref10_sc_muladd(s, z, secret, k);
+	fprime_mul(s, z, e, ed25519_order);
+	fprime_add(s, k, ed25519_order);
 	memcpy(signature + 32, s, 32);
 }
 
@@ -1215,7 +1213,7 @@ void morph25519_e2m(uint8_t *montgomery, const uint8_t *y)
 	f25519_normalize(montgomery);
 }
 
-static void mx2ey(uint8_t *ey, const uint8_t *mx)
+void morph25519_mx2ey(uint8_t *ey, const uint8_t *mx)
 {
 	uint8_t n[F25519_SIZE];
 	uint8_t d[F25519_SIZE];
@@ -1273,7 +1271,7 @@ uint8_t morph25519_m2e(uint8_t *ex, uint8_t *ey,
 {
 	uint8_t ok;
 
-	mx2ey(ey, mx);
+	morph25519_mx2ey(ey, mx);
 	ok = ey2ex(ex, ey, parity);
 
 	f25519_normalize(ex);
