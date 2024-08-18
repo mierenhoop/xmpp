@@ -1,5 +1,7 @@
 #include "../omemo.c"
 
+#include "c25519.h"
+
 // In the tests we spoof the random source as a hacky way to generate
 // the exact private key we want.
 
@@ -96,6 +98,69 @@ static void TestCurve25519() {
   CalculateCurveAgreement(shared, kpa.pub, kpb.prv);
   assert(!memcmp(expshared, shared, 32));
   testrand = false;
+}
+
+static void sign_modified(uint8_t *sm, uint8_t *m, size_t mlen, uint8_t *sk, uint8_t *pk, uint8_t *rnd) {
+  sm[0] = 0xfe;
+  memset(sm+1, 0xff, 31);
+  memmove(sm+mlen+64, rnd, 64);
+}
+
+static void c25519_sign(CurveSignature sig, const Key prv, const uint8_t *msg, size_t msgn, const uint8_t rnd[64]) {
+  assert(msgn <= 33);
+  Key ed;
+  uint8_t sigbuf[33+128];
+  int sign = 0;
+  sign = ed[31] & 0x80;
+
+  // sign modified (sigbuf, msg, msg_len, prv, ed, rnd)
+  // memmove(sig, sigbuf, 64)
+
+  sig[63] &= 0x7f;
+  sig[63] |= sign;
+}
+
+void crypto_sign_ed25519_ref10_ge_scalarmult_base(void*,const    unsigned char *);
+void crypto_sign_ed25519_ref10_ge_p3_tobytes(unsigned char *,void*);
+
+static void MontToEd(Key ed, Key prv) {
+  struct {int32_t l[10][4]; } ed_pubkey_point;
+  crypto_sign_ed25519_ref10_ge_scalarmult_base(&ed_pubkey_point, prv);
+  crypto_sign_ed25519_ref10_ge_p3_tobytes(ed, &ed_pubkey_point);
+  DumpHex(ed, 32, "ed");
+}
+
+static void OurMontToEd(Key ed, Key prv) {
+  struct ed25519_pt p;
+  ed25519_smult(&p, &ed25519_base, prv);
+  uint8_t x[F25519_SIZE];
+  uint8_t y[F25519_SIZE];
+  ed25519_unproject(x, y, &p);
+  ed25519_pack(ed, x, y);
+  DumpHex(ed, 32, "sec");
+}
+
+int crypto_sign_modified( unsigned char *sm, const unsigned char *m,unsigned long long mlen, const unsigned char *sk, const unsigned char* pk, const unsigned char* random);
+
+static void TestSign() {
+  CurveSignature sig1, sig2;
+  Key prv, pub;
+  uint8_t msg[12];
+  CopyHex(prv, "48a8892cc4e49124b7b57d94fa15becfce071830d6449004685e387"
+               "c62409973");
+  CopyHex(pub, "55f1bfede27b6a03e0dd389478ffb01462e5c52dbbac32cf870f00a"
+               "f1ed9af3a");
+  CopyHex(msg, "617364666173646661736466");
+  uint8_t rnd[64];
+  memset(rnd, 0xcc, 64);
+  Key ed, pp;
+  MontToEd(ed, prv);
+  OurMontToEd(pp, prv);
+  uint8_t sigbuf[128];
+  crypto_sign_modified(sigbuf, msg, 12, prv, ed, rnd);
+  DumpHex(sigbuf, 64, "sigbuf");
+
+  //sign_bit = ed_pubkey[31] & 0x80;
 }
 
 static void TestSignature() {
@@ -201,5 +266,6 @@ int main() {
   RunTest(Signature);
   RunTest(Encryption);
   RunTest(Session);
+  RunTest(Sign);
   puts("All tests succeeded");
 }

@@ -15,7 +15,7 @@ o/test: o/xmpp.o test/cacert.inc
 	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
 
 o/test-omemo: test/omemo.c omemo.c | o curve25519.c
-	$(CC) -o o/test-omemo curve25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
+	$(CC) -o o/test-omemo curve25519.c c25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
 
 o/im: o/xmpp.o examples/im.c test/cacert.inc
 	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
