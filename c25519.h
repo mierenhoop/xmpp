@@ -272,6 +272,10 @@ void edsign_sign(uint8_t *signature, const uint8_t *pub,
 		 const uint8_t *secret,
 		 const uint8_t *message, size_t len);
 
+void edsign_sign_modified(uint8_t *signature, const uint8_t *pub,
+		 const uint8_t *secret,
+		 const uint8_t *message, size_t len);
+
 /* Verify a message signature. Returns non-zero if ok. */
 uint8_t edsign_verify(const uint8_t *signature, const uint8_t *pub,
 		      const uint8_t *message, size_t len);

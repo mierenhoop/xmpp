@@ -142,6 +142,8 @@ static void OurMontToEd(Key ed, Key prv) {
 
 int crypto_sign_modified( unsigned char *sm, const unsigned char *m,unsigned long long mlen, const unsigned char *sk, const unsigned char* pk, const unsigned char* random);
 
+void crypto_sign_ed25519_ref10_sc_muladd(void*,void*,void*,void*);
+
 static void TestSign() {
   CurveSignature sig1, sig2;
   Key prv, pub;
@@ -156,11 +158,14 @@ static void TestSign() {
   Key ed, pp;
   MontToEd(ed, prv);
   OurMontToEd(pp, prv);
-  uint8_t sigbuf[128];
+  uint8_t sigbuf[128], sigbuf2[128];
   crypto_sign_modified(sigbuf, msg, 12, prv, ed, rnd);
   DumpHex(sigbuf, 64, "sigbuf");
-
-  //sign_bit = ed_pubkey[31] & 0x80;
+  uint8_t msgbuf[100];
+  memcpy(msgbuf, msg, 12);
+  memset(msgbuf+12, 0xcc, 64);
+  edsign_sign_modified(sigbuf2, ed, prv, msgbuf, 12);
+  DumpHex(sigbuf2, 64, "sigbuf2");
 }
 
 static void TestSignature() {
