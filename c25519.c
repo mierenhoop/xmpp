@@ -589,30 +589,28 @@ void edsign_sign(uint8_t *signature, const uint8_t *pub,
 	memcpy(signature + 32, s, 32);
 }
 
-// we expect message to be suffixed with 64 bytes of random data, while len contains the original message length
+// We expect message to be suffixed with 64 bytes of random data, while len contains the original message length.
 void edsign_sign_modified(uint8_t *signature, const uint8_t *pub,
 		 const uint8_t *secret,
 		 const uint8_t *message, size_t len)
 {
-	uint8_t expanded[EXPANDED_SIZE];
 	uint8_t e[FPRIME_SIZE];
 	uint8_t s[FPRIME_SIZE];
 	uint8_t k[FPRIME_SIZE];
 	uint8_t z[FPRIME_SIZE];
 
-	//expand_key(expanded, secret);
-  signature[0] = 0xfe;
-  memset(signature + 1, 0xff, 31);
-  memcpy(signature + 32, secret, 32);
+	signature[0] = 0xfe;
+	memset(signature + 1, 0xff, 31);
+	memcpy(signature + 32, secret, 32);
 
 	/* Generate k and R = kB */
-	//generate_k(k, expanded + 32, message, len);
-  {
-    uint8_t block[SHA512_BLOCK_SIZE];
+	// This is a modified version of generate_k inlined.
+	{
+		uint8_t block[SHA512_BLOCK_SIZE];
 
-    memcpy(block, signature, 64);
-    hash_with_prefix(k, block, 64, message, len + 64);
-  }
+		memcpy(block, signature, 64);
+		hash_with_prefix(k, block, 64, message, len + 64);
+	}
 	sm_pack(signature, k);
 
 	/* Compute z = H(R, A, M) */
@@ -621,7 +619,6 @@ void edsign_sign_modified(uint8_t *signature, const uint8_t *pub,
 	fprime_from_bytes(e, secret, 32, ed25519_order);
 
 	/* Compute s = ze + k */
-  // TODO: it probably does the module too often
 	fprime_mul(s, z, e, ed25519_order);
 	fprime_add(s, k, ed25519_order);
 	memcpy(signature + 32, s, 32);

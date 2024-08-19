@@ -110,7 +110,7 @@ static void MontToEd(Key ed, Key prv) {
   DumpHex(ed, 32, "ed");
 }
 
-static void OurMontToEd(Key ed, Key prv) {
+static void ConvertCurvePrvToEdPub(Key ed, const Key prv) {
   struct ed25519_pt p;
   ed25519_smult(&p, &ed25519_base, prv);
   uint8_t x[F25519_SIZE];
@@ -127,7 +127,7 @@ static void c25519_sign(CurveSignature sig, const Key prv, const uint8_t *msg, s
   memcpy(msgbuf, msg, msgn);
   SystemRandom(msgbuf+msgn, 64);
 
-  OurMontToEd(ed, prv);
+  ConvertCurvePrvToEdPub(ed, prv);
   sign = ed[31] & 0x80;
 
   edsign_sign_modified(sig, ed, prv, msgbuf, 12);
@@ -164,7 +164,7 @@ static void TestSign() {
   memset(rnd, 0xcc, 64);
   Key ed, pp;
   MontToEd(ed, prv);
-  OurMontToEd(pp, prv);
+  ConvertCurvePrvToEdPub(pp, prv);
   uint8_t sigbuf[128], sigbuf2[128];
   crypto_sign_modified(sigbuf, msg, 12, prv, ed, rnd);
   DumpHex(sigbuf, 64, "sigbuf");

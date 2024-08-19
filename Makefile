@@ -61,13 +61,13 @@ test-omemo: o/test-omemo
 runim: o/im
 	LD_LIBRARY_PATH=/usr/local/lib rlwrap ./o/im
 
-prosody: test/localhost.crt
+start-prosody: test/localhost.crt
 	docker-compose -f test/docker-compose.yml up -d --build
 
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
-.PHONY: prosody stop-prosody test test-omemo runim clean full-clean
+.PHONY: start-prosody stop-prosody test test-omemo runim clean full-clean
 
 clean:
 	rm -rf o
