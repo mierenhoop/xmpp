@@ -603,8 +603,10 @@ int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
   va_end(ap);
   if (d < e)
     *d = 0;
-  if (HasOverflowed(d, e))
+  if (HasOverflowed(d, e)) {
+    c->n = c->i;
     return XMPP_EMEM;
+  }
   c->n = d - c->p;
   return 0;
 }

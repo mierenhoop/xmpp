@@ -251,12 +251,13 @@ struct xmppParser {
   int skippingdepth;
 };
 
-// i = current end pos of xml
+// i = start of current stanza
 // n = size of buffer in p
 // c = capacity of buffer in p
+// TODO: rename to Builder
 struct xmppXmlComposer {
   char *p;
-  size_t n, c;
+  size_t i, n, c;
 };
 
 // stanza is valid after XMPP_ITER_STANZA and until the next call of
@@ -286,9 +287,11 @@ struct xmppClient {
 // Only call when XMPP_ITER_ACK
 #define xmppIsSynchronized(c) ((c)->stanza.type == XMPP_STANZA_ACKANSWER && (c)->stanza.ack == (c)->actualsent)
 
+// TODO: rename to something like xmppFlushStanza
 static inline int xmppIncrementAck(struct xmppClient *c, int r) {
   if (r)
     return r;
+  c->builder.i = c->builder.n;
   c->actualsent++;
   return 0;
 }
