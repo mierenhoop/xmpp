@@ -21,6 +21,9 @@
 #define OMEMO_ECORRUPT (-3)
 #define OMEMO_ESIG (-4)
 #define OMEMO_ESTATE (-5)
+#define OMEMO_ESKIPBUF (-6)
+#define OMEMO_EMAXSKIP (-7)
+#define OMEMO_EKEYGONE (-8)
 
 typedef uint8_t Key[32];
 // TODO: we can just use Key for everthing
@@ -119,6 +122,7 @@ struct Session {
   int fsm;
   PublicKey remoteidentity;
   struct State state;
+  struct SkippedMessageKeys mkskipped;
 };
 
 // Random function that must not fail, if the system is not guaranteed
@@ -332,8 +336,13 @@ static void SetupStore(struct Store *store) {
   for (int i = 0; i < NUMPREKEYS; i++) {
     GeneratePreKey(store->prekeys+i, i+1);
   }
-  //store->skipped.p = store->skipped._data;
-  //store->skipped.c = 2000;
+}
+
+static void SetupSession(struct Session *session) {
+  memset(session, 0, sizeof(struct Session));
+  session->mkskipped.p = session->mkskipped._data;
+  session->mkskipped.c = 2000;
+  session->mkskipped.maxskip = 1000;
 }
 
 // AD = Encode(IKA) || Encode(IKB)
@@ -471,7 +480,7 @@ static int RatchetInitAlice(struct State *state, Key sk, Key ekb) {
 static int EncryptFirstMessage(struct Session *session, struct Store *store, struct Bundle *bundle, struct PreKeyMessage *msg, Payload payload) {
   int r;
   SerializedKey serspk;
-  memset(session, 0, sizeof(struct Session));
+  SetupSession(session);
   SerializeKey(serspk, bundle->spk);
   if (!VerifySignature(bundle->spks, bundle->ik, serspk, sizeof(SerializedKey))) {
      return OMEMO_ESIG;
@@ -555,16 +564,13 @@ static void RatchetInitBob(struct State *state, Key sk, struct KeyPair *ekb) {
   memcpy(state->rk, sk, 32);
 }
 
-// when found mk will contain the message key
-static bool FindMessageKey(Key mk, struct SkippedMessageKeys *keys, Key dh, uint32_t n) {
+static struct MessageKey *FindMessageKey(struct SkippedMessageKeys *keys, const Key dh, uint32_t n) {
   for (int i = 0; i < keys->n; i++) {
     if (keys->p[i].nr == n && !memcmp(dh, keys->p[i].dh, 32)) {
-      memcpy(mk, keys->p[i].mk, 32);
-      keys->removed = keys->p + i;
-      return true;
+      return keys->p + i;
     }
   }
-  return false;
+  return NULL;
 }
 
 static struct MessageKey *PrepareMessageKeys(struct Store *store, uint32_t n) {
@@ -584,20 +590,22 @@ static uint64_t GetSkipSteps(const struct State *state, uint32_t until) {
 }
 
 static void SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys, uint32_t n) {
-  assert(keys->n + n <= keys->c); // this is checked in DecryptMessage
+  assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
     struct DeriveChainKeyOutput kdfout;
     assert(!DeriveChainKey(&kdfout, state->ckr));
     memcpy(state->ckr, kdfout.ck, 32);
     keys->p[keys->n].nr = state->nr;
+    memcpy(keys->p[keys->n].dh, state->dhr, 32);
     memcpy(keys->p[keys->n].ck, kdfout.ck, 32);
     memcpy(keys->p[keys->n].mk, kdfout.mk, 32);
+    memcpy(keys->p[keys->n].iv, kdfout.iv, 16);
     keys->n++;
     state->nr++;
   }
 }
 
-static int DecryptMessage(struct Session *session, struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
+static int DecryptMessageImpl(struct Session *session, struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
   int r;
   const uint8_t *p = msg, *e = msg+msgn;
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
@@ -629,9 +637,6 @@ static int DecryptMessage(struct Session *session, struct Store *store, Payload 
   const uint8_t *headerdh = fields[1].p;
 
   bool shouldstep = !!memcmp(session->state.dhr, headerdh, 32);
-  uint64_t nskips = shouldstep ?
-    GetSkipSteps(&session->state, headerpn) + headern :
-    GetSkipSteps(&session->state, headern);
 
   // We first check for maxskip, if that does not pass we should not
   // process the message. If it does pass, we know the total capacity of
@@ -640,32 +645,50 @@ static int DecryptMessage(struct Session *session, struct Store *store, Payload 
   // return and let the user either remove the old message keys or ignore
   // the message.
 
-  //struct SkippedMessageKeys skipped;
-  //Key mk;
-  //if ((!FindMessageKey(mk, &skipped, fields[1].p, fields[2].v))) {
-  //  if (!shouldstep && header.n < state.nr) return keyremoved
-  //  if (shouldstep && header.pn < state.nr) return keyremoved
-  //  if (nskips > skipped.max_skips) return -1;
-  //  if (nskips > skipped.c-skipped.n) return -1;
-  //  // do the other stuff to get mk
-  //}
-
-
-  if (shouldstep) {
-    if ((r = DHRatchet(&session->state, fields[1].p)))
-      return r;
-  }
 
   struct DeriveChainKeyOutput kdfout;
-  assert(!DeriveChainKey(&kdfout, session->state.ckr));
+  struct MessageKey *key;
+  if ((key = FindMessageKey(&session->mkskipped, headerdh, headern))) {
+    memcpy(kdfout.ck, key->ck, 32);
+    memcpy(kdfout.mk, key->mk, 32);
+    memcpy(kdfout.iv, key->iv, 16);
+    session->mkskipped.removed = key;
+  } else {
+    if (!shouldstep && headern < session->state.nr) return OMEMO_EKEYGONE;
+    if (shouldstep && headerpn < session->state.nr) return OMEMO_EKEYGONE;
+    uint64_t nskips = shouldstep ?
+      headerpn - session->state.nr + headern :
+      headern - session->state.nr;
+    if (nskips > session->mkskipped.maxskip) return OMEMO_EMAXSKIP;
+    if (nskips > session->mkskipped.c - session->mkskipped.n) return OMEMO_ESKIPBUF;
+
+    if (shouldstep) {
+      SkipMessageKeys(&session->state, &session->mkskipped, headerpn);
+      if ((r = DHRatchet(&session->state, headerdh)))
+        return r;
+    }
+    SkipMessageKeys(&session->state, &session->mkskipped, headern);
+
+    assert(!DeriveChainKey(&kdfout, session->state.ckr));
+
+    memcpy(session->state.ckr, kdfout.ck, 32);
+    session->state.nr++;
+  }
 
   Decrypt(decrypted, fields[4].p, kdfout.ck, kdfout.iv);
 
-  session->state.nr++;
-  memcpy(session->state.ckr, kdfout.ck, 32);
-
   session->fsm = SESSION_READY;
   return 0;
+}
+
+static int DecryptMessage(struct Session *session, struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
+  int r;
+  assert(session && session->mkskipped.p && !session->mkskipped.removed);
+  assert(store);
+  if ((r = DecryptMessageImpl(session, store, decrypted, msg, msgn))) {
+    // revert back
+  }
+  return r;
 }
 
 // Decrypt the (usually) first message and start/initialize a session.
@@ -707,7 +730,7 @@ static int DecryptPreKeyMessageImpl(struct Session *session, struct Store *store
 }
 
 static int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload payload, uint8_t *msg, size_t msgn) {
-  memset(session, 0, sizeof(struct Session));
+  SetupSession(session);
   int r;
   if ((r = DecryptPreKeyMessageImpl(session, store, payload, msg, msg+msgn))) {
     memset(session, 0, sizeof(struct Session));
@@ -742,6 +765,11 @@ static void EncryptRealMessage(uint8_t *d, Payload payload,
 }
 
 static void SerializeSession(uint8_t *d, struct Session *session) {
-  memcpy(d, session, sizeof(struct Session));
+  memcpy(d, &session->state, sizeof(struct State));
+  d += sizeof(struct State);
+  for (int i = 0; i < session->mkskipped.n; i++) {
+    memcpy(d, &session->mkskipped.p+i, sizeof(struct MessageKey));
+    d += sizeof(struct MessageKey);
+  }
   // TODO: message keys and crc?
 }

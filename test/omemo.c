@@ -223,6 +223,18 @@ static void TestEncryption() {
 }
 
 struct TestSetup {
+  struct Store storea, storeb;
+  struct Session sessiona, sessionb;
+};
+
+static void MakeTestSetup(struct TestSetup *setup) {
+  SetupStore(&setup->storea);
+  SetupStore(&setup->storeb);
+  struct Bundle bundleb;
+  ParseBundle(&bundleb, &setup->storeb);
+}
+
+struct Message {
 };
 
 static void TestSession() {
@@ -256,6 +268,23 @@ static void TestSession() {
   assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
   assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
   assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+
+  memset(realpayload, 0x88, PAYLOAD_SIZE);
+  memcpy(payload, realpayload, PAYLOAD_SIZE);
+  assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
+
+  Payload payload2, realpayload2;
+  struct PreKeyMessage msg2;
+  memset(realpayload2, 0x77, PAYLOAD_SIZE);
+  memcpy(payload2, realpayload2, PAYLOAD_SIZE);
+  assert(EncryptRatchet(&sessionb, &storeb, &msg2, payload2) == 0);
+
+  assert(DecryptMessage(&sessiona, &storea, payload2, msg2.p, msg2.n) == 0);
+  assert(!memcmp(realpayload2, payload2, PAYLOAD_SIZE));
+
+  assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
+  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  assert(sessiona.mkskipped.removed);
 }
 
 #define RunTest(t)                                                     \
