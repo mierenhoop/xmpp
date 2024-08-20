@@ -200,16 +200,6 @@ static void TestSignature() {
   testrand = false;
 }
 
-// TODO: move this to the library?
-static void SetupStore(struct Store *store) {
-  memset(store, 0, sizeof(struct Store));
-  GenerateIdentityKeyPair(&store->identity);
-  GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
-  for (int i = 0; i < NUMPREKEYS; i++) {
-    GeneratePreKey(store->prekeys+i, i+1);
-  }
-}
-
 // This would in reality parse the bundle's XML instead of their store.
 static void ParseBundle(struct Bundle *bundle, struct Store *store) {
   int pk_id = 42; // Something truly random :)

@@ -590,6 +590,9 @@ void edsign_sign(uint8_t *signature, const uint8_t *pub,
 }
 
 // We expect message to be suffixed with 64 bytes of random data, while len contains the original message length.
+// TODO: we can make a slightly better API by making the random data a
+// separate argument, then hashing it at the sha512_final call in a
+// modified hash_prefix().
 void edsign_sign_modified(uint8_t *signature, const uint8_t *pub,
 		 const uint8_t *secret,
 		 const uint8_t *message, size_t len)

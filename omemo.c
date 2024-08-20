@@ -27,7 +27,7 @@ typedef uint8_t Key[32];
 typedef Key PrivateKey;
 typedef Key PublicKey;
 typedef Key EdKey;
-// struct IdentityKey {PublicKey pub; EdKey ed; };
+
 typedef uint8_t SerializedKey[1+32];
 typedef uint8_t CurveSignature[64];
 
@@ -48,18 +48,44 @@ struct SignedPreKey {
 };
 
 struct MessageKey {
-  bool exists;
   uint32_t nr;
   Key dh;
-  Key mk;
+  Key ck, mk; // encryption key and mac key
+  uint8_t iv[16];
 };
+
+// p is a pointer to the array of message keys with capacity c.
+// the array contains n entries.
+// If allowoverwrite is true, the first keys will be overwritten when there is not enough space.
+// removed is NULL before calling a decryption function. When a message
+// has been decrypted AND a skipped message key is used, removed will
+// point to that key in array p. After this happens, it is the task of
+// the API consumer to remove the key from the array and move the
+// contents so that the array doesn't contain holes.
+// c >= maxskip
+struct SkippedMessageKeys {
+  struct MessageKey _data[2000]; // TODO: remove
+  struct MessageKey *p, *removed;
+  size_t n, c, maxskip;
+  bool allowoverwrite; // TODO: remove
+};
+
+static void NormalizeSkipMessageKeysTrivial(struct SkippedMessageKeys *s) {
+  assert(s->p && s->n <= s->c);
+  assert(!s->removed || s->removed < s->p + s->n);
+  if (s->removed) {
+    size_t n = s->n - (s->removed - s->p) - 1;
+    memmove(s->removed, s->removed + 1, n * sizeof(struct SkippedMessageKeys));
+    s->removed = NULL;
+  }
+}
 
 struct State {
   struct KeyPair dhs;
   PublicKey dhr;
   Key rk, cks, ckr;
   uint32_t ns, nr, pn;
-  //struct MessageKey skipped[2000]; // TODO: make this a ring buffer
+  //struct SkippedMessageKeys skipped;
 };
 
 #define PAYLOAD_SIZE 32
@@ -95,12 +121,12 @@ struct Session {
   struct State state;
 };
 
-// Random function that must not fail, if it's really not possible to
-// get random data, you should either exit the program or longjmp out.
+// Random function that must not fail, if the system is not guaranteed
+// to always have a random generator available, it should read from a
+// pre-filled buffer.
 void SystemRandom(void *d, size_t n);
 // void SystemRandom(void *d, size_t n) { esp_fill_random(d, n); }
 
-// Note: spk will be the serialized version in the XML bundle: 0x05 prepended making 33 bytes.
 struct Bundle {
   CurveSignature spks;
   PublicKey spk, ik;
@@ -277,14 +303,6 @@ static void CalculateCurveSignature(CurveSignature cs, Key signprv, uint8_t *msg
   curve25519_sign(cs, signprv, msg, n, rnd, buf);
 }
 
-static void DecodePointMont(PublicKey pub, PublicKey data) {
-  memcpy(pub, data, sizeof(PublicKey));
-}
-
-static void DecodePrivatePoint(PrivateKey prv, PrivateKey data) {
-  memcpy(prv, data, sizeof(PrivateKey));
-}
-
 // AKA ECDHE
 static void CalculateCurveAgreement(uint8_t d[static 32],
                                     const PublicKey pub,
@@ -305,6 +323,17 @@ static void GenerateSignedPreKey(struct SignedPreKey *spk, uint32_t id,
 static bool VerifySignature(CurveSignature sig, PublicKey sk,
                             const uint8_t *msg, size_t n) {
   return curve25519_verify(sig, sk, msg, n) == 0;
+}
+
+static void SetupStore(struct Store *store) {
+  memset(store, 0, sizeof(struct Store));
+  GenerateIdentityKeyPair(&store->identity);
+  GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
+  for (int i = 0; i < NUMPREKEYS; i++) {
+    GeneratePreKey(store->prekeys+i, i+1);
+  }
+  //store->skipped.p = store->skipped._data;
+  //store->skipped.c = 2000;
 }
 
 // AD = Encode(IKA) || Encode(IKB)
@@ -526,6 +555,48 @@ static void RatchetInitBob(struct State *state, Key sk, struct KeyPair *ekb) {
   memcpy(state->rk, sk, 32);
 }
 
+// when found mk will contain the message key
+static bool FindMessageKey(Key mk, struct SkippedMessageKeys *keys, Key dh, uint32_t n) {
+  for (int i = 0; i < keys->n; i++) {
+    if (keys->p[i].nr == n && !memcmp(dh, keys->p[i].dh, 32)) {
+      memcpy(mk, keys->p[i].mk, 32);
+      keys->removed = keys->p + i;
+      return true;
+    }
+  }
+  return false;
+}
+
+static struct MessageKey *PrepareMessageKeys(struct Store *store, uint32_t n) {
+  return NULL;
+}
+
+#define MIN0(v) (((v) < 0) ? (v) : 0)
+
+// Example:
+// state->nr = 3
+// until (header.n) = 5
+// there will be two steps done.
+// TODO: if the number of steps is negative, we should error because it
+// was probably from a removed skipped key.
+static uint64_t GetSkipSteps(const struct State *state, uint32_t until) {
+  return MIN0((int64_t)until - (int64_t)state->nr);
+}
+
+static void SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys, uint32_t n) {
+  assert(keys->n + n <= keys->c); // this is checked in DecryptMessage
+  while (state->nr < n) {
+    struct DeriveChainKeyOutput kdfout;
+    assert(!DeriveChainKey(&kdfout, state->ckr));
+    memcpy(state->ckr, kdfout.ck, 32);
+    keys->p[keys->n].nr = state->nr;
+    memcpy(keys->p[keys->n].ck, kdfout.ck, 32);
+    memcpy(keys->p[keys->n].mk, kdfout.mk, 32);
+    keys->n++;
+    state->nr++;
+  }
+}
+
 static int DecryptMessage(struct Session *session, struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
   int r;
   const uint8_t *p = msg, *e = msg+msgn;
@@ -547,9 +618,40 @@ static int DecryptMessage(struct Session *session, struct Store *store, Payload 
   // these checks should already be handled by ParseProtobuf, just to make sure...
   assert(fields[1].v == 32);
   assert(fields[4].v == PAYLOAD_SIZE);
-  // if (!(state->session.state & SESSION_INITIALIZED))
 
-  if (memcmp(session->state.dhr, fields[1].p, 32)) {
+  // TODO: we now should check whether the skipped message keys array is
+  // large enough by checking header.n and header.pn with state.nr.
+  // Besides that also check if header.n/header.pn doesn't exceed MAX_SKIP
+  // to prevent DOS.
+
+  uint32_t headern = fields[2].v;
+  uint32_t headerpn = fields[3].v;
+  const uint8_t *headerdh = fields[1].p;
+
+  bool shouldstep = !!memcmp(session->state.dhr, headerdh, 32);
+  uint64_t nskips = shouldstep ?
+    GetSkipSteps(&session->state, headerpn) + headern :
+    GetSkipSteps(&session->state, headern);
+
+  // We first check for maxskip, if that does not pass we should not
+  // process the message. If it does pass, we know the total capacity of
+  // the array is large enough because c >= maxskip. Then we check if the
+  // new keys fit in the remaining space. If that is not the case we
+  // return and let the user either remove the old message keys or ignore
+  // the message.
+
+  //struct SkippedMessageKeys skipped;
+  //Key mk;
+  //if ((!FindMessageKey(mk, &skipped, fields[1].p, fields[2].v))) {
+  //  if (!shouldstep && header.n < state.nr) return keyremoved
+  //  if (shouldstep && header.pn < state.nr) return keyremoved
+  //  if (nskips > skipped.max_skips) return -1;
+  //  if (nskips > skipped.c-skipped.n) return -1;
+  //  // do the other stuff to get mk
+  //}
+
+
+  if (shouldstep) {
     if ((r = DHRatchet(&session->state, fields[1].p)))
       return r;
   }
@@ -637,4 +739,9 @@ static void EncryptRealMessage(uint8_t *d, Payload payload,
   assert(!mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, payload, 128));
   assert(!mbedtls_gcm_crypt_and_tag(&ctx, MBEDTLS_GCM_ENCRYPT, n, iv, 12, "", 0, s, d, 16, payload+16));
   mbedtls_gcm_free(&ctx);
+}
+
+static void SerializeSession(uint8_t *d, struct Session *session) {
+  memcpy(d, session, sizeof(struct Session));
+  // TODO: message keys and crc?
 }
