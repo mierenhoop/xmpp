@@ -5,16 +5,8 @@
 // In the tests we spoof the random source as a hacky way to generate
 // the exact private key we want.
 
-static bool testrand;
-static uint8_t testrandsrc[100];
-
 void SystemRandom(void *d, size_t n) {
-  if (testrand) {
-    assert(n <= sizeof(testrandsrc));
-    memcpy(d, testrandsrc, n);
-  } else {
-    assert(getrandom(d, n, 0) == n);
-  }
+  assert(getrandom(d, n, 0) == n);
 }
 
 static void ClearFieldValues(struct ProtobufField *fields, int nfields) {
@@ -67,7 +59,7 @@ static void TestFormatProtobuf() {
   assert(FormatVarInt(varint, 1, 0xffffffff) == varint + 6 && !memcmp(varint, "\x08\xff\xff\xff\xff\x0f", 6));
 }
 
-static void CopyHex(uint8_t *d, char *hex) {
+static void CopyHex(uint8_t *d, const char *hex) {
   int n = strlen(hex);
   assert(n % 2 == 0);
   n /= 2;
@@ -76,28 +68,32 @@ static void CopyHex(uint8_t *d, char *hex) {
   }
 }
 
+static Key base = {9};
+
+static void TestKeyPair(struct KeyPair *kp, const char *rnd, const char *prv, const char *pub) {
+  Key kprv, kpub;
+  CopyHex(kp->prv, rnd);
+  CopyHex(kprv, prv);
+  CopyHex(kpub, pub);
+  c25519_prepare(kp->prv);
+  assert(!memcmp(kp->prv, kprv, 32));
+  curve25519_donna(kp->pub, kprv, base);
+  assert(!memcmp(kpub, kp->pub, 32));
+  memset(kp->pub, 0, 32);
+  c25519_smult(kp->pub, c25519_base_x, kprv);
+  assert(!memcmp(kpub, kp->pub, 32));
+}
+
 static void TestCurve25519() {
   struct KeyPair kpa, kpb, exp;
-  uint8_t shared[32], expshared[32];
-  testrand = true;
-  CopyHex(testrandsrc, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
-  CopyHex(exp.prv, "70076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c6a");
-  CopyHex(exp.pub, "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
-  GenerateKeyPair(&kpa);
-  assert(!memcmp(exp.prv, kpa.prv, 32));
-  assert(!memcmp(exp.pub, kpa.pub, 32));
-  CopyHex(testrandsrc, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b");
-  CopyHex(exp.prv, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b");
-  CopyHex(exp.pub, "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
-  GenerateKeyPair(&kpb);
-  assert(!memcmp(exp.prv, kpb.prv, 32));
-  assert(!memcmp(exp.pub, kpb.pub, 32));
+  uint8_t shared[32], expshared[32], rnd[32];
+  TestKeyPair(&kpa, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "70076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c6a", "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
+  TestKeyPair(&kpb, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
   CopyHex(expshared, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
   CalculateCurveAgreement(shared, kpb.pub, kpa.prv);
   assert(!memcmp(expshared, shared, 32));
   CalculateCurveAgreement(shared, kpa.pub, kpb.prv);
   assert(!memcmp(expshared, shared, 32));
-  testrand = false;
 }
 
 void crypto_sign_ed25519_ref10_ge_scalarmult_base(void*,const    unsigned char *);
@@ -107,7 +103,6 @@ static void MontToEd(Key ed, Key prv) {
   struct {int32_t l[10][4]; } ed_pubkey_point;
   crypto_sign_ed25519_ref10_ge_scalarmult_base(&ed_pubkey_point, prv);
   crypto_sign_ed25519_ref10_ge_p3_tobytes(ed, &ed_pubkey_point);
-  DumpHex(ed, 32, "ed");
 }
 
 static void ConvertCurvePrvToEdPub(Key ed, const Key prv) {
@@ -167,19 +162,17 @@ static void TestSign() {
   ConvertCurvePrvToEdPub(pp, prv);
   uint8_t sigbuf[128], sigbuf2[128];
   crypto_sign_modified(sigbuf, msg, 12, prv, ed, rnd);
-  DumpHex(sigbuf, 64, "sigbuf");
   uint8_t msgbuf[100];
   memcpy(msgbuf, msg, 12);
   memset(msgbuf+12, 0xcc, 64);
   edsign_sign_modified(sigbuf2, ed, prv, msgbuf, 12);
-  DumpHex(sigbuf2, 64, "sigbuf2");
+  assert(!memcmp(sigbuf, sigbuf2, 64));
 }
 
 static void TestSignature() {
   Key prv, pub;
-  CurveSignature sig, expsig;
-  uint8_t msg[12];
-  testrand = true;
+  CurveSignature sig, sig2, expsig;
+  uint8_t msg[12], buf[33+128], rnd[64];
   CopyHex(prv, "48a8892cc4e49124b7b57d94fa15becfce071830d6449004685e387"
                "c62409973");
   CopyHex(pub, "55f1bfede27b6a03e0dd389478ffb01462e5c52dbbac32cf870f00a"
@@ -188,25 +181,29 @@ static void TestSignature() {
   CopyHex(expsig, "2bc06c745acb8bae10fbc607ee306084d0c28e2b3bb819133392"
                   "473431291fd0dfa9c7f11479996cf520730d2901267387e08d85"
                   "bbf2af941590e3035a545285");
-  //CalculateCurveSignature(sig, prv, msg, 12);
-  c25519_sign(sig, prv, msg, 12);
   assert(c25519_verify(expsig, pub, msg, 12));
+  assert(curve25519_verify(expsig, pub, msg, 12) == 0);
+
+  c25519_sign(sig, prv, msg, 12);
+  assert(curve25519_verify(sig, pub, msg, 12) == 0);
   assert(c25519_verify(sig, pub, msg, 12));
-  //assert(VerifySignature(expsig, pub, msg, 12));
-  //assert(VerifySignature(sig, pub, msg, 12));
+
+  SystemRandom(rnd, 64);
+  curve25519_sign(sig, prv, msg, 12, rnd, buf);
+  assert(curve25519_verify(sig, pub, msg, 12) == 0);
+  assert(c25519_verify(sig, pub, msg, 12));
+
   memset(sig, 0, 64);
-  //assert(!VerifySignature(sig, pub, msg, 12));
   assert(!c25519_verify(sig, pub, msg, 12));
-  testrand = false;
 }
 
 // This would in reality parse the bundle's XML instead of their store.
 static void ParseBundle(struct Bundle *bundle, struct Store *store) {
   int pk_id = 42; // Something truly random :)
   memcpy(bundle->spks, store->cursignedprekey.sig, sizeof(CurveSignature));
-  memcpy(bundle->spk, store->cursignedprekey.kp.pub, sizeof(PublicKey));
-  memcpy(bundle->ik, store->identity.pub, sizeof(PublicKey));
-  memcpy(bundle->pk, store->prekeys[pk_id-1].kp.pub, sizeof(PublicKey));
+  memcpy(bundle->spk, store->cursignedprekey.kp.pub, sizeof(Key));
+  memcpy(bundle->ik, store->identity.pub, sizeof(Key));
+  memcpy(bundle->pk, store->prekeys[pk_id-1].kp.pub, sizeof(Key));
   assert(store->prekeys[pk_id-1].id == 42);
   bundle->pk_id = store->prekeys[pk_id-1].id;
   bundle->spk_id = store->cursignedprekey.id;
@@ -279,12 +276,14 @@ static void TestSession() {
   memcpy(payload2, realpayload2, PAYLOAD_SIZE);
   assert(EncryptRatchet(&sessionb, &storeb, &msg2, payload2) == 0);
 
+  assert(sessiona.mkskipped.n == 0);
   assert(DecryptMessage(&sessiona, &storea, payload2, msg2.p, msg2.n) == 0);
   assert(!memcmp(realpayload2, payload2, PAYLOAD_SIZE));
+  assert(sessiona.mkskipped.n == 1);
 
   assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
   assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
-  assert(sessiona.mkskipped.removed);
+  assert(sessiona.mkskipped.n == 0);
 }
 
 #define RunTest(t)                                                     \

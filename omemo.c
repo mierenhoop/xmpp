@@ -1,3 +1,6 @@
+// TODO: we should remove the dep on mbedtls here since it creates
+// points of failures that wouldn't be there with other crypto
+// implementations (mostly from heap allocation).
 #include <mbedtls/hkdf.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/gcm.h>
@@ -11,6 +14,7 @@
 #include <sys/random.h>
 
 #include "curve25519.h"
+#include "c25519.h"
 
 #define SESSION_UNINIT 0
 #define SESSION_INIT 1
@@ -27,16 +31,14 @@
 
 typedef uint8_t Key[32];
 // TODO: we can just use Key for everthing
-typedef Key PrivateKey;
-typedef Key PublicKey;
 typedef Key EdKey;
 
 typedef uint8_t SerializedKey[1+32];
 typedef uint8_t CurveSignature[64];
 
 struct KeyPair {
-  PrivateKey prv;
-  PublicKey pub;
+  Key prv;
+  Key pub;
 };
 
 struct PreKey {
@@ -75,17 +77,18 @@ struct SkippedMessageKeys {
 
 static void NormalizeSkipMessageKeysTrivial(struct SkippedMessageKeys *s) {
   assert(s->p && s->n <= s->c);
-  assert(!s->removed || s->removed < s->p + s->n);
   if (s->removed) {
+    assert(s->p <= s->removed && s->removed < s->p + s->n);
     size_t n = s->n - (s->removed - s->p) - 1;
     memmove(s->removed, s->removed + 1, n * sizeof(struct SkippedMessageKeys));
+    s->n--;
     s->removed = NULL;
   }
 }
 
 struct State {
   struct KeyPair dhs;
-  PublicKey dhr;
+  Key dhr;
   Key rk, cks, ckr;
   uint32_t ns, nr, pn;
   //struct SkippedMessageKeys skipped;
@@ -120,7 +123,7 @@ struct Store {
 // TODO: pack for serialization?
 struct Session {
   int fsm;
-  PublicKey remoteidentity;
+  Key remoteidentity;
   struct State state;
   struct SkippedMessageKeys mkskipped;
 };
@@ -133,8 +136,8 @@ void SystemRandom(void *d, size_t n);
 
 struct Bundle {
   CurveSignature spks;
-  PublicKey spk, ik;
-  PublicKey pk; // Randomly selected prekey
+  Key spk, ik;
+  Key pk; // Randomly selected prekey
   uint32_t pk_id, spk_id;
 };
 
@@ -237,15 +240,15 @@ static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
 
 // PreKeyWhisperMessage without message (it should be appended right after this call)
 // ek = basekey
-static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_id, uint32_t spk_id, PublicKey ik, PublicKey ek, uint32_t msgsz) {
+static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_id, uint32_t spk_id, Key ik, Key ek, uint32_t msgsz) {
   assert(msgsz < 128);
   uint8_t *p = d;
   *p++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
   p = FormatVarInt(p, 5, 0xcc); // TODO: registration id
   p = FormatVarInt(p, 1, pk_id);
   p = FormatVarInt(p, 6, spk_id);
-  p = FormatBytes(p, 3, ik, sizeof(PublicKey));
-  p = FormatBytes(p, 2, ek, sizeof(PublicKey));
+  p = FormatBytes(p, 3, ik, sizeof(Key));
+  p = FormatBytes(p, 2, ek, sizeof(Key));
   *p++ = (4 << 3) | PB_LEN;
   *p++ = msgsz;
   return p - d;
@@ -253,10 +256,10 @@ static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_i
 
 // WhisperMessage without ciphertext
 // HEADER(dh_pair, pn, n)
-static size_t FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, PublicKey dhs) {
+static size_t FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, Key dhs) {
   uint8_t *p = d;
   *p++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
-  p = FormatBytes(p, 1, dhs, sizeof(PublicKey));
+  p = FormatBytes(p, 1, dhs, sizeof(Key));
   p = FormatVarInt(p, 2, n);
   return FormatVarInt(p, 3, pn) - d;
 }
@@ -272,9 +275,7 @@ static const uint8_t basepoint[32] = {9};
 static void GenerateKeyPair(struct KeyPair *kp) {
   memset(kp, 0, sizeof(*kp));
   SystemRandom(kp->prv, sizeof(kp->prv));
-  kp->prv[0] &= 248;
-  kp->prv[31] &= 127;
-  kp->prv[31] |= 64;
+  c25519_prepare(kp->prv);
   curve25519_donna(kp->pub, kp->prv, basepoint);
 }
 
@@ -309,8 +310,8 @@ static void CalculateCurveSignature(CurveSignature cs, Key signprv, uint8_t *msg
 
 // AKA ECDHE
 static void CalculateCurveAgreement(uint8_t d[static 32],
-                                    const PublicKey pub,
-                                    PrivateKey prv) {
+                                    const Key pub,
+                                    Key prv) {
   curve25519_donna(d, prv, pub);
 }
 
@@ -324,7 +325,7 @@ static void GenerateSignedPreKey(struct SignedPreKey *spk, uint32_t id,
                           sizeof(SerializedKey));
 }
 
-static bool VerifySignature(CurveSignature sig, PublicKey sk,
+static bool VerifySignature(CurveSignature sig, Key sk,
                             const uint8_t *msg, size_t n) {
   return curve25519_verify(sig, sk, msg, n) == 0;
 }
@@ -502,7 +503,7 @@ static int EncryptFirstMessage(struct Session *session, struct Store *store, str
   struct KeyPair eka;
   GenerateKeyPair(&eka);
   memset(&session->state, 0, sizeof(struct State));
-  memcpy(session->remoteidentity, bundle->ik, sizeof(PublicKey));
+  memcpy(session->remoteidentity, bundle->ik, sizeof(Key));
   Key sk;
   if ((r = GetSharedSecret(sk, false, store->identity.prv, eka.prv, eka.prv, bundle->ik, bundle->spk, bundle->pk)))
     return r;
@@ -683,6 +684,8 @@ static int DecryptMessage(struct Session *session, struct Store *store, Payload 
     session->mkskipped.n = mkskippednbackup;
     session->mkskipped.removed = NULL;
   }
+  if (session->mkskipped.removed)
+    NormalizeSkipMessageKeysTrivial(&session->mkskipped);
   return r;
 }
 
