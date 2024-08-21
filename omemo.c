@@ -59,7 +59,8 @@ struct MessageKey {
 
 // p is a pointer to the array of message keys with capacity c.
 // the array contains n entries.
-// If allowoverwrite is true, the first keys will be overwritten when there is not enough space.
+// When the array is full and you don't want to allocate more space you
+// can remove the old entries and reduce n.
 // removed is NULL before calling a decryption function. When a message
 // has been decrypted AND a skipped message key is used, removed will
 // point to that key in array p. After this happens, it is the task of
@@ -70,7 +71,6 @@ struct SkippedMessageKeys {
   struct MessageKey _data[2000]; // TODO: remove
   struct MessageKey *p, *removed;
   size_t n, c, maxskip;
-  bool allowoverwrite; // TODO: remove
 };
 
 static void NormalizeSkipMessageKeysTrivial(struct SkippedMessageKeys *s) {
@@ -351,6 +351,16 @@ static void GetAd(uint8_t ad[66], Key ika, Key ikb) {
   SerializeKey(ad + 33, ikb);
 }
 
+static int GetMac(uint8_t d[static 8], Key ika, Key ikb, Key mk, const uint8_t *msg, size_t msgn) {
+  uint8_t macinput[66+FULLMSG_MAXSIZE], mac[32];
+  GetAd(macinput, ika, ikb);
+  memcpy(macinput+66, msg, msgn);
+  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), mk, 32, macinput, 66+msgn, mac) != 0)
+    return OMEMO_ECRYPTO;
+  memcpy(d, mac, 8);
+  return 0;
+}
+
 static void Encrypt(Payload out, const Payload in, Key key,
                     uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
@@ -384,40 +394,44 @@ static int DeriveChainKey(struct DeriveChainKeyOutput *out, Key ck) {
              ? OMEMO_ECRYPTO
              : 0;
 }
+
 // CKs, mk = KDF_CK(CKs)
 // header = HEADER(DHs, PN, Ns)
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
 // macinput      [   33   |   33   |   1   | <=46 |2|PAYLOAD_SIZE]
 //                identity identity version header    encrypted   mac[:8]
-// msg->encrypted                  [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
-// TODO: on fail anywhere, we must reset the state back
-static int EncryptRatchet(struct Session *session, struct Store *store, struct PreKeyMessage *msg, Payload payload) {
-  uint8_t macinput[66+FULLMSG_MAXSIZE], mac[32];
+// msg->p                          [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
+// TODO: remove store? we only need public ik, we can put that in session
+static int EncryptRatchetImpl(struct Session *session, struct Store *store, struct PreKeyMessage *msg, Payload payload) {
   struct DeriveChainKeyOutput kdfout;
-  //if (session->fsm != SESSION_READY)
-  //  return OMEMO_ESTATE;
   if (DeriveChainKey(&kdfout, session->state.cks))
     return OMEMO_ECRYPTO;
 
-  GetAd(macinput, store->identity.pub, session->remoteidentity);
-  int n = 66;
-  n += FormatMessageHeader(macinput+n, session->state.ns, session->state.pn, session->state.dhs.pub);
+  msg->n = FormatMessageHeader(msg->p, session->state.ns, session->state.pn, session->state.dhs.pub);
+  msg->p[msg->n++] = (4 << 3) | PB_LEN;
+  msg->p[msg->n++] = PAYLOAD_SIZE;
+  Encrypt(msg->p+msg->n, payload, kdfout.ck, kdfout.iv);
+  msg->n += PAYLOAD_SIZE;
 
-  macinput[n++] = (4 << 3) | PB_LEN;
-  macinput[n++] = PAYLOAD_SIZE;
-  Encrypt(macinput+n, payload, kdfout.ck, kdfout.iv);
-  n += PAYLOAD_SIZE;
-  int encsz = n - 66;
-  memcpy(msg->p, macinput+66, encsz);
-  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), kdfout.mk, 32, macinput, n, mac) != 0)
-    return OMEMO_ECRYPTO;
-  memcpy(msg->p+encsz, mac, 8);
-  msg->n = encsz + 8;
+  if (GetMac(msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mk, msg->p, msg->n))
+    return -1;
+  msg->n += 8;
 
   session->state.ns++;
   memcpy(session->state.cks, kdfout.ck, 32);
   return 0;
+}
+
+static int EncryptRatchet(struct Session *session, struct Store *store, struct PreKeyMessage *msg, Payload payload) {
+  int r;
+  struct State backup;
+  memcpy(&backup, &session->state, sizeof(struct State));
+  if ((r = EncryptRatchetImpl(session, store, msg, payload))) {
+    memcpy(&session->state, &backup, sizeof(struct State));
+    memset(msg, 0, sizeof(struct PreKeyMessage));
+  }
+  return r;
 }
 
 // RK, CKs = KDF_RK(SK, DH(DHs, DHr))
@@ -573,22 +587,6 @@ static struct MessageKey *FindMessageKey(struct SkippedMessageKeys *keys, const 
   return NULL;
 }
 
-static struct MessageKey *PrepareMessageKeys(struct Store *store, uint32_t n) {
-  return NULL;
-}
-
-#define MIN0(v) (((v) < 0) ? (v) : 0)
-
-// Example:
-// state->nr = 3
-// until (header.n) = 5
-// there will be two steps done.
-// TODO: if the number of steps is negative, we should error because it
-// was probably from a removed skipped key.
-static uint64_t GetSkipSteps(const struct State *state, uint32_t until) {
-  return MIN0((int64_t)until - (int64_t)state->nr);
-}
-
 static void SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys, uint32_t n) {
   assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
@@ -607,13 +605,10 @@ static void SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys
 
 static int DecryptMessageImpl(struct Session *session, struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
   int r;
-  const uint8_t *p = msg, *e = msg+msgn;
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
     return OMEMO_ESTATE;
-  if (msgn < 9 || *p++ != ((3 << 4) | 3))
+  if (msgn < 9 || msg[0] != ((3 << 4) | 3))
     return OMEMO_ECORRUPT;
-  e -= 8;
-  const uint8_t *mac = e;
   struct ProtobufField fields[5] = {
     [1] = {PB_REQUIRED | PB_LEN, 32}, // ek
     [2] = {PB_REQUIRED | PB_UINT32}, // n
@@ -621,16 +616,11 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
     [4] = {PB_REQUIRED | PB_LEN, PAYLOAD_SIZE}, // ciphertext
   };
 
-  if ((r = ParseProtobuf(p, e-p, fields, 5)))
+  if ((r = ParseProtobuf(msg+1, msgn-9, fields, 5)))
     return r;
   // these checks should already be handled by ParseProtobuf, just to make sure...
   assert(fields[1].v == 32);
   assert(fields[4].v == PAYLOAD_SIZE);
-
-  // TODO: we now should check whether the skipped message keys array is
-  // large enough by checking header.n and header.pn with state.nr.
-  // Besides that also check if header.n/header.pn doesn't exceed MAX_SKIP
-  // to prevent DOS.
 
   uint32_t headern = fields[2].v;
   uint32_t headerpn = fields[3].v;
@@ -644,7 +634,6 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
   // new keys fit in the remaining space. If that is not the case we
   // return and let the user either remove the old message keys or ignore
   // the message.
-
 
   struct DeriveChainKeyOutput kdfout;
   struct MessageKey *key;
@@ -661,22 +650,22 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
       headern - session->state.nr;
     if (nskips > session->mkskipped.maxskip) return OMEMO_EMAXSKIP;
     if (nskips > session->mkskipped.c - session->mkskipped.n) return OMEMO_ESKIPBUF;
-
     if (shouldstep) {
       SkipMessageKeys(&session->state, &session->mkskipped, headerpn);
       if ((r = DHRatchet(&session->state, headerdh)))
         return r;
     }
     SkipMessageKeys(&session->state, &session->mkskipped, headern);
-
-    assert(!DeriveChainKey(&kdfout, session->state.ckr));
-
+    if ((r = DeriveChainKey(&kdfout, session->state.ckr)))
+      return r;
     memcpy(session->state.ckr, kdfout.ck, 32);
     session->state.nr++;
   }
-
+  uint8_t mac[8];
+  GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mk, msg, msgn-8);
+  if (memcmp(mac, msg+msgn-8, 8))
+    return OMEMO_ECORRUPT;
   Decrypt(decrypted, fields[4].p, kdfout.ck, kdfout.iv);
-
   session->fsm = SESSION_READY;
   return 0;
 }
@@ -685,8 +674,14 @@ static int DecryptMessage(struct Session *session, struct Store *store, Payload 
   int r;
   assert(session && session->mkskipped.p && !session->mkskipped.removed);
   assert(store);
+  struct State backup;
+  uint32_t mkskippednbackup = session->mkskipped.n;
+  memcpy(&backup, &session->state, sizeof(struct State));
   if ((r = DecryptMessageImpl(session, store, decrypted, msg, msgn))) {
-    // revert back
+    memcpy(&session->state, &backup, sizeof(struct State));
+    memset(decrypted, 0, PAYLOAD_SIZE);
+    session->mkskipped.n = mkskippednbackup;
+    session->mkskipped.removed = NULL;
   }
   return r;
 }
