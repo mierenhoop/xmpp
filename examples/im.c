@@ -27,6 +27,15 @@
 #define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
 #endif
 
+#define PUBLISH_OPTIONS_OPEN                                           \
+  "<publish-options><x xmlns='jabber:x:data' type='submit'><field "    \
+  "var='FORM_TYPE' "                                                   \
+  "type='hidden'><value>http://jabber.org/protocol/"                   \
+  "pubsub#publish-options</value></field><field "                      \
+  "var='pubsub#persist_items'><value>true</value></field><field "      \
+  "var='pubsub#access_model'><value>open</value></field></x></"        \
+  "publish-options>"
+
 typedef char Uuidv4[36+1];
 
 static char *logdata;
@@ -214,16 +223,18 @@ static bool HasExactAttribute(struct xmppParser *parser, const char *k, const ch
   return false;
 }
 
-/*static void AnnounceOmemoDevice() {
-  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='admin@localhost' type='get' id='pubsub%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1' /></pubsub></iq>", rand());
+static void AnnounceOmemoDevice() {
+  //xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='admin@localhost' type='get' id='pubsub%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1' /></pubsub></iq>", rand());
   xmppFormatStanza(
       &client, "<iq xmlns='jabber:client' type='set' id='announce%d'><pubsub "
                "xmlns='http://jabber.org/protocol/pubsub'><publish "
                "node='eu.siacs.conversations.axolotl.devicelist'><item "
                "id='current'><list "
                "xmlns='eu.siacs.conversations.axolotl'><device "
-               "id='%d' /></list></item></publish></pubsub></iq>", rand(), deviceid);
-}*/
+               "id='%d' /></list></item></publish>"
+PUBLISH_OPTIONS_OPEN
+               "</pubsub></iq>", rand(), deviceid);
+}
 
 static void ReAddDevices(struct xmppParser *parser) {
   bool found = false;
@@ -276,12 +287,12 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
   if (xmppParseElement(&parser)) {
     if (xmppParseElement(&parser)) {
       if (!strcmp(parser.x.elem, "pubsub")) {
-        if (xmppParseElement(&parser) &&
-            !strcmp(parser.x.elem, "items") &&
-            HasExactAttribute(
-                &parser, "node",
-                "eu.siacs.conversations.axolotl.devicelist"))
-          ParseDeviceList(&parser);
+        //if (xmppParseElement(&parser) &&
+        //    !strcmp(parser.x.elem, "items") &&
+        //    HasExactAttribute(
+        //        &parser, "node",
+        //        "eu.siacs.conversations.axolotl.devicelist"))
+        //  ParseDeviceList(&parser);
       }
     }
   }
@@ -293,6 +304,9 @@ static void SubscribeDeviceList() {
 }
 
 static void AnnounceOmemoBundle() {
+  SerializedKey spk, ik;
+  SerializeKey(spk, store.cursignedprekey.kp.pub);
+  SerializeKey(ik, store.identity.pub);
   FormatXml(
       &client.builder,
       "<iq type='set' id='announce%d'><pubsub "
@@ -304,15 +318,17 @@ static void AnnounceOmemoBundle() {
       "signedPreKeyPublic><signedPreKeySignature>%b</"
       "signedPreKeySignature><identityKey>%b</"
       "identityKey><prekeys>", rand(), deviceid, store.cursignedprekey.id,
-      32, store.cursignedprekey.kp.pub, 64, store.cursignedprekey.sig, 32, store.identity.pub);
+      33, spk, 64, store.cursignedprekey.sig, 33, ik);
   for (int i = 0; i < NUMPREKEYS; i++) {
+    SerializedKey pk;
+    SerializeKey(pk, store.prekeys[i].kp.pub);
     FormatXml(&client.builder,
               "<preKeyPublic preKeyId='%d'>%b</preKeyPublic>", store.prekeys[i].id,
-              32, store.prekeys[i].kp.pub);
+              33, pk);
   }
 
   xmppFormatStanza(&client, "</prekeys></bundle></"
-                            "item></publish></pubsub></iq>");
+                            "item></publish>" PUBLISH_OPTIONS_OPEN "</pubsub></iq>");
 }
 
 // returns true if stream is done for
@@ -329,8 +345,9 @@ static bool IterateClient() {
       Log("Polling...");
       if (!sent) {
         xmppFormatStanza(&client, "<presence/>");
-        //AnnounceOmemoBundle();
-        SubscribeDeviceList();
+        //SubscribeDeviceList();
+        AnnounceOmemoDevice();
+        AnnounceOmemoBundle();
         sent = 1;
         continue;
       }

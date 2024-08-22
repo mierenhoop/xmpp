@@ -64,10 +64,10 @@ struct State {
 };
 
 #define PAYLOAD_SIZE 32
-#define HEADER_MAXSIZE (2+32+2*6)
+#define HEADER_MAXSIZE (2+33+2*6)
 #define FULLMSG_MAXSIZE (1+HEADER_MAXSIZE+2+PAYLOAD_SIZE)
 #define ENCRYPTED_MAXSIZE (FULLMSG_MAXSIZE+8)
-#define PREKEYHEADER_MAXSIZE (1+18+34*2+2)
+#define PREKEYHEADER_MAXSIZE (1+18+35*2+2)
 
 #define NUMPREKEYS 100
 
@@ -102,6 +102,8 @@ struct Session {
 // pre-filled buffer.
 void SystemRandom(void *d, size_t n);
 // void SystemRandom(void *d, size_t n) { esp_fill_random(d, n); }
+
+void SerializeKey(SerializedKey k, Key pub);
 
 struct Bundle {
   CurveSignature spks;

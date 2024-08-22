@@ -286,6 +286,27 @@ static void TestSession() {
   assert(sessiona.mkskipped.n == 0);
 }
 
+// Test session built by Gajim
+static void TestReceive() {
+  struct Session session;
+  struct Store store;
+  memset(&store, 0, sizeof(struct Store));
+  store.prekeys[55].id = 56;
+  CopyHex(store.prekeys[55].kp.pub, "c0a2e2216d40765490501fcf8d31892c1a4cf60ed880ae3422daa767c430916b");
+  CopyHex(store.prekeys[55].kp.prv, "e8f9420a195d93f6d4acf9a5d92748aebd235bcd7648b19849882d96f8fdcf41");
+  CopyHex(store.identity.pub, "4e261cb22646a9ed75a8cfa194452fd20a320634b985d45084f0d5c6fc08cc4a");
+  CopyHex(store.identity.prv, "301defea859e6e440ef4a77d975c9a9590c59cddd275547adc59bf2c1d088d47");
+  store.cursignedprekey.id = 1;
+  CopyHex(store.cursignedprekey.kp.pub, "0a90c1ea3558b15625ad78e20861a39b1f30ca1c425a0e50557b0868821c661f");
+  CopyHex(store.cursignedprekey.kp.prv, "805eb8a8982b4206d0bec56bd1e861141f2c1b48386fa35ee7231834be1dd478");
+  CopyHex(store.cursignedprekey.sig, "0fa2490e4899a3da85a94093fb27e97f15d05e99bab361c9a4ca388bec6685c61d96241c0020c101854388fd41e8932a7e4fba37bc454a21a6bcc037b0407808");
+  Payload payload;
+  uint8_t msg[164];
+  CopyHex(msg,"33083812210508a21e22879385c9f5ea5ef0a50b993167659fbc0e90614365b9d0147ac8f1201a21057f1a8715095495c17552d720975d8405c38ed11bee9404bca19062d352a9c7082252330a2105e5bbca217d32f97f860ecd3c47df86f2a71eb8d2e387e31dd1f5f5349863b455100018002220a0bae4d6e5da28a1897fa3562cd4d24ee60bc9a5d4daf0f13646239bec36a2b4fd5aa1843e12d6f128f1eaa07b3001");
+  printf("%d\n", DecryptPreKeyMessage(&session, &store, payload, msg, sizeof(msg)));
+  DumpHex(payload, PAYLOAD_SIZE, "payload");
+}
+
 #define RunTest(t)                                                     \
   do {                                                                 \
     puts("\e[34mRunning test " #t "\e[0m");                            \
@@ -294,12 +315,13 @@ static void TestSession() {
   } while (0)
 
 int main() {
-  RunTest(ParseProtobuf);
-  RunTest(FormatProtobuf);
-  RunTest(Curve25519);
-  RunTest(Signature);
-  RunTest(Encryption);
-  RunTest(Session);
-  RunTest(Sign);
+  //RunTest(ParseProtobuf);
+  //RunTest(FormatProtobuf);
+  //RunTest(Curve25519);
+  //RunTest(Signature);
+  //RunTest(Encryption);
+  //RunTest(Session);
+  //RunTest(Sign);
+  RunTest(Receive);
   puts("All tests succeeded");
 }

@@ -43,8 +43,8 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
       return NULL;
     *v |= (*s & 0x7f) << i;
     i += 7;
-    if (i > 32 - 7) // will overflow
-      return NULL;
+    //if (i > 32 - 7) // will overflow
+    //  return NULL;
   } while (*s++ & 0x80);
   return s;
 }
@@ -111,12 +111,21 @@ static uint8_t *FormatVarInt(uint8_t d[static 6], int id, uint32_t v) {
 }
 
 // sizeof(d) >= 2+n
-static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
+/*static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
   assert(id < 16 && n < 128);
   *d++ = (id << 3) | PB_LEN;
   *d++ = n;
   memcpy(d, b, n);
   return d + n;
+}*/
+
+static uint8_t *FormatKey(uint8_t *d, int id, Key k) {
+  assert(id < 16);
+  *d++ = (id << 3) | PB_LEN;
+  *d++ = 33;
+  *d++ = 0x05;
+  memcpy(d, k, 32);
+  return d + 32;
 }
 
 // PreKeyWhisperMessage without message (it should be appended right after this call)
@@ -128,8 +137,8 @@ static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_i
   p = FormatVarInt(p, 5, 0xcc); // TODO: registration id
   p = FormatVarInt(p, 1, pk_id);
   p = FormatVarInt(p, 6, spk_id);
-  p = FormatBytes(p, 3, ik, sizeof(Key));
-  p = FormatBytes(p, 2, ek, sizeof(Key));
+  p = FormatKey(p, 3, ik);
+  p = FormatKey(p, 2, ek);
   *p++ = (4 << 3) | PB_LEN;
   *p++ = msgsz;
   return p - d;
@@ -140,7 +149,7 @@ static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_i
 static size_t FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, Key dhs) {
   uint8_t *p = d;
   *p++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
-  p = FormatBytes(p, 1, dhs, sizeof(Key));
+  p = FormatKey(p, 1, dhs);
   p = FormatVarInt(p, 2, n);
   return FormatVarInt(p, 3, pn) - d;
 }
@@ -186,7 +195,7 @@ static void GenerateRegistrationId(uint32_t *id) {
   *id = (*id % 16380) + 1;
 }
 
-static void SerializeKey(SerializedKey k, Key pub) {
+void SerializeKey(SerializedKey k, Key pub) {
   k[0] = 5;
   memcpy(k + 1, pub, sizeof(SerializedKey) - 1);
 }
@@ -226,9 +235,17 @@ static bool VerifySignature(CurveSignature sig, Key sk,
 void SetupStore(struct Store *store) {
   memset(store, 0, sizeof(struct Store));
   GenerateIdentityKeyPair(&store->identity);
+  DumpHex(store->identity.pub, 32, "ikpub");
+  DumpHex(store->identity.prv, 32, "ikprv");
   GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
+  DumpHex(store->cursignedprekey.kp.pub, 32, "spkpub");
+  DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
+  DumpHex(store->cursignedprekey.sig, 64, "spksig");
   for (int i = 0; i < NUMPREKEYS; i++) {
     GeneratePreKey(store->prekeys+i, i+1);
+    printf("id %d\n", i+1);
+    DumpHex(store->prekeys[i].kp.pub, 32, "pkpub");
+    DumpHex(store->prekeys[i].kp.prv, 32, "pkprv");
   }
 }
 
@@ -370,6 +387,7 @@ static int GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const 
 // state.Nr = 0
 // state.PN = 0
 // state.MKSKIPPED = {}
+// TODO: when we are sending a prekeymessage a second time, we should not regenerate the dhs (ek), so we must not call RatchetInitAlice again...
 static int RatchetInitAlice(struct State *state, Key sk, Key ekb) {
   memset(state, 0, sizeof(struct State));
   GenerateKeyPair(&state->dhs);
@@ -504,21 +522,22 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
   if (msgn < 9 || msg[0] != ((3 << 4) | 3))
     return OMEMO_ECORRUPT;
   struct ProtobufField fields[5] = {
-    [1] = {PB_REQUIRED | PB_LEN, 32}, // ek
+    [1] = {PB_REQUIRED | PB_LEN, 33}, // ek
     [2] = {PB_REQUIRED | PB_UINT32}, // n
     [3] = {PB_REQUIRED | PB_UINT32}, // pn
     [4] = {PB_REQUIRED | PB_LEN, PAYLOAD_SIZE}, // ciphertext
   };
+  DumpHex(msg+1, msgn-9, "PB");
 
   if ((r = ParseProtobuf(msg+1, msgn-9, fields, 5)))
     return r;
   // these checks should already be handled by ParseProtobuf, just to make sure...
-  assert(fields[1].v == 32);
+  assert(fields[1].v == 33);
   assert(fields[4].v == PAYLOAD_SIZE);
 
   uint32_t headern = fields[2].v;
   uint32_t headerpn = fields[3].v;
-  const uint8_t *headerdh = fields[1].p;
+  const uint8_t *headerdh = fields[1].p+1;
 
   bool shouldstep = !!memcmp(session->state.dhr, headerdh, 32);
 
@@ -593,14 +612,14 @@ static int DecryptPreKeyMessageImpl(struct Session *session, struct Store *store
     [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
     [1] = {PB_REQUIRED | PB_UINT32}, // prekeyid
     [6] = {PB_REQUIRED | PB_UINT32}, // signedprekeyid
-    [2] = {PB_REQUIRED | PB_LEN, 32}, // basekey/ek
-    [3] = {PB_REQUIRED | PB_LEN, 32}, // identitykey/ik
+    [2] = {PB_REQUIRED | PB_LEN, 33}, // basekey/ek
+    [3] = {PB_REQUIRED | PB_LEN, 33}, // identitykey/ik
     [4] = {PB_REQUIRED | PB_LEN}, // message
   };
   if ((r = ParseProtobuf(p, e-p, fields, 7)))
     return r;
-  assert(fields[2].v == 32);
-  assert(fields[3].v == 32);
+  assert(fields[2].v == 33);
+  assert(fields[3].v == 33);
   // later remove this prekey
   struct PreKey *pk = FindPreKey(store, fields[1].v);
   if (!pk)
@@ -608,11 +627,10 @@ static int DecryptPreKeyMessageImpl(struct Session *session, struct Store *store
   struct SignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
   if (!spk)
     return OMEMO_ECORRUPT;
-
-  memcpy(session->remoteidentity, fields[3].p, sizeof(Key));
+  memcpy(session->remoteidentity, fields[3].p+1, sizeof(Key));
 
   Key sk;
-  if ((r = GetSharedSecret(sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p, fields[2].p, fields[2].p)))
+  if ((r = GetSharedSecret(sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1)))
     return r;
   RatchetInitBob(&session->state, sk, &pk->kp);
 
