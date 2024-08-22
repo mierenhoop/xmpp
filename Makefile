@@ -17,8 +17,8 @@ o/test: o/xmpp.o test/cacert.inc
 o/test-omemo: test/omemo.c omemo.c c25519.c | o curve25519.c
 	$(CC) -o o/test-omemo curve25519.c c25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
 
-o/im: o/xmpp.o examples/im.c test/cacert.inc
-	$(CC) -o o/im examples/im.c yxml.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
+o/im: o/xmpp.o examples/im.c test/cacert.inc omemo.c c25519.c
+	$(CC) -o o/im examples/im.c yxml.c omemo.c c25519.c curve25519.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
 
 LIBOMEMO_DIR=o/libomemo-c-0.5.0
 

@@ -46,7 +46,7 @@ static char *DecodeBase64(char *d, char *e, const char *s, size_t n) {
 // reasonable to compare XML strings using this, however we expect that
 // there are no useless entities or CDATA.
 // Returns true if matches, be careful it's the opposite of strcmp.
-static bool StrictStrEqual(const char *c, const char *u, size_t n) {
+bool StrictStrEqual(const char *c, const char *u, size_t n) {
   while (--n) {
     if (!c || *c++ != *u++)
       return false;

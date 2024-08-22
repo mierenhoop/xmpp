@@ -284,6 +284,8 @@ struct xmppClient {
   bool cansmackresume;
 };
 
+bool StrictStrEqual(const char *c, const char *u, size_t n);
+
 // Only call when XMPP_ITER_ACK
 #define xmppIsSynchronized(c) ((c)->stanza.type == XMPP_STANZA_ACKANSWER && (c)->stanza.ack == (c)->actualsent)
 
