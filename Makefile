@@ -58,8 +58,14 @@ test: o/test
 test-omemo: o/test-omemo
 	LD_LIBRARY_PATH=/usr/local/lib ./o/test-omemo
 
+define IM_INPUT
+/login admin@localhost
+adminpass
+endef
+export IM_INPUT
+
 runim: o/im
-	LD_LIBRARY_PATH=/usr/local/lib rlwrap ./o/im
+	LD_LIBRARY_PATH=/usr/local/lib rlwrap -P "$$IM_INPUT" ./o/im
 
 start-prosody: test/localhost.crt
 	docker-compose -f test/docker-compose.yml up -d --build

@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/poll.h>
+#include <sys/random.h>
 #include <stdbool.h>
 
 #include "xmpp.h"
@@ -26,6 +27,8 @@
 #define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
 #endif
 
+typedef char Uuidv4[36+1];
+
 static char *logdata;
 static size_t logdatan;
 static FILE *log;
@@ -33,6 +36,40 @@ static struct xmppClient client;
 static char linebuf[1000];
 static char *line;
 static size_t linen;
+static struct Store store;
+static int deviceid;
+static struct {
+  Uuidv4 subdevicelist;
+} pending;
+
+#define IsPending(field) (pending.field[0] != 0)
+
+void SystemRandom(void *d, size_t n) {
+  assert(getrandom(d, n, 0) == n);
+}
+
+// https://github.com/rxi/uuid4/blob/master/src/uuid4.c
+static void GenerateUuidv4(Uuidv4 dst) {
+  static const char *template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+  static const char *chars = "0123456789abcdef";
+  uint8_t rnd[16];
+  const char *p;
+  int i, n;
+  SystemRandom(rnd, 16);
+  p = template;
+  i = 0;
+  while (*p) {
+    n = rnd[i >> 1];
+    n = (i & 1) ? (n >> 4) : (n & 0xf);
+    switch (*p) {
+      case 'x'  : *dst = chars[n];              i++;  break;
+      case 'y'  : *dst = chars[(n & 0x3) + 8];  i++;  break;
+      default   : *dst = *p;
+    }
+    dst++, p++;
+  }
+  *dst = '\0';
+}
 
 static void Die() {
   free(line);
@@ -167,12 +204,115 @@ static void PrintMessage(struct xmppStanza *st) {
   fflush(stdout);
 }
 
+// This function might be useful for xmpp.c
+static bool HasExactAttribute(struct xmppParser *parser, const char *k, const char *v) {
+  struct xmppXmlSlice attr;
+  while (xmppParseAttribute(parser, &attr)) {
+    if (!strcmp(k, parser->x.attr) && StrictStrEqual(v, attr.p, attr.rawn))
+      return true;
+  }
+  return false;
+}
+
+/*static void AnnounceOmemoDevice() {
+  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='admin@localhost' type='get' id='pubsub%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1' /></pubsub></iq>", rand());
+  xmppFormatStanza(
+      &client, "<iq xmlns='jabber:client' type='set' id='announce%d'><pubsub "
+               "xmlns='http://jabber.org/protocol/pubsub'><publish "
+               "node='eu.siacs.conversations.axolotl.devicelist'><item "
+               "id='current'><list "
+               "xmlns='eu.siacs.conversations.axolotl'><device "
+               "id='%d' /></list></item></publish></pubsub></iq>", rand(), deviceid);
+}*/
+
+static void ReAddDevices(struct xmppParser *parser) {
+  bool found = false;
+  struct xmppXmlSlice attr;
+  while (xmppParseElement(parser)) {
+    while (xmppParseAttribute(parser, &attr)) {
+      if (!strcmp(parser->x.attr, "id")) {
+        char *e;
+        long id = strtol(attr.p, &e, 10);
+        if (e > attr.p && id > 0) {
+          if (id == deviceid)
+            found = true;
+          FormatXml(&client.builder, "<device id='%d'/>", id);
+        }
+      }
+    }
+    xmppParseUnknown(parser);
+  }
+  if (!found)
+    FormatXml(&client.builder, "<device id='%d'/>", deviceid);
+}
+
+static void ParseDeviceList(struct xmppParser *parser) {
+  if (xmppParseElement(parser) && !strcmp(parser->x.elem, "item")) {
+    if (xmppParseElement(parser) && !strcmp(parser->x.elem, "list")) {
+      FormatXml(
+          &client.builder,
+          "<iq xmlns='jabber:client' type='set' "
+          "id='announce%d'><pubsub "
+          "xmlns='http://jabber.org/protocol/pubsub'><publish "
+          "node='eu.siacs.conversations.axolotl.devicelist'><item "
+          "id='current'><list xmlns='eu.siacs.conversations.axolotl'>",
+          rand(), deviceid);
+      ReAddDevices(parser);
+      xmppFormatStanza(&client,
+                       "</list></item></publish></pubsub></iq>", rand(),
+                       deviceid);
+    }
+  }
+}
+
 static void ParseSpecificStanza(struct xmppStanza *st) {
   struct xmppParser parser;
   memset(&parser, 0, sizeof(struct xmppParser));
+  yxml_init(&parser.x, parser.xbuf, sizeof(parser.xbuf));
+  fflush(stdout);
   parser.p = st->raw.p;
   parser.c = parser.n = st->raw.rawn;
   assert(!setjmp(parser.jb));
+  if (xmppParseElement(&parser)) {
+    if (xmppParseElement(&parser)) {
+      if (!strcmp(parser.x.elem, "pubsub")) {
+        if (xmppParseElement(&parser) &&
+            !strcmp(parser.x.elem, "items") &&
+            HasExactAttribute(
+                &parser, "node",
+                "eu.siacs.conversations.axolotl.devicelist"))
+          ParseDeviceList(&parser);
+      }
+    }
+  }
+}
+
+static void SubscribeDeviceList() {
+  GenerateUuidv4(pending.subdevicelist);
+  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='admin@localhost' type='get' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1'/></pubsub></iq>", pending.subdevicelist);
+}
+
+static void AnnounceOmemoBundle() {
+  FormatXml(
+      &client.builder,
+      "<iq type='set' id='announce%d'><pubsub "
+      "xmlns='http://jabber.org/protocol/pubsub'><publish "
+      "node='eu.siacs.conversations.axolotl.bundles:%d'><item "
+      "id='current'><bundle "
+      "xmlns='eu.siacs.conversations.axolotl'><signedPreKeyPublic "
+      "signedPreKeyId='%d'>%b</"
+      "signedPreKeyPublic><signedPreKeySignature>%b</"
+      "signedPreKeySignature><identityKey>%b</"
+      "identityKey><prekeys>", rand(), deviceid, store.cursignedprekey.id,
+      32, store.cursignedprekey.kp.pub, 64, store.cursignedprekey.sig, 32, store.identity.pub);
+  for (int i = 0; i < NUMPREKEYS; i++) {
+    FormatXml(&client.builder,
+              "<preKeyPublic preKeyId='%d'>%b</preKeyPublic>", store.prekeys[i].id,
+              32, store.prekeys[i].kp.pub);
+  }
+
+  xmppFormatStanza(&client, "</prekeys></bundle></"
+                            "item></publish></pubsub></iq>");
 }
 
 // returns true if stream is done for
@@ -189,6 +329,8 @@ static bool IterateClient() {
       Log("Polling...");
       if (!sent) {
         xmppFormatStanza(&client, "<presence/>");
+        //AnnounceOmemoBundle();
+        SubscribeDeviceList();
         sent = 1;
         continue;
       }
@@ -222,6 +364,7 @@ static bool IterateClient() {
       if (client.stanza.type == XMPP_STANZA_MESSAGE && client.stanza.message.body.p) {
         PrintMessage(&client.stanza);
       }
+      ParseSpecificStanza(&client.stanza);
       break;
     case XMPP_ITER_OK:
     default:
@@ -311,6 +454,8 @@ bool SystemPoll() {
 #ifdef IM_NATIVE
 
 int main() {
+  deviceid = 1024;
+  SetupStore(&store);
   RunIm();
 }
 

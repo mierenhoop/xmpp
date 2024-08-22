@@ -1135,7 +1135,7 @@ int xmppIterate(struct xmppClient *c) {
        st->type == XMPP_STANZA_PRESENCE))
       c->actualrecv++;
   switch (st->type) {
-  case XMPP_STANZA_PING:
+  case XMPP_STANZA_PING: // TODO: deprecate ping
     if (!(c->opts & XMPP_OPT_HIDEPRESENCE))
       xmppFormatStanza(c, "<iq to='%x' id='%x' type='result'/>", st->from, st->id);
     else

@@ -300,6 +300,7 @@ static inline int xmppIncrementAck(struct xmppClient *c, int r) {
 
 #define xmppFormatStanza(c, fmt, ...) xmppIncrementAck(c, FormatXml(&(c)->builder, fmt "[<r xmlns='urn:xmpp:sm:3'/>]" __VA_OPT__(,)  __VA_ARGS__, ((c)->features & XMPP_STREAMFEATURE_SMACKS)))
 
+// TODO: rename to something like xmppAppendXml, also have a function that will revert the stanza
 int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...);
 
 struct StaticData {
