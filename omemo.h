@@ -35,8 +35,7 @@ struct SignedPreKey {
 struct MessageKey {
   uint32_t nr;
   Key dh;
-  Key ck, mk; // encryption key and mac key
-  uint8_t iv[16];
+  Key mk;
 };
 
 // p is a pointer to the array of message keys with capacity c.

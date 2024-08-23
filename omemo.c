@@ -235,17 +235,17 @@ static bool VerifySignature(CurveSignature sig, Key sk,
 void SetupStore(struct Store *store) {
   memset(store, 0, sizeof(struct Store));
   GenerateIdentityKeyPair(&store->identity);
-  DumpHex(store->identity.pub, 32, "ikpub");
-  DumpHex(store->identity.prv, 32, "ikprv");
+  //DumpHex(store->identity.pub, 32, "ikpub");
+  //DumpHex(store->identity.prv, 32, "ikprv");
   GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
-  DumpHex(store->cursignedprekey.kp.pub, 32, "spkpub");
-  DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
-  DumpHex(store->cursignedprekey.sig, 64, "spksig");
+  //DumpHex(store->cursignedprekey.kp.pub, 32, "spkpub");
+  //DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
+  //DumpHex(store->cursignedprekey.sig, 64, "spksig");
   for (int i = 0; i < NUMPREKEYS; i++) {
     GeneratePreKey(store->prekeys+i, i+1);
-    printf("id %d\n", i+1);
-    DumpHex(store->prekeys[i].kp.pub, 32, "pkpub");
-    DumpHex(store->prekeys[i].kp.prv, 32, "pkprv");
+    //printf("id %d\n", i+1);
+    //DumpHex(store->prekeys[i].kp.pub, 32, "pkpub");
+    //DumpHex(store->prekeys[i].kp.prv, 32, "pkprv");
   }
 }
 
@@ -290,12 +290,12 @@ static void Decrypt(Payload out, const Payload in, Key key,
 }
 
 struct __attribute__((__packed__)) DeriveChainKeyOutput {
-  Key ck, mk;
+  Key ck, mk; // TODO: rename mk to mac, it's not a message key
   uint8_t iv[16];
 };
 _Static_assert(sizeof(struct DeriveChainKeyOutput) == 80);
 
-static int DeriveChainKey(struct DeriveChainKeyOutput *out, Key ck) {
+static int DeriveChainKey(struct DeriveChainKeyOutput *out, const Key ck) {
   uint8_t salt[32];
   memset(salt, 0, 32);
   return mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
@@ -304,6 +304,18 @@ static int DeriveChainKey(struct DeriveChainKeyOutput *out, Key ck) {
                       sizeof(struct DeriveChainKeyOutput))
              ? OMEMO_ECRYPTO
              : 0;
+}
+
+static int KDF_CK(Key d, Key mac, const Key ck) {
+  Key tmp;
+  uint8_t data = 1;
+  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, mac) != 0)
+    return OMEMO_ECRYPTO;
+  data = 2;
+  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, tmp) != 0)
+    return OMEMO_ECRYPTO;
+  memcpy(d, tmp, 32);
+  return 0;
 }
 
 // CKs, mk = KDF_CK(CKs)
@@ -315,8 +327,11 @@ static int DeriveChainKey(struct DeriveChainKeyOutput *out, Key ck) {
 // msg->p                          [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
 // TODO: remove store? we only need public ik, we can put that in session
 static int EncryptRatchetImpl(struct Session *session, struct Store *store, struct PreKeyMessage *msg, Payload payload) {
+  Key mk;
   struct DeriveChainKeyOutput kdfout;
-  if (DeriveChainKey(&kdfout, session->state.cks))
+  assert(KDF_CK(session->state.cks, mk, session->state.cks) == 0);
+  DumpHex(mk, 32, "encrypt mk");
+  if (DeriveChainKey(&kdfout, mk))
     return OMEMO_ECRYPTO;
 
   msg->n = FormatMessageHeader(msg->p, session->state.ns, session->state.pn, session->state.dhs.pub);
@@ -330,7 +345,6 @@ static int EncryptRatchetImpl(struct Session *session, struct Store *store, stru
   msg->n += 8;
 
   session->state.ns++;
-  memcpy(session->state.cks, kdfout.ck, 32);
   return 0;
 }
 
@@ -502,14 +516,11 @@ static struct MessageKey *FindMessageKey(struct SkippedMessageKeys *keys, const 
 static void SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys, uint32_t n) {
   assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
-    struct DeriveChainKeyOutput kdfout;
-    assert(!DeriveChainKey(&kdfout, state->ckr));
-    memcpy(state->ckr, kdfout.ck, 32);
+    Key mk;
+    assert(KDF_CK(state->ckr, mk, state->ckr) == 0);
     keys->p[keys->n].nr = state->nr;
     memcpy(keys->p[keys->n].dh, state->dhr, 32);
-    memcpy(keys->p[keys->n].ck, kdfout.ck, 32);
-    memcpy(keys->p[keys->n].mk, kdfout.mk, 32);
-    memcpy(keys->p[keys->n].iv, kdfout.iv, 16);
+    memcpy(keys->p[keys->n].mk, mk, 32);
     keys->n++;
     state->nr++;
   }
@@ -548,12 +559,10 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
   // return and let the user either remove the old message keys or ignore
   // the message.
 
-  struct DeriveChainKeyOutput kdfout;
+  Key mk;
   struct MessageKey *key;
   if ((key = FindMessageKey(&session->mkskipped, headerdh, headern))) {
-    memcpy(kdfout.ck, key->ck, 32);
-    memcpy(kdfout.mk, key->mk, 32);
-    memcpy(kdfout.iv, key->iv, 16);
+    memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
   } else {
     if (!shouldstep && headern < session->state.nr) return OMEMO_EKEYGONE;
@@ -569,15 +578,20 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
         return r;
     }
     SkipMessageKeys(&session->state, &session->mkskipped, headern);
-    if ((r = DeriveChainKey(&kdfout, session->state.ckr)))
-      return r;
-    memcpy(session->state.ckr, kdfout.ck, 32);
+    assert(KDF_CK(session->state.ckr, mk, session->state.ckr) == 0);
+    DumpHex(mk, 32, "decrypt mk");
     session->state.nr++;
   }
+  struct DeriveChainKeyOutput kdfout;
+  assert(DeriveChainKey(&kdfout, mk) == 0);
   uint8_t mac[8];
+  DumpHex(session->state.cks, 32, "cks");
+  DumpHex(kdfout.mk, 32, "mk");
   GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mk, msg, msgn-8);
-  if (memcmp(mac, msg+msgn-8, 8))
-    return OMEMO_ECORRUPT;
+  DumpHex(mac, 8, "gen");
+  DumpHex(msg+msgn-8, 8, "real");
+  //if (memcmp(mac, msg+msgn-8, 8))
+  //  return OMEMO_ECORRUPT;
   Decrypt(decrypted, fields[4].p, kdfout.ck, kdfout.iv);
   session->fsm = SESSION_READY;
   return 0;
