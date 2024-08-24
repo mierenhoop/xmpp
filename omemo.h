@@ -102,7 +102,7 @@ struct Session {
 void SystemRandom(void *d, size_t n);
 // void SystemRandom(void *d, size_t n) { esp_fill_random(d, n); }
 
-void SerializeKey(SerializedKey k, Key pub);
+void SerializeKey(SerializedKey k, const Key pub);
 
 struct Bundle {
   CurveSignature spks;

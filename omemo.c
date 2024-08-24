@@ -195,7 +195,7 @@ static void GenerateRegistrationId(uint32_t *id) {
   *id = (*id % 16380) + 1;
 }
 
-void SerializeKey(SerializedKey k, Key pub) {
+void SerializeKey(SerializedKey k, const Key pub) {
   k[0] = 5;
   memcpy(k + 1, pub, sizeof(SerializedKey) - 1);
 }
@@ -214,6 +214,7 @@ static void CalculateCurveSignature(CurveSignature cs, Key signprv, uint8_t *msg
 static void CalculateCurveAgreement(uint8_t d[static 32],
                                     const Key pub,
                                     Key prv) {
+
   curve25519_donna(d, prv, pub);
 }
 
@@ -257,12 +258,13 @@ static void SetupSession(struct Session *session) {
 }
 
 // AD = Encode(IKA) || Encode(IKB)
-static void GetAd(uint8_t ad[66], Key ika, Key ikb) {
+static void GetAd(uint8_t ad[66], const Key ika, const Key ikb) {
   SerializeKey(ad, ika);
   SerializeKey(ad + 33, ikb);
 }
 
-static int GetMac(uint8_t d[static 8], Key ika, Key ikb, Key mk, const uint8_t *msg, size_t msgn) {
+static int GetMac(uint8_t d[static 8], const Key ika, const Key ikb, const Key mk, const uint8_t *msg, size_t msgn) {
+  assert(msgn <= FULLMSG_MAXSIZE);
   uint8_t macinput[66+FULLMSG_MAXSIZE], mac[32];
   GetAd(macinput, ika, ikb);
   memcpy(macinput+66, msg, msgn);
@@ -359,7 +361,7 @@ static int EncryptRatchet(struct Session *session, struct Store *store, struct P
   return r;
 }
 
-// RK, CKs = KDF_RK(SK, DH(DHs, DHr))
+// RK, ck = KDF_RK(RK, DH(DHs, DHr))
 static int DeriveRootKey(struct State *state, Key ck) {
   uint8_t secret[32], masterkey[64];
   CalculateCurveAgreement(secret, state->dhr, state->dhs.prv);
@@ -585,13 +587,13 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
   struct DeriveChainKeyOutput kdfout;
   assert(DeriveChainKey(&kdfout, mk) == 0);
   uint8_t mac[8];
-  DumpHex(session->state.cks, 32, "cks");
-  DumpHex(kdfout.mk, 32, "mk");
-  GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mk, msg, msgn-8);
+  DumpHex(session->remoteidentity, 32, "remote ik");
+  DumpHex(store->identity.pub, 32, "our ik");
+  assert(GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mk, msg, msgn-8) == 0);
   DumpHex(mac, 8, "gen");
   DumpHex(msg+msgn-8, 8, "real");
-  //if (memcmp(mac, msg+msgn-8, 8))
-  //  return OMEMO_ECORRUPT;
+  if (memcmp(mac, msg+msgn-8, 8))
+    return OMEMO_ECORRUPT;
   Decrypt(decrypted, fields[4].p, kdfout.ck, kdfout.iv);
   session->fsm = SESSION_READY;
   return 0;
