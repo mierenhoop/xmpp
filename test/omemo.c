@@ -466,7 +466,7 @@ int main() {
   RunTest(Encryption);
   RunTest(Session);
   RunTest(Sign);
-  //RunTest(Receive);
+  RunTest(Receive);
   RunTest(DeriveChainKey);
   RunTest(Hkdf);
   RunTest(Ratchet);

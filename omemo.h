@@ -113,4 +113,6 @@ struct Bundle {
 
 void SetupStore(struct Store *store);
 
+int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload payload, uint8_t *msg, size_t msgn);
+
 #endif

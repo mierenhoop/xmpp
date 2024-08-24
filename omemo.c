@@ -236,17 +236,17 @@ static bool VerifySignature(CurveSignature sig, Key sk,
 void SetupStore(struct Store *store) {
   memset(store, 0, sizeof(struct Store));
   GenerateIdentityKeyPair(&store->identity);
-  //DumpHex(store->identity.pub, 32, "ikpub");
-  //DumpHex(store->identity.prv, 32, "ikprv");
+  DumpHex(store->identity.pub, 32, "ikpub");
+  DumpHex(store->identity.prv, 32, "ikprv");
   GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
-  //DumpHex(store->cursignedprekey.kp.pub, 32, "spkpub");
-  //DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
-  //DumpHex(store->cursignedprekey.sig, 64, "spksig");
+  DumpHex(store->cursignedprekey.kp.pub, 32, "spkpub");
+  DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
+  DumpHex(store->cursignedprekey.sig, 64, "spksig");
   for (int i = 0; i < NUMPREKEYS; i++) {
     GeneratePreKey(store->prekeys+i, i+1);
-    //printf("id %d\n", i+1);
-    //DumpHex(store->prekeys[i].kp.pub, 32, "pkpub");
-    //DumpHex(store->prekeys[i].kp.prv, 32, "pkprv");
+    printf("id %d\n", i+1);
+    DumpHex(store->prekeys[i].kp.pub, 32, "pkpub");
+    DumpHex(store->prekeys[i].kp.prv, 32, "pkprv");
   }
 }
 
@@ -308,6 +308,7 @@ static int DeriveChainKey(struct DeriveChainKeyOutput *out, const Key ck) {
              : 0;
 }
 
+// TODO: rename to GetBaseMaterials
 static int KDF_CK(Key d, Key mac, const Key ck) {
   Key tmp;
   uint8_t data = 1;
@@ -392,6 +393,11 @@ static int GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const 
   memset(salt, 0, 32);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) != 0)
     return OMEMO_ECRYPTO;
+  DumpHex(sk, 32, "shared secret");
+  uint8_t full[64];
+  if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, full, 64) != 0)
+    return OMEMO_ECRYPTO;
+  DumpHex(full+32, 32, "full");
   return 0;
 }
 
@@ -434,7 +440,7 @@ static int EncryptFirstMessage(struct Session *session, struct Store *store, str
   Key sk;
   if ((r = GetSharedSecret(sk, false, store->identity.prv, eka.prv, eka.prv, bundle->ik, bundle->spk, bundle->pk)))
     return r;
-  RatchetInitAlice(&session->state, sk, bundle->pk);
+  RatchetInitAlice(&session->state, sk, bundle->spk);
   if ((r = EncryptRatchet(session, store, msg, payload)))
     return r;
   if (session->fsm != SESSION_READY) {
@@ -495,9 +501,13 @@ static int DHRatchet(struct State *state, const Key dh) {
   memcpy(state->dhr, dh, 32);
   if ((r = DeriveRootKey(state, state->ckr)))
     return r;
+  DumpHex(state->rk, 32, "new rootkey");
+  DumpHex(state->ckr, 32, "new ckr");
   GenerateKeyPair(&state->dhs);
   if ((r = DeriveRootKey(state, state->cks)))
     return r;
+  DumpHex(state->rk, 32, "new rootkey");
+  DumpHex(state->cks, 32, "new cks");
   return 0;
 }
 
@@ -552,6 +562,8 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
   uint32_t headerpn = fields[3].v;
   const uint8_t *headerdh = fields[1].p+1;
 
+  DumpHex(headerdh, 32, "headerdh");
+
   bool shouldstep = !!memcmp(session->state.dhr, headerdh, 32);
 
   // We first check for maxskip, if that does not pass we should not
@@ -581,17 +593,21 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
     }
     SkipMessageKeys(&session->state, &session->mkskipped, headern);
     assert(KDF_CK(session->state.ckr, mk, session->state.ckr) == 0);
+    DumpHex(session->state.ckr, 32, "new ckr");
     DumpHex(mk, 32, "decrypt mk");
     session->state.nr++;
   }
   struct DeriveChainKeyOutput kdfout;
   assert(DeriveChainKey(&kdfout, mk) == 0);
+  DumpHex(kdfout.ck, 32, "derived ck");
+  DumpHex(kdfout.mk, 32, "derived mk (mackey)");
+  DumpHex(kdfout.iv, 16, "derived iv");
   uint8_t mac[8];
   DumpHex(session->remoteidentity, 32, "remote ik");
   DumpHex(store->identity.pub, 32, "our ik");
   assert(GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mk, msg, msgn-8) == 0);
-  DumpHex(mac, 8, "gen");
-  DumpHex(msg+msgn-8, 8, "real");
+  DumpHex(mac, 8, "genmac");
+  DumpHex(msg+msgn-8, 8, "realmac");
   if (memcmp(mac, msg+msgn-8, 8))
     return OMEMO_ECORRUPT;
   Decrypt(decrypted, fields[4].p, kdfout.ck, kdfout.iv);
@@ -644,17 +660,24 @@ static int DecryptPreKeyMessageImpl(struct Session *session, struct Store *store
   if (!spk)
     return OMEMO_ECORRUPT;
   memcpy(session->remoteidentity, fields[3].p+1, sizeof(Key));
+  printf("pkid %d\n", fields[1].v);
+  DumpHex(pk->kp.prv, 32, "pkprv");
+  DumpHex(pk->kp.pub, 32, "pkpub");
+
+  printf("spkid %d\n", fields[6].v);
+  DumpHex(spk->kp.prv, 32, "spkprv");
+  DumpHex(spk->kp.pub, 32, "spkpub");
 
   Key sk;
   if ((r = GetSharedSecret(sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1)))
     return r;
-  RatchetInitBob(&session->state, sk, &pk->kp);
+  RatchetInitBob(&session->state, sk, &spk->kp);
 
   session->fsm = SESSION_READY;
   return DecryptMessage(session, store, payload, fields[4].p, fields[4].v);
 }
 
-static int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload payload, uint8_t *msg, size_t msgn) {
+int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload payload, uint8_t *msg, size_t msgn) {
   SetupSession(session);
   int r;
   if ((r = DecryptPreKeyMessageImpl(session, store, payload, msg, msg+msgn))) {

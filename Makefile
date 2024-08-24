@@ -73,6 +73,10 @@ start-prosody: test/localhost.crt
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
+# TODO: remove old configs to generate new key stuff
+launch-profanity:
+	(printf "/connect user@localhost\nuserpass\n"; sleep 1; printf "/tls allow\n/omemo trustmode blind\n/omemo policy always\n"; cat) | profanity
+
 .PHONY: start-prosody stop-prosody test test-omemo runim clean full-clean
 
 clean:

@@ -294,6 +294,18 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
         //        "eu.siacs.conversations.axolotl.devicelist"))
         //  ParseDeviceList(&parser);
       }
+      if (st->type == XMPP_STANZA_MESSAGE && !strcmp(parser.x.elem, "encrypted")) {
+        assert(xmppParseElement(&parser));
+        assert(xmppParseElement(&parser));
+        struct xmppXmlSlice msg;
+        xmppParseContent(&parser, &msg);
+        uint8_t *payload = malloc(msg.n);
+        size_t olen = 0;
+        assert(!mbedtls_base64_decode(payload, msg.n, &olen, msg.p, msg.rawn));
+        struct Session session;
+        Payload decrypted;
+        Log("decrypt out %d", DecryptPreKeyMessage(&session, &store, decrypted, payload, olen));
+      }
     }
   }
 }
