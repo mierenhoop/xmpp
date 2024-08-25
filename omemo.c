@@ -279,7 +279,7 @@ static void Encrypt(Payload out, const Payload in, Key key,
   mbedtls_aes_context aes;
   // These functions won't fail, so we can skip error checking.
   assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, PAYLOAD_SIZE,
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 32,
                                iv, in, out) == 0);
 }
 
@@ -287,8 +287,9 @@ static void Decrypt(Payload out, const Payload in, Key key,
                     uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
   assert(mbedtls_aes_setkey_dec(&aes, key, 256) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, PAYLOAD_SIZE,
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, 32,
                                iv, in, out) == 0);
+  DumpHex(out, PAYLOAD_SIZE, "decrypted");
 }
 
 struct __attribute__((__packed__)) DeriveChainKeyOutput {
@@ -339,9 +340,10 @@ static int EncryptRatchetImpl(struct Session *session, struct Store *store, stru
 
   msg->n = FormatMessageHeader(msg->p, session->state.ns, session->state.pn, session->state.dhs.pub);
   msg->p[msg->n++] = (4 << 3) | PB_LEN;
-  msg->p[msg->n++] = PAYLOAD_SIZE;
+  msg->p[msg->n++] = PAYLOAD_MAXPADDEDSIZE;
   Encrypt(msg->p+msg->n, payload, kdfout.ck, kdfout.iv);
-  msg->n += PAYLOAD_SIZE;
+  memset(msg->p+msg->n+32, 0x10, 0x10);
+  msg->n += PAYLOAD_MAXPADDEDSIZE;
 
   if (GetMac(msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mk, msg->p, msg->n))
     return -1;
@@ -548,15 +550,21 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
     [1] = {PB_REQUIRED | PB_LEN, 33}, // ek
     [2] = {PB_REQUIRED | PB_UINT32}, // n
     [3] = {PB_REQUIRED | PB_UINT32}, // pn
-    [4] = {PB_REQUIRED | PB_LEN, PAYLOAD_SIZE}, // ciphertext
+    [4] = {PB_REQUIRED | PB_LEN}, // ciphertext
   };
   DumpHex(msg+1, msgn-9, "PB");
 
   if ((r = ParseProtobuf(msg+1, msgn-9, fields, 5)))
     return r;
+  // We accept non-padded or correctly PKCS#7 padded.
+  // TODO: when v == 32, last 16 bytes are padded too, so the payload is only 16 bytes?
+  if (!(fields[4].v == 32 ||
+        (fields[4].v == 48 &&
+         !memcmp(fields[4].p + 32,
+                 "\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10", 0x10))))
+    return OMEMO_ECORRUPT;
   // these checks should already be handled by ParseProtobuf, just to make sure...
   assert(fields[1].v == 33);
-  assert(fields[4].v == PAYLOAD_SIZE);
 
   uint32_t headern = fields[2].v;
   uint32_t headerpn = fields[3].v;

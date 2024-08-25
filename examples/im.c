@@ -285,7 +285,7 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
   parser.c = parser.n = st->raw.rawn;
   assert(!setjmp(parser.jb));
   if (xmppParseElement(&parser)) {
-    if (xmppParseElement(&parser)) {
+    while (xmppParseElement(&parser)) {
       if (!strcmp(parser.x.elem, "pubsub")) {
         //if (xmppParseElement(&parser) &&
         //    !strcmp(parser.x.elem, "items") &&
@@ -305,6 +305,8 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
         struct Session session;
         Payload decrypted;
         Log("decrypt out %d", DecryptPreKeyMessage(&session, &store, decrypted, payload, olen));
+      } else {
+        xmppParseUnknown(&parser);
       }
     }
   }

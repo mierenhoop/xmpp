@@ -59,12 +59,12 @@ struct State {
   Key dhr;
   Key rk, cks, ckr;
   uint32_t ns, nr, pn;
-  //struct SkippedMessageKeys skipped;
 };
 
 #define PAYLOAD_SIZE 32
+#define PAYLOAD_MAXPADDEDSIZE 48
 #define HEADER_MAXSIZE (2+33+2*6)
-#define FULLMSG_MAXSIZE (1+HEADER_MAXSIZE+2+PAYLOAD_SIZE)
+#define FULLMSG_MAXSIZE (1+HEADER_MAXSIZE+2+PAYLOAD_MAXPADDEDSIZE)
 #define ENCRYPTED_MAXSIZE (FULLMSG_MAXSIZE+8)
 #define PREKEYHEADER_MAXSIZE (1+18+35*2+2)
 
