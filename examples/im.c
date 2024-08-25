@@ -276,6 +276,53 @@ static void ParseDeviceList(struct xmppParser *parser) {
   }
 }
 
+static void *Malloc(size_t n) {
+  void *p = malloc(n);
+  assert(p);
+  return p;
+}
+
+static void DecodeBase64(uint8_t **p, size_t *n, struct xmppXmlSlice *slc) {
+  *p = Malloc(slc->n);
+  assert(!mbedtls_base64_decode(*p, slc->n, n, slc->p, slc->rawn));
+}
+
+static void ParseEncryptedMessage(struct xmppParser *parser) {
+  struct xmppXmlSlice keyslc = {0}, ivslc = {0}, payloadslc = {0};
+  uint8_t *key, *iv, *payload;
+  size_t keysz, ivsz, payloadsz;
+  while (xmppParseElement(parser)) {
+    if (!strcmp(parser->x.elem, "header")) {
+      while (xmppParseElement(parser)) {
+        if (!strcmp(parser->x.elem, "key")) { // TODO: check for our deviceid and if prekey=true
+          xmppParseContent(parser, &keyslc);
+        } else if (!strcmp(parser->x.elem, "iv")) {
+          xmppParseContent(parser, &ivslc);
+        } else {
+          xmppParseUnknown(parser);
+        }
+      }
+    } else if (!strcmp(parser->x.elem, "payload")) {
+      xmppParseContent(parser, &payloadslc);
+    } else {
+      xmppParseUnknown(parser);
+    }
+  }
+  if (!(keyslc.n && ivslc.n && payloadslc.n))
+    return;
+  DecodeBase64(&key, &keysz, &keyslc);
+  DecodeBase64(&iv, &ivsz, &ivslc);
+  DecodeBase64(&payload, &payloadsz, &payloadslc);
+  char *decryptedpayload = Malloc(payloadsz);
+  struct Session session;
+  Payload decryptedkey;
+  int r = DecryptPreKeyMessage(&session, &store, decryptedkey, key, keysz);
+  Log("decrypt out %d", r);
+  if (r < 0) return;
+  DecryptRealMessage(decryptedpayload, decryptedkey, PAYLOAD_SIZE, iv, payload, payloadsz);
+  printf("Got msg: %s", decryptedpayload);
+}
+
 static void ParseSpecificStanza(struct xmppStanza *st) {
   struct xmppParser parser;
   memset(&parser, 0, sizeof(struct xmppParser));
@@ -295,16 +342,7 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
         //  ParseDeviceList(&parser);
       }
       if (st->type == XMPP_STANZA_MESSAGE && !strcmp(parser.x.elem, "encrypted")) {
-        assert(xmppParseElement(&parser));
-        assert(xmppParseElement(&parser));
-        struct xmppXmlSlice msg;
-        xmppParseContent(&parser, &msg);
-        uint8_t *payload = malloc(msg.n);
-        size_t olen = 0;
-        assert(!mbedtls_base64_decode(payload, msg.n, &olen, msg.p, msg.rawn));
-        struct Session session;
-        Payload decrypted;
-        Log("decrypt out %d", DecryptPreKeyMessage(&session, &store, decrypted, payload, olen));
+        ParseEncryptedMessage(&parser);
       } else {
         xmppParseUnknown(&parser);
       }

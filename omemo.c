@@ -283,11 +283,11 @@ static void Encrypt(Payload out, const Payload in, Key key,
                                iv, in, out) == 0);
 }
 
-static void Decrypt(Payload out, const Payload in, Key key,
+static void Decrypt(uint8_t *out, const uint8_t *in, size_t n, Key key,
                     uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
   assert(mbedtls_aes_setkey_dec(&aes, key, 256) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, 32,
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, n,
                                iv, in, out) == 0);
   DumpHex(out, PAYLOAD_SIZE, "decrypted");
 }
@@ -558,12 +558,14 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
     return r;
   // We accept non-padded or correctly PKCS#7 padded.
   // TODO: when v == 32, last 16 bytes are padded too, so the payload is only 16 bytes?
-  if (!(fields[4].v == 32 ||
-        (fields[4].v == 48 &&
-         !memcmp(fields[4].p + 32,
-                 "\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10", 0x10))))
-    return OMEMO_ECORRUPT;
+  //if (!(fields[4].v == 32 ||
+  //      (fields[4].v == 48 &&
+  //       !memcmp(fields[4].p + 32,
+  //               "\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10", 0x10))))
+  //  return OMEMO_ECORRUPT;
   // these checks should already be handled by ParseProtobuf, just to make sure...
+  if (fields[4].v > 48 || fields[4].v < 32)
+    return OMEMO_ECORRUPT;
   assert(fields[1].v == 33);
 
   uint32_t headern = fields[2].v;
@@ -618,7 +620,9 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
   DumpHex(msg+msgn-8, 8, "realmac");
   if (memcmp(mac, msg+msgn-8, 8))
     return OMEMO_ECORRUPT;
-  Decrypt(decrypted, fields[4].p, kdfout.ck, kdfout.iv);
+  uint8_t tmp[48];
+  Decrypt(tmp, fields[4].p, fields[4].v, kdfout.ck, kdfout.iv);
+  memcpy(decrypted, tmp, 32);
   session->fsm = SESSION_READY;
   return 0;
 }
@@ -697,7 +701,7 @@ int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload p
 }
 
 // pn is size of payload, some clients might make the tag larger than 16 bytes.
-static void DecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n) {
+void DecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n) {
   assert(pn >= 32);
   mbedtls_gcm_context ctx;
   mbedtls_gcm_init(&ctx);
