@@ -25,7 +25,10 @@
 #define Log(fmt, ...) fprintf(log, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
 #else
 #define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
+#define LogWarn(fmt, ...) fprintf(stdout, "\e[33m" fmt "\e[0m\n" __VA_OPT__(,) __VA_ARGS__)
 #endif
+
+#define STORE_LOCATION "/tmp/store"
 
 #define PUBLISH_OPTIONS_OPEN                                           \
   "<publish-options><x xmlns='jabber:x:data' type='submit'><field "    \
@@ -45,7 +48,8 @@ static struct xmppClient client;
 static char linebuf[1000];
 static char *line;
 static size_t linen;
-static struct Store store;
+static struct Store omemostore;
+static struct Session omemosession;
 static int deviceid;
 static struct {
   Uuidv4 subdevicelist;
@@ -161,27 +165,11 @@ static void Handshake() {
 }
 
 static char *GetLine() {
-  //char *nl;
-  //nl = memchr(linebuf, 0, sizeof(linebuf));
-  //memmove(linebuf, nl+1, (nl-linebuf)-linen);
-  //while (!(nl = memchr(linebuf, '\n', linen))) {
-  //  if (linen >= sizeof(linebuf)-1) {
-  //    Log("Warning: too much line data");
-  //    linen = 0;
-  //  }
-  //  ssize_t n = read(STDIN_FILENO, linebuf+linen, sizeof(linebuf)-linen-1);
-  //  if (n <= 0)
-  //    Die("No more data");
-  //  linen += n;
-  //}
-  //*nl = 0;
   ssize_t n;
+  // We expect that stdin is buffered on newlines.
   if ((n = read(STDIN_FILENO, linebuf, sizeof(linebuf)-1)) <= 0)
     Die();
   linebuf[n-1] = 0;
-  //if (getline(&line, &linen, stdin) <= 0)
-  //  Die();
-  //line[strlen(line)-1] = '\0'; // Remove the trailing newline
   return linebuf;
 }
 
@@ -287,15 +275,32 @@ static void DecodeBase64(uint8_t **p, size_t *n, struct xmppXmlSlice *slc) {
   assert(!mbedtls_base64_decode(*p, slc->n, n, slc->p, slc->rawn));
 }
 
+static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, bool *isprekey) {
+  struct xmppXmlSlice attr;
+  bool found = false;
+  while (xmppParseAttribute(parser, &attr)) {
+    if (!strcmp(parser->x.attr, "rid")) {
+      found = strtol(attr.p, NULL, 10) == deviceid; // TODO: put deviceid in store.
+    } else if (!strcmp(parser->x.attr, "prekey")) {
+      *isprekey = true;
+    }
+  }
+  if (found)
+    xmppParseContent(parser, keyslc);
+  else
+    xmppParseUnknown(parser);
+}
+
 static void ParseEncryptedMessage(struct xmppParser *parser) {
   struct xmppXmlSlice keyslc = {0}, ivslc = {0}, payloadslc = {0};
+  bool isprekey = false;
   uint8_t *key, *iv, *payload;
   size_t keysz, ivsz, payloadsz;
   while (xmppParseElement(parser)) {
     if (!strcmp(parser->x.elem, "header")) {
       while (xmppParseElement(parser)) {
-        if (!strcmp(parser->x.elem, "key")) { // TODO: check for our deviceid and if prekey=true
-          xmppParseContent(parser, &keyslc);
+        if (!strcmp(parser->x.elem, "key")) {
+          ParseKey(parser, &keyslc, &isprekey);
         } else if (!strcmp(parser->x.elem, "iv")) {
           xmppParseContent(parser, &ivslc);
         } else {
@@ -308,19 +313,35 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
       xmppParseUnknown(parser);
     }
   }
-  if (!(keyslc.n && ivslc.n && payloadslc.n))
+  if (!(keyslc.n && ivslc.n && payloadslc.n)) {
+    LogWarn("The OMEMO message is either not complete or not addressed to us.");
     return;
+  }
   DecodeBase64(&key, &keysz, &keyslc);
   DecodeBase64(&iv, &ivsz, &ivslc);
   DecodeBase64(&payload, &payloadsz, &payloadslc);
-  char *decryptedpayload = Malloc(payloadsz);
-  struct Session session;
+  char *decryptedpayload = Malloc(payloadsz+1);
+  decryptedpayload[payloadsz] = 0;
   Payload decryptedkey;
-  int r = DecryptPreKeyMessage(&session, &store, decryptedkey, key, keysz);
-  Log("decrypt out %d", r);
-  if (r < 0) return;
+  if (isprekey) {
+    int r = DecryptPreKeyMessage(&omemosession, &omemostore, decryptedkey, key, keysz);
+    if (r < 0) {
+      LogWarn("PreKeyMessage decryption error: %d", r);
+      return;
+    }
+  } else {
+    if (!omemosession.fsm) {
+      LogWarn("Session has not been initialized yet, a PreKeyMessage should have been sent.");
+      return;
+    }
+    int r = DecryptMessage(&omemosession, &omemostore, decryptedkey, key, keysz);
+    if (r < 0) {
+      LogWarn("Message decryption error: %d", r);
+      return;
+    }
+  }
   DecryptRealMessage(decryptedpayload, decryptedkey, PAYLOAD_SIZE, iv, payload, payloadsz);
-  printf("Got msg: %s", decryptedpayload);
+  Log("Got OMEMO msg: %s", decryptedpayload);
 }
 
 static void ParseSpecificStanza(struct xmppStanza *st) {
@@ -357,8 +378,8 @@ static void SubscribeDeviceList() {
 
 static void AnnounceOmemoBundle() {
   SerializedKey spk, ik;
-  SerializeKey(spk, store.cursignedprekey.kp.pub);
-  SerializeKey(ik, store.identity.pub);
+  SerializeKey(spk, omemostore.cursignedprekey.kp.pub);
+  SerializeKey(ik, omemostore.identity.pub);
   FormatXml(
       &client.builder,
       "<iq type='set' id='announce%d'><pubsub "
@@ -369,13 +390,13 @@ static void AnnounceOmemoBundle() {
       "signedPreKeyId='%d'>%b</"
       "signedPreKeyPublic><signedPreKeySignature>%b</"
       "signedPreKeySignature><identityKey>%b</"
-      "identityKey><prekeys>", rand(), deviceid, store.cursignedprekey.id,
-      33, spk, 64, store.cursignedprekey.sig, 33, ik);
+      "identityKey><prekeys>", rand(), deviceid, omemostore.cursignedprekey.id,
+      33, spk, 64, omemostore.cursignedprekey.sig, 33, ik);
   for (int i = 0; i < NUMPREKEYS; i++) {
     SerializedKey pk;
-    SerializeKey(pk, store.prekeys[i].kp.pub);
+    SerializeKey(pk, omemostore.prekeys[i].kp.pub);
     FormatXml(&client.builder,
-              "<preKeyPublic preKeyId='%d'>%b</preKeyPublic>", store.prekeys[i].id,
+              "<preKeyPublic preKeyId='%d'>%b</preKeyPublic>", omemostore.prekeys[i].id,
               33, pk);
   }
 
@@ -522,9 +543,46 @@ bool SystemPoll() {
 
 #ifdef IM_NATIVE
 
+static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
+  FILE *f = fopen(path, "r");
+  if (!f)
+    return false;
+  fseek(f, 0, SEEK_END);
+  *n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if ((*data = malloc(*n))) {
+    fread(*data, 1, *n, f);
+  }
+  fclose(f);
+  return *data != NULL;
+}
+
+static void SaveStore() {
+  FILE *f = fopen(STORE_LOCATION, "w");
+  if (f) {
+    fwrite(&omemostore, sizeof(struct Store), 1,  f);
+    fclose(f);
+  }
+}
+
+static void LoadStore() {
+  uint8_t *data;
+  size_t n;
+  if (ReadWholeFile(STORE_LOCATION, &data, &n)) {
+    if (n == sizeof(struct Store)) {
+      memcpy(&omemostore, data, sizeof(struct Store));
+      free(data);
+      return;
+    }
+    free(data);
+  }
+  SetupStore(&omemostore);
+  SaveStore();
+}
+
 int main() {
   deviceid = 1024;
-  SetupStore(&store);
+  LoadStore();
   RunIm();
 }
 

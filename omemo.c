@@ -182,6 +182,7 @@ static void GenerateKeyPair(struct KeyPair *kp) {
   memset(kp, 0, sizeof(*kp));
   SystemRandom(kp->prv, sizeof(kp->prv));
   c25519_prepare(kp->prv);
+  //c25519_smult(kp->pub, c25519_base_x, kp->prv);
   curve25519_donna(kp->pub, kp->prv, basepoint);
 }
 
@@ -640,7 +641,7 @@ static int DecryptMessageImpl(struct Session *session,
   return 0;
 }
 
-static int DecryptMessage(struct Session *session, const struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
+int DecryptMessage(struct Session *session, const struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
   int r;
   assert(session && session->mkskipped.p && !session->mkskipped.removed);
   assert(store);
@@ -701,6 +702,7 @@ static int DecryptPreKeyMessageImpl(struct Session *session, const struct Store 
   RatchetInitBob(&session->state, sk, &spk->kp);
 
   session->fsm = SESSION_READY;
+  // TODO: we could also call DecryptMessageImpl in this case.
   return DecryptMessage(session, store, payload, fields[4].p, fields[4].v);
 }
 
@@ -741,6 +743,15 @@ static void EncryptRealMessage(uint8_t *d, Payload payload,
   mbedtls_gcm_free(&ctx);
 }
 
+static void SerializeStore(uint8_t d[static sizeof(struct Store)], const struct Store *store) {
+  memcpy(d, store, sizeof(struct Store));
+}
+
+static void DeserializeStore(struct Store *store, uint8_t s[static sizeof(struct Store)]) {
+  memcpy(store, s, sizeof(struct Store));
+}
+
+// TODO: use Protobuf for this.
 static void SerializeSession(uint8_t *d, struct Session *session) {
   memcpy(d, &session->state, sizeof(struct State));
   d += sizeof(struct State);

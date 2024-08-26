@@ -45,16 +45,20 @@ test/cacert.inc: test/localhost.crt
 
 ESPIDF_DOCKERCMD=docker run --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp espressif/idf idf.py
 
+.PHONY: esp-im
 esp-im: | o
 	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im build
 
+.PHONY: size-esp-im
 size-esp-im: | o
 	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im size-files
 
 # TODO: remove LD_LIBRARY_PATH, it's needed for MbedTls being installed in /usr/local.
+.PHONY: test
 test: o/test
 	LD_LIBRARY_PATH=/usr/local/lib ./o/test
 
+.PHONY: test-omemo
 test-omemo: o/test-omemo
 	LD_LIBRARY_PATH=/usr/local/lib ./o/test-omemo
 
@@ -64,23 +68,31 @@ adminpass
 endef
 export IM_INPUT
 
+.PHONY: runim
 runim: o/im
 	LD_LIBRARY_PATH=/usr/local/lib rlwrap -P "$$IM_INPUT" ./o/im
 
+.PHONY: start-prosody
 start-prosody: test/localhost.crt
 	docker-compose -f test/docker-compose.yml up -d --build
 
+.PHONY: stop-prosody
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
 # TODO: remove old configs to generate new key stuff
+.PHONY: launch-profanity
 launch-profanity:
 	(printf "/connect user@localhost\nuserpass\n"; sleep 1; printf "/tls allow\n/omemo trustmode blind\n/omemo policy always\n"; cat) | profanity
 
-.PHONY: start-prosody stop-prosody test test-omemo runim clean full-clean
+.PHONY: tags
+tags:
+	ctags-exuberant -R --exclude=o
 
+.PHONY: clean
 clean:
 	rm -rf o
 
+.PHONY: full-clean
 full-clean: clean
 	rm -f test/cacert.inc test/localhost.crt curve25519.c
