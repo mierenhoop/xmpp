@@ -90,9 +90,9 @@ static void TestCurve25519() {
   TestKeyPair(&kpa, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "70076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c6a", "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
   TestKeyPair(&kpb, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
   CopyHex(expshared, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
-  CalculateCurveAgreement(shared, kpb.pub, kpa.prv);
+  CalculateCurveAgreement(shared, kpa.prv, kpb.pub);
   assert(!memcmp(expshared, shared, 32));
-  CalculateCurveAgreement(shared, kpa.pub, kpb.prv);
+  CalculateCurveAgreement(shared, kpb.prv, kpa.pub);
   assert(!memcmp(expshared, shared, 32));
 }
 
@@ -338,12 +338,12 @@ static void TestDeriveChainKey() {
             0x6e, 0xc1, 0x03, 0x42, 0xa2, 0x46, 0xd1, 0x5d};
 
   Key myck, mymk;
-  assert(KDF_CK(myck, mymk, seed) == 0);
+  assert(GetBaseMaterials(myck, mymk, seed) == 0);
   assert(!memcmp(ck, myck, 32));
   struct DeriveChainKeyOutput out;
   assert(DeriveChainKey(&out, mymk) == 0);
-  assert(!memcmp(mk, out.ck, 32));
-  assert(!memcmp(mac, out.mk, 32));
+  assert(!memcmp(mk, out.cipher, 32));
+  assert(!memcmp(mac, out.mac, 32));
 }
 
 static void TestHkdf() {
@@ -375,9 +375,9 @@ static int GetSharedSecretWithoutPreKey(Key rk, Key ck, bool isbob, Key ika, Key
   uint8_t secret[32*4] = {0}, salt[32];
   memset(secret, 0xff, 32);
   // When we are bob, we must swap the first two.
-  CalculateCurveAgreement(secret+32, isbob ? ikb : spkb, isbob ? ska : ika);
-  CalculateCurveAgreement(secret+64, isbob ? spkb : ikb, isbob ? ika : ska);
-  CalculateCurveAgreement(secret+96, spkb, ska);
+  CalculateCurveAgreement(secret+32, isbob ? ska : ika, isbob ? ikb : spkb);
+  CalculateCurveAgreement(secret+64, isbob ? ika : ska, isbob ? spkb : ikb);
+  CalculateCurveAgreement(secret+96, ska, spkb);
   memset(salt, 0, 32);
   uint8_t full[64];
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, full, 64) != 0)

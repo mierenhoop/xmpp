@@ -35,6 +35,8 @@ struct ProtobufField {
 #define PB_UINT32 0
 #define PB_LEN 2
 
+// Parse Protobuf varint. Only supports uint32, higher bits are skipped
+// so it will neither overflow nor clamp to UINT32_MAX.
 static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *v) {
   int i = 0;
   *v = 0;
@@ -43,8 +45,6 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
       return NULL;
     *v |= (*s & 0x7f) << i;
     i += 7;
-    //if (i > 32 - 7) // will overflow
-    //  return NULL;
   } while (*s++ & 0x80);
   return s;
 }
@@ -110,30 +110,28 @@ static uint8_t *FormatVarInt(uint8_t d[static 6], int id, uint32_t v) {
   return d;
 }
 
-// sizeof(d) >= 2+n
-/*static uint8_t *FormatBytes(uint8_t *d, int id, uint8_t *b, int n) {
-  assert(id < 16 && n < 128);
-  *d++ = (id << 3) | PB_LEN;
-  *d++ = n;
-  memcpy(d, b, n);
-  return d + n;
-}*/
+void SerializeKey(SerializedKey k, const Key pub) {
+  k[0] = 5;
+  memcpy(k + 1, pub, sizeof(SerializedKey) - 1);
+}
 
-static uint8_t *FormatKey(uint8_t *d, int id, Key k) {
+static uint8_t *FormatKey(uint8_t *d, int id, const Key k) {
   assert(id < 16);
   *d++ = (id << 3) | PB_LEN;
   *d++ = 33;
-  *d++ = 0x05;
-  memcpy(d, k, 32);
-  return d + 32;
+  SerializeKey(d, k);
+  return d + 33;
 }
 
-// PreKeyWhisperMessage without message (it should be appended right after this call)
-// ek = basekey
-static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_id, uint32_t spk_id, Key ik, Key ek, uint32_t msgsz) {
+// Format Protobuf PreKeyWhisperMessage without message (it should be
+// appended right after this call).
+static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE],
+                                  uint32_t pk_id, uint32_t spk_id,
+                                  const Key ik, const Key ek,
+                                  uint32_t msgsz) {
   assert(msgsz < 128);
   uint8_t *p = d;
-  *p++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
+  *p++ = (3 << 4) | 3;
   p = FormatVarInt(p, 5, 0xcc); // TODO: registration id
   p = FormatVarInt(p, 1, pk_id);
   p = FormatVarInt(p, 6, spk_id);
@@ -144,22 +142,28 @@ static size_t FormatPreKeyMessage(uint8_t d[PREKEYHEADER_MAXSIZE], uint32_t pk_i
   return p - d;
 }
 
-// WhisperMessage without ciphertext
-// HEADER(dh_pair, pn, n)
-static size_t FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n, uint32_t pn, Key dhs) {
+// Format Protobuf WhisperMessage without ciphertext.
+//  HEADER(dh_pair, pn, n)
+static size_t FormatMessageHeader(uint8_t d[HEADER_MAXSIZE], uint32_t n,
+                                  uint32_t pn, const Key dhs) {
   uint8_t *p = d;
-  *p++ = (3 << 4) | 3; // (message->version << 4) | CIPHERTEXT_CURRENT_VERSION
+  *p++ = (3 << 4) | 3;
   p = FormatKey(p, 1, dhs);
   p = FormatVarInt(p, 2, n);
   return FormatVarInt(p, 3, pn) - d;
 }
 
-static void NormalizeSkipMessageKeysTrivial(struct SkippedMessageKeys *s) {
+// Remove the skipped message key that has just been used for
+// decrypting.
+//  del state.MKSKIPPED[header.dh, header.n]
+static void
+NormalizeSkipMessageKeysTrivial(struct SkippedMessageKeys *s) {
   assert(s->p && s->n <= s->c);
   if (s->removed) {
     assert(s->p <= s->removed && s->removed < s->p + s->n);
     size_t n = s->n - (s->removed - s->p) - 1;
-    memmove(s->removed, s->removed + 1, n * sizeof(struct SkippedMessageKeys));
+    memmove(s->removed, s->removed + 1,
+            n * sizeof(struct SkippedMessageKeys));
     s->n--;
     s->removed = NULL;
   }
@@ -195,25 +199,17 @@ static void GenerateRegistrationId(uint32_t *id) {
   *id = (*id % 16380) + 1;
 }
 
-void SerializeKey(SerializedKey k, const Key pub) {
-  k[0] = 5;
-  memcpy(k + 1, pub, sizeof(SerializedKey) - 1);
-}
-
-static void CalculateCurveSignature(CurveSignature cs, Key signprv, uint8_t *msg, size_t n) {
-  // TODO: OMEMO uses xed25519 and old libsignal uses curve25519
+static void CalculateCurveSignature(CurveSignature cs, Key signprv,
+                                    uint8_t *msg, size_t n) {
   assert(n <= 33);
-  uint8_t rnd[sizeof(CurveSignature)], buf[33+128];
+  uint8_t rnd[sizeof(CurveSignature)], buf[33 + 128];
   SystemRandom(rnd, sizeof(rnd));
-  // TODO: change this function so it doesn't fail, n will always be 33, so we will need to allocate buffer of 33+128 and pass it.
-  //assert(xed25519_sign(cs, signprv, msg, n, rnd) >= 0);
   curve25519_sign(cs, signprv, msg, n, rnd, buf);
 }
 
-// AKA ECDHE
-static void CalculateCurveAgreement(uint8_t d[static 32],
-                                    const Key pub,
-                                    Key prv) {
+//  DH(dh_pair, dh_pub)
+static void CalculateCurveAgreement(uint8_t d[static 32], const Key prv,
+                                    const Key pub) {
 
   curve25519_donna(d, prv, pub);
 }
@@ -228,7 +224,8 @@ static void GenerateSignedPreKey(struct SignedPreKey *spk, uint32_t id,
                           sizeof(SerializedKey));
 }
 
-static bool VerifySignature(CurveSignature sig, Key sk,
+//  Sig(PK, M)
+static bool VerifySignature(const CurveSignature sig, const Key sk,
                             const uint8_t *msg, size_t n) {
   return curve25519_verify(sig, sk, msg, n) == 0;
 }
@@ -257,29 +254,35 @@ static void SetupSession(struct Session *session) {
   session->mkskipped.maxskip = 1000;
 }
 
-// AD = Encode(IKA) || Encode(IKB)
+//  AD = Encode(IKA) || Encode(IKB)
 static void GetAd(uint8_t ad[66], const Key ika, const Key ikb) {
   SerializeKey(ad, ika);
   SerializeKey(ad + 33, ikb);
 }
 
-static int GetMac(uint8_t d[static 8], const Key ika, const Key ikb, const Key mk, const uint8_t *msg, size_t msgn) {
+static int GetMac(uint8_t d[static 8], const Key ika, const Key ikb,
+                  const Key mk, const uint8_t *msg, size_t msgn) {
   assert(msgn <= FULLMSG_MAXSIZE);
-  uint8_t macinput[66+FULLMSG_MAXSIZE], mac[32];
+  uint8_t macinput[66 + FULLMSG_MAXSIZE], mac[32];
   GetAd(macinput, ika, ikb);
-  memcpy(macinput+66, msg, msgn);
-  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), mk, 32, macinput, 66+msgn, mac) != 0)
+  memcpy(macinput + 66, msg, msgn);
+  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), mk,
+                      32, macinput, 66 + msgn, mac) != 0)
     return OMEMO_ECRYPTO;
   memcpy(d, mac, 8);
   return 0;
 }
 
-static void Encrypt(Payload out, const Payload in, Key key,
+static void Encrypt(uint8_t out[PAYLOAD_MAXPADDEDSIZE], const Payload in, Key key,
                     uint8_t iv[static 16]) {
+  _Static_assert(PAYLOAD_MAXPADDEDSIZE == 48);
+  uint8_t tmp[48];
+  memcpy(tmp, in, 32);
+  memset(tmp+32, 0x10, 0x10);
   mbedtls_aes_context aes;
   // These functions won't fail, so we can skip error checking.
   assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 32,
+  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 48,
                                iv, in, out) == 0);
 }
 
@@ -293,7 +296,7 @@ static void Decrypt(uint8_t *out, const uint8_t *in, size_t n, Key key,
 }
 
 struct __attribute__((__packed__)) DeriveChainKeyOutput {
-  Key ck, mk; // TODO: rename mk to mac, it's not a message key
+  Key cipher, mac;
   uint8_t iv[16];
 };
 _Static_assert(sizeof(struct DeriveChainKeyOutput) == 80);
@@ -309,11 +312,12 @@ static int DeriveChainKey(struct DeriveChainKeyOutput *out, const Key ck) {
              : 0;
 }
 
-// TODO: rename to GetBaseMaterials
-static int KDF_CK(Key d, Key mac, const Key ck) {
+// d may be the same pointer as ck
+//  ck, mk = KDF_CK(ck)
+static int GetBaseMaterials(Key d, Key mk, const Key ck) {
   Key tmp;
   uint8_t data = 1;
-  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, mac) != 0)
+  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, mk) != 0)
     return OMEMO_ECRYPTO;
   data = 2;
   if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, tmp) != 0)
@@ -326,34 +330,32 @@ static int KDF_CK(Key d, Key mac, const Key ck) {
 // header = HEADER(DHs, PN, Ns)
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
-// macinput      [   33   |   33   |   1   | <=46 |2|PAYLOAD_SIZE]
-//                identity identity version header    encrypted   mac[:8]
 // msg->p                          [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
-// TODO: remove store? we only need public ik, we can put that in session
-static int EncryptRatchetImpl(struct Session *session, struct Store *store, struct PreKeyMessage *msg, Payload payload) {
+static int EncryptRatchetImpl(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload) {
+  int r;
   Key mk;
   struct DeriveChainKeyOutput kdfout;
-  assert(KDF_CK(session->state.cks, mk, session->state.cks) == 0);
+  if ((r = GetBaseMaterials(session->state.cks, mk, session->state.cks)))
+    return r;
   DumpHex(mk, 32, "encrypt mk");
-  if (DeriveChainKey(&kdfout, mk))
-    return OMEMO_ECRYPTO;
+  if ((r = DeriveChainKey(&kdfout, mk)))
+    return r;
 
   msg->n = FormatMessageHeader(msg->p, session->state.ns, session->state.pn, session->state.dhs.pub);
   msg->p[msg->n++] = (4 << 3) | PB_LEN;
   msg->p[msg->n++] = PAYLOAD_MAXPADDEDSIZE;
-  Encrypt(msg->p+msg->n, payload, kdfout.ck, kdfout.iv);
-  memset(msg->p+msg->n+32, 0x10, 0x10);
+  Encrypt(msg->p+msg->n, payload, kdfout.cipher, kdfout.iv);
   msg->n += PAYLOAD_MAXPADDEDSIZE;
 
-  if (GetMac(msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mk, msg->p, msg->n))
-    return -1;
+  if ((r = GetMac(msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mac, msg->p, msg->n)))
+    return r;
   msg->n += 8;
 
   session->state.ns++;
   return 0;
 }
 
-static int EncryptRatchet(struct Session *session, struct Store *store, struct PreKeyMessage *msg, Payload payload) {
+static int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload) {
   int r;
   struct State backup;
   memcpy(&backup, &session->state, sizeof(struct State));
@@ -367,7 +369,7 @@ static int EncryptRatchet(struct Session *session, struct Store *store, struct P
 // RK, ck = KDF_RK(RK, DH(DHs, DHr))
 static int DeriveRootKey(struct State *state, Key ck) {
   uint8_t secret[32], masterkey[64];
-  CalculateCurveAgreement(secret, state->dhr, state->dhs.prv);
+  CalculateCurveAgreement(secret, state->dhs.prv, state->dhr);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
                       state->rk, sizeof(Key), secret, sizeof(secret),
                       "WhisperRatchet", 14, masterkey, 64) != 0)
@@ -383,15 +385,15 @@ static int DeriveRootKey(struct State *state, Key ck) {
 // DH3 = DH(EKA, SPKB)
 // DH4 = DH(EKA, OPKB)
 // SK = KDF(DH1 || DH2 || DH3 || DH4)
-static int GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const Key ikb, const Key spkb, const Key opkb) {
+static int GetSharedSecret(Key sk, bool isbob, const Key ika, const Key ska, const Key eka, const Key ikb, const Key spkb, const Key opkb) {
   uint8_t secret[32*5] = {0}, salt[32];
   memset(secret, 0xff, 32);
   // When we are bob, we must swap the first two.
-  CalculateCurveAgreement(secret+32, isbob ? ikb : spkb, isbob ? ska : ika);
-  CalculateCurveAgreement(secret+64, isbob ? spkb : ikb, isbob ? ika : ska);
-  CalculateCurveAgreement(secret+96, spkb, ska);
+  CalculateCurveAgreement(secret+32, isbob ? ska : ika, isbob ? ikb : spkb);
+  CalculateCurveAgreement(secret+64, isbob ? ika : ska, isbob ? spkb : ikb);
+  CalculateCurveAgreement(secret+96, ska, spkb);
   // OMEMO mandates that the bundle MUST contain a prekey.
-  CalculateCurveAgreement(secret+128, opkb, eka);
+  CalculateCurveAgreement(secret+128, eka, opkb);
   memset(salt, 0, 32);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) != 0)
     return OMEMO_ECRYPTO;
@@ -403,16 +405,16 @@ static int GetSharedSecret(Key sk, bool isbob, Key ika, Key ska, Key eka, const 
   return 0;
 }
 
-// state.DHs = GENERATE_DH()
-// state.DHr = bob_dh_public_key
-// state.RK, state.CKs = KDF_RK(SK, DH(state.DHs, state.DHr)) 
-// state.CKr = None
-// state.Ns = 0
-// state.Nr = 0
-// state.PN = 0
-// state.MKSKIPPED = {}
+//  state.DHs = GENERATE_DH()
+//  state.DHr = bob_dh_public_key
+//  state.RK, state.CKs = KDF_RK(SK, DH(state.DHs, state.DHr)) 
+//  state.CKr = None
+//  state.Ns = 0
+//  state.Nr = 0
+//  state.PN = 0
+//  state.MKSKIPPED = {}
 // TODO: when we are sending a prekeymessage a second time, we should not regenerate the dhs (ek), so we must not call RatchetInitAlice again...
-static int RatchetInitAlice(struct State *state, Key sk, Key ekb) {
+static int RatchetInitAlice(struct State *state, const Key sk, const Key ekb) {
   memset(state, 0, sizeof(struct State));
   GenerateKeyPair(&state->dhs);
   memcpy(state->rk, sk, 32);
@@ -422,41 +424,48 @@ static int RatchetInitAlice(struct State *state, Key sk, Key ekb) {
   return 0;
 }
 
-// When we process the bundle, we are the ones who initialize the
-// session and we are referred to as alice. Otherwise we have received
-// an initiation message and are called bob.
-// session is initialized in this function
-// msg->payload contains the payload that will be encrypted into msg->encrypted with size msg->encryptedsz (when this function returns 0)
-static int EncryptFirstMessage(struct Session *session, struct Store *store, struct Bundle *bundle, struct PreKeyMessage *msg, Payload payload) {
+// The session is initialized in this function if no error is returned.
+static int EncryptFirstMessage(struct Session *session,
+                               const struct Store *store,
+                               const struct Bundle *bundle,
+                               struct PreKeyMessage *msg,
+                               const Payload payload) {
   int r;
   SerializedKey serspk;
   SetupSession(session);
   SerializeKey(serspk, bundle->spk);
-  if (!VerifySignature(bundle->spks, bundle->ik, serspk, sizeof(SerializedKey))) {
-     return OMEMO_ESIG;
+  if (!VerifySignature(bundle->spks, bundle->ik, serspk,
+                       sizeof(SerializedKey))) {
+    return OMEMO_ESIG;
   }
   struct KeyPair eka;
   GenerateKeyPair(&eka);
   memset(&session->state, 0, sizeof(struct State));
   memcpy(session->remoteidentity, bundle->ik, sizeof(Key));
   Key sk;
-  if ((r = GetSharedSecret(sk, false, store->identity.prv, eka.prv, eka.prv, bundle->ik, bundle->spk, bundle->pk)))
+  if ((r = GetSharedSecret(sk, false, store->identity.prv, eka.prv,
+                           eka.prv, bundle->ik, bundle->spk,
+                           bundle->pk)))
     return r;
-  RatchetInitAlice(&session->state, sk, bundle->spk);
+  if ((r = RatchetInitAlice(&session->state, sk, bundle->spk)))
+    return r;
   if ((r = EncryptRatchet(session, store, msg, payload)))
     return r;
   if (session->fsm != SESSION_READY) {
-    // [message 00...] -> [00... message] -> [header 00... message] -> [header message]
-    memmove(msg->p+PREKEYHEADER_MAXSIZE, msg->p, msg->n);
-    int headersz = FormatPreKeyMessage(msg->p, bundle->pk_id, bundle->spk_id, store->identity.pub, eka.pub, msg->n);
-    memmove(msg->p+headersz, msg->p+PREKEYHEADER_MAXSIZE, msg->n);
+    // [message 00...] -> [00... message] -> [header 00... message] ->
+    // [header message]
+    memmove(msg->p + PREKEYHEADER_MAXSIZE, msg->p, msg->n);
+    int headersz =
+        FormatPreKeyMessage(msg->p, bundle->pk_id, bundle->spk_id,
+                            store->identity.pub, eka.pub, msg->n);
+    memmove(msg->p + headersz, msg->p + PREKEYHEADER_MAXSIZE, msg->n);
     msg->n += headersz;
   }
   session->fsm = SESSION_INIT;
   return 0;
 }
 
-static struct PreKey *FindPreKey(struct Store *store, uint32_t pk_id) {
+static const struct PreKey *FindPreKey(const struct Store *store, uint32_t pk_id) {
   for (int i = 0; i < NUMPREKEYS; i++) {
     if (store->prekeys[i].id == pk_id)
       return store->prekeys+i;
@@ -464,7 +473,7 @@ static struct PreKey *FindPreKey(struct Store *store, uint32_t pk_id) {
   return NULL;
 }
 
-static struct SignedPreKey *FindSignedPreKey(struct Store *store, uint32_t spk_id) {
+static const struct SignedPreKey *FindSignedPreKey(const struct Store *store, uint32_t spk_id) {
   if (spk_id == 0)
     return NULL;
   if (store->cursignedprekey.id == spk_id)
@@ -488,13 +497,13 @@ static void RotateSignedPreKey(struct Store *store) {
       &store->identity);
 }
 
-// PN = Ns
-// Ns = 0
-// Nr = 0
-// DHr = dh
-// RK, CKr = KDF_RK(RK, DH(DHs, DHr))
-// DHs = GENERATE_DH()
-// RK, CKs = KDF_RK(RK, DH(DHs, DHr))
+//  PN = Ns
+//  Ns = 0
+//  Nr = 0
+//  DHr = dh
+//  RK, CKr = KDF_RK(RK, DH(DHs, DHr))
+//  DHs = GENERATE_DH()
+//  RK, CKs = KDF_RK(RK, DH(DHs, DHr))
 static int DHRatchet(struct State *state, const Key dh) {
   int r;
   state->pn = state->ns;
@@ -513,7 +522,7 @@ static int DHRatchet(struct State *state, const Key dh) {
   return 0;
 }
 
-static void RatchetInitBob(struct State *state, Key sk, struct KeyPair *ekb) {
+static void RatchetInitBob(struct State *state, const Key sk, const struct KeyPair *ekb) {
   memcpy(&state->dhs, ekb, sizeof(struct KeyPair));
   memcpy(state->rk, sk, 32);
 }
@@ -527,20 +536,26 @@ static struct MessageKey *FindMessageKey(struct SkippedMessageKeys *keys, const 
   return NULL;
 }
 
-static void SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys, uint32_t n) {
+static int SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys, uint32_t n) {
+  int r;
   assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
     Key mk;
-    assert(KDF_CK(state->ckr, mk, state->ckr) == 0);
+    if ((r = GetBaseMaterials(state->ckr, mk, state->ckr)))
+      return r;
     keys->p[keys->n].nr = state->nr;
     memcpy(keys->p[keys->n].dh, state->dhr, 32);
     memcpy(keys->p[keys->n].mk, mk, 32);
     keys->n++;
     state->nr++;
   }
+  return 0;
 }
 
-static int DecryptMessageImpl(struct Session *session, struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
+static int DecryptMessageImpl(struct Session *session,
+                              const struct Store *store,
+                              Payload decrypted, const uint8_t *msg,
+                              size_t msgn) {
   int r;
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
     return OMEMO_ESTATE;
@@ -556,13 +571,6 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
 
   if ((r = ParseProtobuf(msg+1, msgn-9, fields, 5)))
     return r;
-  // We accept non-padded or correctly PKCS#7 padded.
-  // TODO: when v == 32, last 16 bytes are padded too, so the payload is only 16 bytes?
-  //if (!(fields[4].v == 32 ||
-  //      (fields[4].v == 48 &&
-  //       !memcmp(fields[4].p + 32,
-  //               "\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10\x10", 0x10))))
-  //  return OMEMO_ECORRUPT;
   // these checks should already be handled by ParseProtobuf, just to make sure...
   if (fields[4].v > 48 || fields[4].v < 32)
     return OMEMO_ECORRUPT;
@@ -597,40 +605,46 @@ static int DecryptMessageImpl(struct Session *session, struct Store *store, Payl
     if (nskips > session->mkskipped.maxskip) return OMEMO_EMAXSKIP;
     if (nskips > session->mkskipped.c - session->mkskipped.n) return OMEMO_ESKIPBUF;
     if (shouldstep) {
-      SkipMessageKeys(&session->state, &session->mkskipped, headerpn);
+      if ((r = SkipMessageKeys(&session->state, &session->mkskipped, headerpn)))
+        return r;
       if ((r = DHRatchet(&session->state, headerdh)))
         return r;
     }
-    SkipMessageKeys(&session->state, &session->mkskipped, headern);
-    assert(KDF_CK(session->state.ckr, mk, session->state.ckr) == 0);
+    if ((r = SkipMessageKeys(&session->state, &session->mkskipped, headern)))
+      return r;
+    if ((r = GetBaseMaterials(session->state.ckr, mk, session->state.ckr)))
+      return r;
     DumpHex(session->state.ckr, 32, "new ckr");
     DumpHex(mk, 32, "decrypt mk");
     session->state.nr++;
   }
   struct DeriveChainKeyOutput kdfout;
-  assert(DeriveChainKey(&kdfout, mk) == 0);
-  DumpHex(kdfout.ck, 32, "derived ck");
-  DumpHex(kdfout.mk, 32, "derived mk (mackey)");
+  if ((r = DeriveChainKey(&kdfout, mk)))
+    return r;
+  DumpHex(kdfout.cipher, 32, "derived ck");
+  DumpHex(kdfout.mac, 32, "derived mk (mackey)");
   DumpHex(kdfout.iv, 16, "derived iv");
   uint8_t mac[8];
   DumpHex(session->remoteidentity, 32, "remote ik");
   DumpHex(store->identity.pub, 32, "our ik");
-  assert(GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mk, msg, msgn-8) == 0);
+  if ((r = GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mac, msg, msgn-8)))
+    return r;
   DumpHex(mac, 8, "genmac");
   DumpHex(msg+msgn-8, 8, "realmac");
   if (memcmp(mac, msg+msgn-8, 8))
     return OMEMO_ECORRUPT;
   uint8_t tmp[48];
-  Decrypt(tmp, fields[4].p, fields[4].v, kdfout.ck, kdfout.iv);
+  Decrypt(tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv);
   memcpy(decrypted, tmp, 32);
   session->fsm = SESSION_READY;
   return 0;
 }
 
-static int DecryptMessage(struct Session *session, struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
+static int DecryptMessage(struct Session *session, const struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn) {
   int r;
   assert(session && session->mkskipped.p && !session->mkskipped.removed);
   assert(store);
+  assert(msg);
   struct State backup;
   uint32_t mkskippednbackup = session->mkskipped.n;
   memcpy(&backup, &session->state, sizeof(struct State));
@@ -639,15 +653,16 @@ static int DecryptMessage(struct Session *session, struct Store *store, Payload 
     memset(decrypted, 0, PAYLOAD_SIZE);
     session->mkskipped.n = mkskippednbackup;
     session->mkskipped.removed = NULL;
+    return r;
   }
   if (session->mkskipped.removed)
     NormalizeSkipMessageKeysTrivial(&session->mkskipped);
-  return r;
+  return 0;
 }
 
 // Decrypt the (usually) first message and start/initialize a session.
 // TODO: the prekey message can be sent multiple times, what should we do then?
-static int DecryptPreKeyMessageImpl(struct Session *session, struct Store *store, Payload payload, uint8_t *p, uint8_t* e) {
+static int DecryptPreKeyMessageImpl(struct Session *session, const struct Store *store, Payload payload, const uint8_t *p, const uint8_t* e) {
   int r;
   if (e-p == 0 || *p++ != ((3 << 4) | 3))
     return OMEMO_ECORRUPT;
@@ -665,10 +680,10 @@ static int DecryptPreKeyMessageImpl(struct Session *session, struct Store *store
   assert(fields[2].v == 33);
   assert(fields[3].v == 33);
   // later remove this prekey
-  struct PreKey *pk = FindPreKey(store, fields[1].v);
+  const struct PreKey *pk = FindPreKey(store, fields[1].v);
   if (!pk)
     return OMEMO_ECORRUPT;
-  struct SignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
+  const struct SignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
   if (!spk)
     return OMEMO_ECORRUPT;
   memcpy(session->remoteidentity, fields[3].p+1, sizeof(Key));
@@ -689,7 +704,9 @@ static int DecryptPreKeyMessageImpl(struct Session *session, struct Store *store
   return DecryptMessage(session, store, payload, fields[4].p, fields[4].v);
 }
 
-int DecryptPreKeyMessage(struct Session *session, struct Store *store, Payload payload, uint8_t *msg, size_t msgn) {
+int DecryptPreKeyMessage(struct Session *session, const struct Store *store, Payload payload, const uint8_t *msg, size_t msgn) {
+  assert(store);
+  assert(msg && msgn);
   SetupSession(session);
   int r;
   if ((r = DecryptPreKeyMessageImpl(session, store, payload, msg, msg+msgn))) {
