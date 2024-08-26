@@ -112,10 +112,22 @@ struct Bundle {
 
 void SetupStore(struct Store *store);
 
+
+int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload);
+
+int EncryptFirstMessage(struct Session *session,
+                        const struct Store *store,
+                        const struct Bundle *bundle,
+                        struct PreKeyMessage *msg,
+                        const Payload payload);
+
 int DecryptPreKeyMessage(struct Session *session, const struct Store *store, Payload payload, const uint8_t *msg, size_t msgn);
 
 int DecryptMessage(struct Session *session, const struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn);
 
+void EncryptRealMessage(uint8_t *d, Payload payload,
+                               uint8_t iv[12], const uint8_t *s,
+                               size_t n);
 void DecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n);
 
 #endif

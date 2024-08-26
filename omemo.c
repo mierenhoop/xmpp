@@ -13,7 +13,6 @@
 
 #include <sys/random.h>
 
-#include "curve25519.h"
 #include "c25519.h"
 
 #include "omemo.h"
@@ -176,14 +175,47 @@ static void DumpHex(const uint8_t *p, int n, const char *msg) {
   printf(" << %s\n", msg);
 }
 
+static void ConvertCurvePrvToEdPub(Key ed, const Key prv) {
+  struct ed25519_pt p;
+  ed25519_smult(&p, &ed25519_base, prv);
+  uint8_t x[F25519_SIZE];
+  uint8_t y[F25519_SIZE];
+  ed25519_unproject(x, y, &p);
+  ed25519_pack(ed, x, y);
+}
+
+static void c25519_sign(CurveSignature sig, const Key prv, const uint8_t *msg, size_t msgn) {
+  assert(msgn <= 33);
+  Key ed;
+  uint8_t msgbuf[33+64];
+  int sign = 0;
+  memcpy(msgbuf, msg, msgn);
+  SystemRandom(msgbuf+msgn, 64);
+  ConvertCurvePrvToEdPub(ed, prv);
+  sign = ed[31] & 0x80;
+  edsign_sign_modified(sig, ed, prv, msgbuf, msgn);
+  sig[63] &= 0x7f;
+  sig[63] |= sign;
+}
+
+static bool c25519_verify(const CurveSignature sig, const Key pub, const uint8_t *msg, size_t msgn) {
+  Key ed;
+  morph25519_mx2ey(ed, pub);
+  ed[31] &= 0x7f;
+  ed[31] |= sig[63] & 0x80;
+  CurveSignature sig2;
+  memcpy(sig2, sig, 64);
+  sig2[63] &= 0x7f;
+  return !!edsign_verify(sig2, ed, msg, msgn);
+}
+
 static const uint8_t basepoint[32] = {9};
 
 static void GenerateKeyPair(struct KeyPair *kp) {
   memset(kp, 0, sizeof(*kp));
   SystemRandom(kp->prv, sizeof(kp->prv));
   c25519_prepare(kp->prv);
-  //c25519_smult(kp->pub, c25519_base_x, kp->prv);
-  curve25519_donna(kp->pub, kp->prv, basepoint);
+  c25519_smult(kp->pub, c25519_base_x, kp->prv);
 }
 
 static void GeneratePreKey(struct PreKey *pk, uint32_t id) {
@@ -200,19 +232,19 @@ static void GenerateRegistrationId(uint32_t *id) {
   *id = (*id % 16380) + 1;
 }
 
-static void CalculateCurveSignature(CurveSignature cs, Key signprv,
+static void CalculateCurveSignature(CurveSignature sig, Key signprv,
                                     uint8_t *msg, size_t n) {
   assert(n <= 33);
   uint8_t rnd[sizeof(CurveSignature)], buf[33 + 128];
   SystemRandom(rnd, sizeof(rnd));
-  curve25519_sign(cs, signprv, msg, n, rnd, buf);
+  c25519_sign(sig, signprv, msg, n);
 }
 
 //  DH(dh_pair, dh_pub)
 static void CalculateCurveAgreement(uint8_t d[static 32], const Key prv,
                                     const Key pub) {
 
-  curve25519_donna(d, prv, pub);
+  c25519_smult(d, pub, prv);
 }
 
 static void GenerateSignedPreKey(struct SignedPreKey *spk, uint32_t id,
@@ -228,7 +260,7 @@ static void GenerateSignedPreKey(struct SignedPreKey *spk, uint32_t id,
 //  Sig(PK, M)
 static bool VerifySignature(const CurveSignature sig, const Key sk,
                             const uint8_t *msg, size_t n) {
-  return curve25519_verify(sig, sk, msg, n) == 0;
+  return c25519_verify(sig, sk, msg, n);
 }
 
 void SetupStore(struct Store *store) {
@@ -356,7 +388,7 @@ static int EncryptRatchetImpl(struct Session *session, const struct Store *store
   return 0;
 }
 
-static int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload) {
+int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload) {
   int r;
   struct State backup;
   memcpy(&backup, &session->state, sizeof(struct State));
@@ -426,11 +458,11 @@ static int RatchetInitAlice(struct State *state, const Key sk, const Key ekb) {
 }
 
 // The session is initialized in this function if no error is returned.
-static int EncryptFirstMessage(struct Session *session,
-                               const struct Store *store,
-                               const struct Bundle *bundle,
-                               struct PreKeyMessage *msg,
-                               const Payload payload) {
+int EncryptFirstMessage(struct Session *session,
+                        const struct Store *store,
+                        const struct Bundle *bundle,
+                        struct PreKeyMessage *msg,
+                        const Payload payload) {
   int r;
   SerializedKey serspk;
   SetupSession(session);
@@ -731,7 +763,7 @@ void DecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uin
 
 // payload and iv are outputs
 // Both d and s have size n
-static void EncryptRealMessage(uint8_t *d, Payload payload,
+void EncryptRealMessage(uint8_t *d, Payload payload,
                                uint8_t iv[12], const uint8_t *s,
                                size_t n) {
   SystemRandom(payload, 16);

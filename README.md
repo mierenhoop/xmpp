@@ -1,53 +1,34 @@
-## Notice
-
- In this stage of the project, superior ways-of-doing-things might be
- found in the near future which can make the API unstable. The code
- also needs more real-world- and unit-tests, so do not use this for
- critical production software. Also, do not dynamically link with the
- expectation you can swap with a newer version. Please report any bugs
- when found.
-
 ## About
 
-This library only supports the bare minimum framework for keeping track
-of an XMPP session. The `im.c` example shows how additional
-functionality can be used in combination with the library. The example
-is not a feature complete instant messenger.
+This repository contains two libraries:
 
-Uses:
+- `xmpp.c`: a bare minimum framework for keeping track of an XMPP
+  session.
+
+- `omemo.c`: a compact implementation of OMEMO.
+
+### Uses
 
 - Instant messenger.
 
-- Easy integration of Iot device with existing XMPP software.
-
-- Pub-Sub client for e.g. RSS.
+- Easy integration of IoT device with existing XMPP software.
 
 - Integrating chat into a video game.
 
-Goals:
+### Goals
 
 - Run on embedded (support for ESP-IDF (ESP32) & (hopefully) pico-sdk (Raspberry Pi
   Pico [W])).
 
-- Be portable to any OS. Empower any system to connect to XMPP networks.
+- Be portable to any OS; empower any system to connect to XMPP networks.
 
-- Support non-embedded (Desktop, etc.) too.
-
-- Be compatible with the major XMPP servers (Prosody guaranteed).
-
-- Don't allow unusual or malicious data sent from a server.
-
-- Be very fast.
+- Be compatible with the major XMPP clients and servers (Prosody guaranteed).
 
 - Low amount of code while still being readable.
 
-- Don't expect the programmer (consumer of this API) to be stupid.
+- Control of memory usage (when possible).
 
-- Extreme control of memory (when possible).
-
-- Have the modern XMPP features available.
-
-Non-goals:
+### Non-goals
 
 - Implement the XMPP spec word-for-word.
 
@@ -64,20 +45,21 @@ Non-goals:
 
   * Location and (C-\>S) max attributes not supported.
 
-- XEP-0199 (XMPP Ping): Partial.
+- XEP-0199 (XMPP Ping): Partial. TODO: remove this.
 
   * Received ping's are returned unless disabled.
 
 ## OMEMO
 
- `/omemo.c` contains implementations of X3DH, Double Ratchet and
+ `omemo.c` contains implementations of X3DH, Double Ratchet and
  Protobuf with an API that is specifically tailored to OMEMO. We do not
  have dependencies on (any) libsignal or libolm code.
 
  Curve25519 and Ed25519 functions are handled by the c25519 library,
  which is included as amalgamation in `/c25519.c` and `/c25519.h`. Some
  changes have been made there which can be inspected with `$ git diff
- 2eef25dc -- c25519.*`.
+ 2eef25dc -- c25519.*`. This Curve25519 implementation is noticably
+ slower than curve25519\_donna.
 
  The version of OMEMO implemented is 0.3.0, updating this library to a
  newer version of OMEMO should be trivial, but supporting multiple
@@ -99,10 +81,6 @@ Running the tests:
 
  `$ make test`
 
-Run the im (instant messenger) example:
-
- `$ make runim`
-
 Compile the esp-idf version of the im:
 
  `$ make esp-im`
@@ -115,9 +93,19 @@ Using this library for your own project:
  If you want to use OMEMO, copy over `/omemo.c`, `/omemo.h`,
  `/curve25519.c` and `/curve25519.h`.
 
- Either way, you must link against libmbedcrypto (and/or configure your
+ In both cases, you must link against libmbedcrypto (and/or configure your
  mbedtls build to only include the needed functions TODO: specify
  which).
+
+### Example
+
+ The [`im.c`](./examples/im.c) example shows how additional
+ functionality can be used in combination with the library. The example
+ is not a feature complete instant messenger.
+
+Run the im (instant messenger) example:
+
+ `$ make runim`
 
 ## License
 

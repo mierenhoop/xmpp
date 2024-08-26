@@ -1,7 +1,10 @@
 // https://www.dlbeer.co.nz/downloads/c25519-2017-10-05.zip
 // MD5 sum: 2f19396f8becb44fe1cd5e40111e3ffb c25519-2017-10-05.zip
 // Generated with $ cat src/*.c | sed 's/#include ".*"//g' > c25519.c
-// MD5 sum: 2f19396f8becb44fe1cd5e40111e3ffb c25519-2017-10-05.zip
+
+// Modification: edsign_sign_modified is added which is a replacement
+// for libsignal-protocol-c's crypto_sign_modifed. edsign_sign_modified
+// is in the public domain.
 
 /* Curve25519 (Montgomery form)
  * Daniel Beer <dlbeer@gmail.com>, 18 Apr 2014
@@ -590,9 +593,6 @@ void edsign_sign(uint8_t *signature, const uint8_t *pub,
 }
 
 // We expect message to be suffixed with 64 bytes of random data, while len contains the original message length.
-// TODO: we can make a slightly better API by making the random data a
-// separate argument, then hashing it at the sha512_final call in a
-// modified hash_prefix().
 void edsign_sign_modified(uint8_t *signature, const uint8_t *pub,
 		 const uint8_t *secret,
 		 const uint8_t *message, size_t len)

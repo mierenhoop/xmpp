@@ -1,6 +1,6 @@
 #include "../omemo.c"
 
-#include "c25519.h"
+#include "curve25519.h"
 
 // In the tests we spoof the random source as a hacky way to generate
 // the exact private key we want.
@@ -103,43 +103,6 @@ static void MontToEd(Key ed, Key prv) {
   struct {int32_t l[10][4]; } ed_pubkey_point;
   crypto_sign_ed25519_ref10_ge_scalarmult_base(&ed_pubkey_point, prv);
   crypto_sign_ed25519_ref10_ge_p3_tobytes(ed, &ed_pubkey_point);
-}
-
-static void ConvertCurvePrvToEdPub(Key ed, const Key prv) {
-  struct ed25519_pt p;
-  ed25519_smult(&p, &ed25519_base, prv);
-  uint8_t x[F25519_SIZE];
-  uint8_t y[F25519_SIZE];
-  ed25519_unproject(x, y, &p);
-  ed25519_pack(ed, x, y);
-}
-
-static void c25519_sign(CurveSignature sig, const Key prv, const uint8_t *msg, size_t msgn) {
-  assert(msgn <= 33);
-  Key ed;
-  uint8_t msgbuf[33+64];
-  int sign = 0;
-  memcpy(msgbuf, msg, msgn);
-  SystemRandom(msgbuf+msgn, 64);
-
-  ConvertCurvePrvToEdPub(ed, prv);
-  sign = ed[31] & 0x80;
-
-  edsign_sign_modified(sig, ed, prv, msgbuf, 12);
-
-  sig[63] &= 0x7f;
-  sig[63] |= sign;
-}
-
-static bool c25519_verify(CurveSignature sig, const Key pub, const uint8_t *msg, size_t msgn) {
-  Key ed;
-  morph25519_mx2ey(ed, pub);
-  ed[31] &= 0x7f;
-  ed[31] |= sig[63] & 0x80;
-  CurveSignature sig2;
-  memcpy(sig2, sig, 64);
-  sig2[63] &= 0x7f;
-  return !!edsign_verify(sig2, ed, msg, msgn);
 }
 
 int crypto_sign_modified( unsigned char *sm, const unsigned char *m,unsigned long long mlen, const unsigned char *sk, const unsigned char* pk, const unsigned char* random);
