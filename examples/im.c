@@ -50,12 +50,11 @@ static char *line;
 static size_t linen;
 static struct Store omemostore;
 static struct Session omemosession;
-static int deviceid;
-static struct {
-  Uuidv4 subdevicelist;
-} pending;
+static int deviceid, remoteid;
+static int curpending;
+static Uuidv4 pending[1];
 
-#define IsPending(field) (pending.field[0] != 0)
+#define PENDING_SUBDEVICELIST 0
 
 void SystemRandom(void *d, size_t n) {
   assert(getrandom(d, n, 0) == n);
@@ -211,8 +210,21 @@ static bool HasExactAttribute(struct xmppParser *parser, const char *k, const ch
   return false;
 }
 
+static int GetPendingFromId(struct xmppXmlSlice *id) {
+  if (id->rawn != 36) // sizeof(Uuidv4)-1
+    return -1;
+  for (int i = 0; i < (sizeof(pending)/sizeof(*pending)); i++) {
+    if ((curpending & (1 << i)) && !memcmp(id->p, pending[i], 36)) {
+      curpending &= ~(1 << i);
+      memset(pending[i], 0, 36);
+      return i;
+    }
+  }
+  return -1;
+}
+
 static void AnnounceOmemoDevice() {
-  //xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='admin@localhost' type='get' id='pubsub%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1' /></pubsub></iq>", rand());
+  //xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='user@localhost' type='get' id='pubsub%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1' /></pubsub></iq>", rand());
   xmppFormatStanza(
       &client, "<iq xmlns='jabber:client' type='set' id='announce%d'><pubsub "
                "xmlns='http://jabber.org/protocol/pubsub'><publish "
@@ -264,6 +276,10 @@ static void ParseDeviceList(struct xmppParser *parser) {
   }
 }
 
+static void FetchBundle() {
+xmppFormatStanza(&client, "<iq type='get' to='%s' id='%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.bundles:%d'/></pubsub></iq>", "user@localhost", rand(), remoteid);
+}
+
 static void *Malloc(size_t n) {
   void *p = malloc(n);
   assert(p);
@@ -273,6 +289,72 @@ static void *Malloc(size_t n) {
 static void DecodeBase64(uint8_t **p, size_t *n, struct xmppXmlSlice *slc) {
   *p = Malloc(slc->n);
   assert(!mbedtls_base64_decode(*p, slc->n, n, slc->p, slc->rawn));
+}
+
+// d = dest buffer of size n
+static void ParseBase64Content(struct xmppParser *parser, uint8_t *d, int n) {
+  struct xmppXmlSlice slc;
+  size_t olen;
+  xmppParseContent(parser, &slc);
+  assert(!mbedtls_base64_decode(d, n, &olen, slc.p, slc.rawn));
+  assert(olen == n);
+}
+
+static void ParseBase64PubKey(struct xmppParser *parser, Key d) {
+  SerializedKey ser;
+  ParseBase64Content(parser, ser, 33);
+  memcpy(d, ser+1, 32);
+}
+
+static int ParseNumberAttribute(struct xmppParser *parser, const char *name) {
+  struct xmppXmlSlice attr;
+  while (xmppParseAttribute(parser, &attr)) {
+    if (!strcmp(parser->x.attr, name)) {
+      return strtol(attr.p, NULL, 10);
+    }
+  }
+  assert(false); // TODO: instead of such assertions, we may longjmp
+  return 0;
+}
+
+static bool ParseRandomPreKey(struct xmppParser *parser, struct Bundle *bundle) {
+  struct xmppXmlSlice cont;
+  int i = 0;
+  while (xmppParseElement(parser)) {
+    assert(!strcmp(parser->x.elem, "preKeyPublic"));
+    if (rand() % ++i == 0) {
+      bundle->pk_id = ParseNumberAttribute(parser, "preKeyId");
+      ParseBase64PubKey(parser, bundle->pk);
+    } else {
+      xmppParseUnknown(parser);
+    }
+  }
+  assert(i > 0);
+  return true;
+}
+
+static void ParseBundle(struct xmppParser *parser) {
+  struct Bundle bundle;
+  int found = 0;
+  while (xmppParseElement(parser)) {
+    if (!strcmp(parser->x.elem, "signedPreKeyPublic")) {
+      bundle.spk_id = ParseNumberAttribute(parser, "signedPreKeyId");
+      ParseBase64PubKey(parser, bundle.spk);
+      found |= 1 << 0;
+    } else if (!strcmp(parser->x.elem, "signedPreKeySignature")) {
+      ParseBase64Content(parser, bundle.spks, 64);
+      found |= 1 << 1;
+    } else if (!strcmp(parser->x.elem, "identityKey")) {
+      ParseBase64PubKey(parser, bundle.ik);
+      found |= 1 << 2;
+    } else if (!strcmp(parser->x.elem, "prekeys")) {
+      if (ParseRandomPreKey(parser, &bundle))
+        found |= 1 << 3;
+    } else {
+      xmppParseUnknown(parser);
+    }
+  }
+  assert(found == 0xf);
 }
 
 static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, bool *isprekey) {
@@ -291,6 +373,17 @@ static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, boo
     xmppParseUnknown(parser);
 }
 
+static bool GetRemoteId(struct xmppParser *parser) {
+  struct xmppXmlSlice attr;
+  while (xmppParseAttribute(parser, &attr)) {
+    if (!strcmp(parser->x.attr, "sid")) {
+      remoteid = strtol(attr.p, NULL, 10);
+      return true;
+    }
+  }
+  return false;
+}
+
 static void ParseEncryptedMessage(struct xmppParser *parser) {
   struct xmppXmlSlice keyslc = {0}, ivslc = {0}, payloadslc = {0};
   bool isprekey = false;
@@ -298,6 +391,10 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
   size_t keysz, ivsz, payloadsz;
   while (xmppParseElement(parser)) {
     if (!strcmp(parser->x.elem, "header")) {
+      if (!GetRemoteId(parser)) {
+        LogWarn("The OMEMO message is corrupt.");
+        return;
+      }
       while (xmppParseElement(parser)) {
         if (!strcmp(parser->x.elem, "key")) {
           ParseKey(parser, &keyslc, &isprekey);
@@ -345,13 +442,17 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
 }
 
 static void ParseSpecificStanza(struct xmppStanza *st) {
+  int r;
   struct xmppParser parser;
   memset(&parser, 0, sizeof(struct xmppParser));
   yxml_init(&parser.x, parser.xbuf, sizeof(parser.xbuf));
   fflush(stdout);
   parser.p = st->raw.p;
   parser.c = parser.n = st->raw.rawn;
-  assert(!setjmp(parser.jb));
+  if ((r = setjmp(parser.jb))) {
+    LogWarn("Parsing the stanza failed with error %d", r);
+    return;
+  }
   if (xmppParseElement(&parser)) {
     while (xmppParseElement(&parser)) {
       if (!strcmp(parser.x.elem, "pubsub")) {
@@ -372,8 +473,8 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
 }
 
 static void SubscribeDeviceList() {
-  GenerateUuidv4(pending.subdevicelist);
-  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='admin@localhost' type='get' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1'/></pubsub></iq>", pending.subdevicelist);
+  GenerateUuidv4(pending[PENDING_SUBDEVICELIST]);
+  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='user@localhost' type='get' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1'/></pubsub></iq>", pending[PENDING_SUBDEVICELIST]);
 }
 
 static void AnnounceOmemoBundle() {
@@ -418,7 +519,7 @@ static bool IterateClient() {
       Log("Polling...");
       if (!sent) {
         xmppFormatStanza(&client, "<presence/>");
-        //SubscribeDeviceList();
+        SubscribeDeviceList();
         AnnounceOmemoDevice();
         AnnounceOmemoBundle();
         sent = 1;
@@ -468,6 +569,30 @@ static bool IterateClient() {
   return true;
 }
 
+static void SendOmemo(const char *msg, const char *to, int rid) {
+  size_t msgn = strlen(msg);
+  char *payload = Malloc(msgn);
+  char iv[12];
+  Payload encryptionkey;
+  EncryptRealMessage(payload, encryptionkey, iv, msg, msgn);
+
+  struct PreKeyMessage encrypted;
+  int r = EncryptRatchet(&omemosession, &omemostore, &encrypted, encryptionkey);
+  if (r < 0) {
+    LogWarn("Message encryption error: %d", r);
+    return;
+  }
+
+  xmppFormatStanza(
+      &client,
+      "<message to='%s' id='%d'><encrypted "
+      "xmlns='eu.siacs.conversations.axolotl'><header sid='%d'><key "
+      "rid='%d'>%b</key><iv>%b</iv></header><payload>%b</payload></"
+      "encrypted><store xmlns='urn:xmpp:hints'/></message>",
+      to, rand(), deviceid, rid, encrypted.n, encrypted.p, 12, iv, msgn,
+      payload);
+}
+
 static void HandleCommand() {
   static char jid[3074];
   const char *cmd = GetLine();
@@ -494,8 +619,11 @@ static void HandleCommand() {
     if (!xmppIsInitialized(&client)) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
-      //xmppSendMessage(&client, "user@localhost", cmd);
-      xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", rand(), cmd);
+      if (omemosession.fsm == 2) { // TODO: SESSION_READY
+        SendOmemo(cmd, "user@localhost", remoteid);
+      } else {
+        xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", rand(), cmd);
+      }
     }
   }
 }

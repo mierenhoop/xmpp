@@ -242,6 +242,13 @@ struct xmppSaslContext {
 // filled without complete stanza), skippingdepth is set to one and
 // skipping will start. It is then incremented/decremented according to
 // the XML depth until skippingdepth == 0.
+//
+// When using xmppParser by itself, you must:
+// - Initialize x using yxml_init.
+// - Call setjmp(jb) before calling xmppParse*. Extracting the setjmp
+// into a function will be undefined behaviour.
+// - Set p and n to the pointer and length of the XML data respectively.
+// All other fields should be zeroed.
 struct xmppParser {
   yxml_t x;
   char xbuf[XMPP_CONFIG_MAX_YXMLBUF_SIZE];

@@ -91,7 +91,7 @@ Using this library for your own project:
  project.
 
  If you want to use OMEMO, copy over `/omemo.c`, `/omemo.h`,
- `/curve25519.c` and `/curve25519.h`.
+ `/c25519.c` and `/c25519.h`.
 
  In both cases, you must link against libmbedcrypto (and/or configure your
  mbedtls build to only include the needed functions TODO: specify

@@ -316,7 +316,7 @@ static void Encrypt(uint8_t out[PAYLOAD_MAXPADDEDSIZE], const Payload in, Key ke
   // These functions won't fail, so we can skip error checking.
   assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
   assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 48,
-                               iv, in, out) == 0);
+                               iv, tmp, out) == 0);
 }
 
 static void Decrypt(uint8_t *out, const uint8_t *in, size_t n, Key key,
