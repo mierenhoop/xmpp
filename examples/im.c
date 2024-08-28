@@ -60,6 +60,12 @@ void SystemRandom(void *d, size_t n) {
   assert(getrandom(d, n, 0) == n);
 }
 
+static int RandomInt() {
+  uint16_t n;
+  SystemRandom(&n, 2);
+  return n;
+}
+
 // https://github.com/rxi/uuid4/blob/master/src/uuid4.c
 static void GenerateUuidv4(Uuidv4 dst) {
   static const char *template = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
@@ -233,7 +239,7 @@ static void AnnounceOmemoDevice() {
                "xmlns='eu.siacs.conversations.axolotl'><device "
                "id='%d' /></list></item></publish>"
 PUBLISH_OPTIONS_OPEN
-               "</pubsub></iq>", rand(), deviceid);
+               "</pubsub></iq>", RandomInt(), deviceid);
 }
 
 static void ReAddDevices(struct xmppParser *parser) {
@@ -267,17 +273,17 @@ static void ParseDeviceList(struct xmppParser *parser) {
           "xmlns='http://jabber.org/protocol/pubsub'><publish "
           "node='eu.siacs.conversations.axolotl.devicelist'><item "
           "id='current'><list xmlns='eu.siacs.conversations.axolotl'>",
-          rand(), deviceid);
+          RandomInt(), deviceid);
       ReAddDevices(parser);
       xmppFormatStanza(&client,
-                       "</list></item></publish></pubsub></iq>", rand(),
+                       "</list></item></publish></pubsub></iq>", RandomInt(),
                        deviceid);
     }
   }
 }
 
 static void FetchBundle() {
-xmppFormatStanza(&client, "<iq type='get' to='%s' id='%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.bundles:%d'/></pubsub></iq>", "user@localhost", rand(), remoteid);
+xmppFormatStanza(&client, "<iq type='get' to='%s' id='%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.bundles:%d'/></pubsub></iq>", "user@localhost", RandomInt(), remoteid);
 }
 
 static void *Malloc(size_t n) {
@@ -322,7 +328,7 @@ static bool ParseRandomPreKey(struct xmppParser *parser, struct Bundle *bundle) 
   int i = 0;
   while (xmppParseElement(parser)) {
     assert(!strcmp(parser->x.elem, "preKeyPublic"));
-    if (rand() % ++i == 0) {
+    if (RandomInt() % ++i == 0) {
       bundle->pk_id = ParseNumberAttribute(parser, "preKeyId");
       ParseBase64PubKey(parser, bundle->pk);
     } else {
@@ -333,6 +339,8 @@ static bool ParseRandomPreKey(struct xmppParser *parser, struct Bundle *bundle) 
   return true;
 }
 
+static void SendOmemo(struct Bundle *bundle, const char *msg, const char *to, int rid);
+
 static void ParseBundle(struct xmppParser *parser) {
   struct Bundle bundle;
   int found = 0;
@@ -341,20 +349,25 @@ static void ParseBundle(struct xmppParser *parser) {
       bundle.spk_id = ParseNumberAttribute(parser, "signedPreKeyId");
       ParseBase64PubKey(parser, bundle.spk);
       found |= 1 << 0;
+      Log("spk");
     } else if (!strcmp(parser->x.elem, "signedPreKeySignature")) {
       ParseBase64Content(parser, bundle.spks, 64);
       found |= 1 << 1;
+      Log("spks");
     } else if (!strcmp(parser->x.elem, "identityKey")) {
       ParseBase64PubKey(parser, bundle.ik);
       found |= 1 << 2;
+      Log("ik");
     } else if (!strcmp(parser->x.elem, "prekeys")) {
       if (ParseRandomPreKey(parser, &bundle))
         found |= 1 << 3;
+      Log("pk");
     } else {
       xmppParseUnknown(parser);
     }
   }
   assert(found == 0xf);
+  SendOmemo(&bundle, "hi", "user@localhost", remoteid);
 }
 
 static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, bool *isprekey) {
@@ -456,12 +469,16 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
   if (xmppParseElement(&parser)) {
     while (xmppParseElement(&parser)) {
       if (!strcmp(parser.x.elem, "pubsub")) {
-        //if (xmppParseElement(&parser) &&
-        //    !strcmp(parser.x.elem, "items") &&
-        //    HasExactAttribute(
-        //        &parser, "node",
-        //        "eu.siacs.conversations.axolotl.devicelist"))
-        //  ParseDeviceList(&parser);
+        if (xmppParseElement(&parser) &&
+            !strcmp(parser.x.elem, "items")) {
+          if (HasExactAttribute(&parser, "node", "eu.siacs.conversations.axolotl.devicelist")) {
+            ParseDeviceList(&parser);
+          } else {
+            assert(xmppParseElement(&parser) && !strcmp(parser.x.elem, "item"));
+            if (xmppParseElement(&parser) && !strcmp(parser.x.elem, "bundle"))
+              ParseBundle(&parser);
+          }
+        }
       }
       if (st->type == XMPP_STANZA_MESSAGE && !strcmp(parser.x.elem, "encrypted")) {
         ParseEncryptedMessage(&parser);
@@ -491,7 +508,7 @@ static void AnnounceOmemoBundle() {
       "signedPreKeyId='%d'>%b</"
       "signedPreKeyPublic><signedPreKeySignature>%b</"
       "signedPreKeySignature><identityKey>%b</"
-      "identityKey><prekeys>", rand(), deviceid, omemostore.cursignedprekey.id,
+      "identityKey><prekeys>", RandomInt(), deviceid, omemostore.cursignedprekey.id,
       33, spk, 64, omemostore.cursignedprekey.sig, 33, ik);
   for (int i = 0; i < NUMPREKEYS; i++) {
     SerializedKey pk;
@@ -522,6 +539,7 @@ static bool IterateClient() {
         SubscribeDeviceList();
         AnnounceOmemoDevice();
         AnnounceOmemoBundle();
+        FetchBundle();
         sent = 1;
         continue;
       }
@@ -556,6 +574,10 @@ static bool IterateClient() {
         PrintMessage(&client.stanza);
       }
       ParseSpecificStanza(&client.stanza);
+      //switch (GetPendingFromId(client.stanza.id)) {
+      //break; case PENDING_SUBDEVICELIST:
+      //  ParseDeviceList();
+      //}
       break;
     case XMPP_ITER_OK:
     default:
@@ -569,7 +591,7 @@ static bool IterateClient() {
   return true;
 }
 
-static void SendOmemo(const char *msg, const char *to, int rid) {
+static void SendOmemo(struct Bundle *bundle, const char *msg, const char *to, int rid) {
   size_t msgn = strlen(msg);
   char *payload = Malloc(msgn);
   char iv[12];
@@ -577,7 +599,7 @@ static void SendOmemo(const char *msg, const char *to, int rid) {
   EncryptRealMessage(payload, encryptionkey, iv, msg, msgn);
 
   struct PreKeyMessage encrypted;
-  int r = EncryptRatchet(&omemosession, &omemostore, &encrypted, encryptionkey);
+  int r = EncryptFirstMessage(&omemosession, &omemostore, bundle, &encrypted, encryptionkey);
   if (r < 0) {
     LogWarn("Message encryption error: %d", r);
     return;
@@ -587,9 +609,12 @@ static void SendOmemo(const char *msg, const char *to, int rid) {
       &client,
       "<message to='%s' id='%d'><encrypted "
       "xmlns='eu.siacs.conversations.axolotl'><header sid='%d'><key "
-      "rid='%d'>%b</key><iv>%b</iv></header><payload>%b</payload></"
-      "encrypted><store xmlns='urn:xmpp:hints'/></message>",
-      to, rand(), deviceid, rid, encrypted.n, encrypted.p, 12, iv, msgn,
+      "prekey='true' rid='%d'>%b</key><iv>%b</iv></header><payload>%b</payload></"
+      "encrypted>"
+"<encryption xmlns='urn:xmpp:eme:0' name='OMEMO' namespace='eu.siacs.conversations.axolotl'/><body>You received a message encrypted with OMEMO but your client doesn't support OMEMO.</body>"
+"<request xmlns='urn:xmpp:receipts'/><markable xmlns='urn:xmpp:chat-markers:0'/>"
+      "<store xmlns='urn:xmpp:hints'/></message>",
+      to, RandomInt(), deviceid, rid, encrypted.n, encrypted.p, 12, iv, msgn,
       payload);
 }
 
@@ -619,11 +644,11 @@ static void HandleCommand() {
     if (!xmppIsInitialized(&client)) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
-      if (omemosession.fsm == 2) { // TODO: SESSION_READY
-        SendOmemo(cmd, "user@localhost", remoteid);
-      } else {
-        xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", rand(), cmd);
-      }
+      //if (omemosession.fsm == 2) { // TODO: SESSION_READY
+      //  SendOmemo(cmd, "user@localhost", remoteid);
+      //} else {
+        xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", RandomInt(), cmd);
+      //}
     }
   }
 }
@@ -710,6 +735,7 @@ static void LoadStore() {
 
 int main() {
   deviceid = 1024;
+  remoteid = 1202446117;
   LoadStore();
   RunIm();
 }

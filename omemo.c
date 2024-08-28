@@ -464,6 +464,11 @@ int EncryptFirstMessage(struct Session *session,
                         struct PreKeyMessage *msg,
                         const Payload payload) {
   int r;
+  DumpHex(bundle->spk, 32, "spk");
+  DumpHex(bundle->spks, 64, "spk");
+  DumpHex(bundle->ik, 32, "ik");
+  DumpHex(bundle->pk, 32, "pk");
+  printf("%d %d\n", bundle->spk_id, bundle->pk_id);
   SerializedKey serspk;
   SetupSession(session);
   SerializeKey(serspk, bundle->spk);
