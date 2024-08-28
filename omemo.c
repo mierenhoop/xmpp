@@ -447,9 +447,9 @@ static int GetSharedSecret(Key sk, bool isbob, const Key ika, const Key ska, con
 //  state.PN = 0
 //  state.MKSKIPPED = {}
 // TODO: when we are sending a prekeymessage a second time, we should not regenerate the dhs (ek), so we must not call RatchetInitAlice again...
-static int RatchetInitAlice(struct State *state, const Key sk, const Key ekb) {
+static int RatchetInitAlice(struct State *state, const Key sk, const Key ekb, const struct KeyPair *eka) {
   memset(state, 0, sizeof(struct State));
-  GenerateKeyPair(&state->dhs);
+  memcpy(&state->dhs, eka, sizeof(struct KeyPair));
   memcpy(state->rk, sk, 32);
   memcpy(state->dhr, ekb, 32);
   if (DeriveRootKey(state, state->cks))
@@ -485,7 +485,7 @@ int EncryptFirstMessage(struct Session *session,
                            eka.prv, bundle->ik, bundle->spk,
                            bundle->pk)))
     return r;
-  if ((r = RatchetInitAlice(&session->state, sk, bundle->spk)))
+  if ((r = RatchetInitAlice(&session->state, sk, bundle->spk, &eka)))
     return r;
   if ((r = EncryptRatchet(session, store, msg, payload)))
     return r;

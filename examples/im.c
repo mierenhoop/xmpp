@@ -607,7 +607,7 @@ static void SendOmemo(struct Bundle *bundle, const char *msg, const char *to, in
 
   xmppFormatStanza(
       &client,
-      "<message to='%s' id='%d'><encrypted "
+      "<message to='%s' id='%d' type='chat'><encrypted "
       "xmlns='eu.siacs.conversations.axolotl'><header sid='%d'><key "
       "prekey='true' rid='%d'>%b</key><iv>%b</iv></header><payload>%b</payload></"
       "encrypted>"
@@ -735,7 +735,7 @@ static void LoadStore() {
 
 int main() {
   deviceid = 1024;
-  remoteid = 1202446117;
+  remoteid = 258487665;
   LoadStore();
   RunIm();
 }

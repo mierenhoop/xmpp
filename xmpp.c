@@ -1003,7 +1003,6 @@ int xmppIterate(struct xmppClient *c) {
     return xmppEndStream(c);
   }
   MoveStanza(&c->parser);
-  if (c->parser.n) Log("Parsing (pos %d): \e[33m%.*s\e[0m", (int)c->parser.i, (int)(c->parser.n-c->parser.i), c->parser.p+c->parser.i);
   // TODO: if previous stanza handled only then read.
   if (!c->parser.n || (r = xmppParseStanza(&c->parser, st, c->state != CLIENTSTATE_STREAMSENT)) == XMPP_EPARTIAL) {
     if (c->parser.n == c->parser.c) {
