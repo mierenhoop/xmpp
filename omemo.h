@@ -93,6 +93,8 @@ struct Session {
   Key remoteidentity;
   struct State state;
   struct SkippedMessageKeys mkskipped;
+  Key pendingek;
+  uint32_t pendingpk_id, pendingspk_id;
 };
 
 // Random function that must not fail, if the system is not guaranteed
@@ -113,13 +115,8 @@ struct Bundle {
 void SetupStore(struct Store *store);
 
 
+int InitFromBundle(struct Session *session, const struct Store *store, const struct Bundle *bundle);
 int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload);
-
-int EncryptFirstMessage(struct Session *session,
-                        const struct Store *store,
-                        const struct Bundle *bundle,
-                        struct PreKeyMessage *msg,
-                        const Payload payload);
 
 int DecryptPreKeyMessage(struct Session *session, const struct Store *store, Payload payload, const uint8_t *msg, size_t msgn);
 

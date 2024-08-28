@@ -385,6 +385,17 @@ static int EncryptRatchetImpl(struct Session *session, const struct Store *store
   msg->n += 8;
 
   session->state.ns++;
+
+  if (session->fsm != SESSION_READY) {
+    // [message 00...] -> [00... message] -> [header 00... message] ->
+    // [header message]
+    memmove(msg->p + PREKEYHEADER_MAXSIZE, msg->p, msg->n);
+    int headersz =
+        FormatPreKeyMessage(msg->p, session->pendingpk_id, session->pendingspk_id,
+                            store->identity.pub, session->pendingek, msg->n);
+    memmove(msg->p + headersz, msg->p + PREKEYHEADER_MAXSIZE, msg->n);
+    msg->n += headersz;
+  }
   return 0;
 }
 
@@ -457,18 +468,9 @@ static int RatchetInitAlice(struct State *state, const Key sk, const Key ekb, co
   return 0;
 }
 
-// The session is initialized in this function if no error is returned.
-int EncryptFirstMessage(struct Session *session,
-                        const struct Store *store,
-                        const struct Bundle *bundle,
-                        struct PreKeyMessage *msg,
-                        const Payload payload) {
+// We can remove the bundle struct all together by inlining the fields as arguments.
+int InitFromBundle(struct Session *session, const struct Store *store, const struct Bundle *bundle) {
   int r;
-  DumpHex(bundle->spk, 32, "spk");
-  DumpHex(bundle->spks, 64, "spk");
-  DumpHex(bundle->ik, 32, "ik");
-  DumpHex(bundle->pk, 32, "pk");
-  printf("%d %d\n", bundle->spk_id, bundle->pk_id);
   SerializedKey serspk;
   SetupSession(session);
   SerializeKey(serspk, bundle->spk);
@@ -487,18 +489,9 @@ int EncryptFirstMessage(struct Session *session,
     return r;
   if ((r = RatchetInitAlice(&session->state, sk, bundle->spk, &eka)))
     return r;
-  if ((r = EncryptRatchet(session, store, msg, payload)))
-    return r;
-  if (session->fsm != SESSION_READY) {
-    // [message 00...] -> [00... message] -> [header 00... message] ->
-    // [header message]
-    memmove(msg->p + PREKEYHEADER_MAXSIZE, msg->p, msg->n);
-    int headersz =
-        FormatPreKeyMessage(msg->p, bundle->pk_id, bundle->spk_id,
-                            store->identity.pub, eka.pub, msg->n);
-    memmove(msg->p + headersz, msg->p + PREKEYHEADER_MAXSIZE, msg->n);
-    msg->n += headersz;
-  }
+  memcpy(session->pendingek, eka.pub, 32);
+  session->pendingpk_id = bundle->pk_id;
+  session->pendingspk_id = bundle->spk_id;
   session->fsm = SESSION_INIT;
   return 0;
 }
@@ -578,6 +571,7 @@ static int SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys,
   int r;
   assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
+    printf("Skipping...\n");
     Key mk;
     if ((r = GetBaseMaterials(state->ckr, mk, state->ckr)))
       return r;
@@ -587,6 +581,7 @@ static int SkipMessageKeys(struct State *state, struct SkippedMessageKeys *keys,
     keys->n++;
     state->nr++;
   }
+  assert(state->nr == n);
   return 0;
 }
 
@@ -635,6 +630,7 @@ static int DecryptMessageImpl(struct Session *session,
     memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
   } else {
+    printf("nr %d headern %d headerpn %d\n", session->state.nr, headern, headerpn);
     if (!shouldstep && headern < session->state.nr) return OMEMO_EKEYGONE;
     if (shouldstep && headerpn < session->state.nr) return OMEMO_EKEYGONE;
     uint64_t nskips = shouldstep ?
@@ -674,7 +670,6 @@ static int DecryptMessageImpl(struct Session *session,
   uint8_t tmp[48];
   Decrypt(tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv);
   memcpy(decrypted, tmp, 32);
-  session->fsm = SESSION_READY;
   return 0;
 }
 
@@ -700,6 +695,7 @@ int DecryptMessage(struct Session *session, const struct Store *store, Payload d
 
 // Decrypt the (usually) first message and start/initialize a session.
 // TODO: the prekey message can be sent multiple times, what should we do then?
+// TODO: merge impl of this and DecryptMessage with boolean if is prekey
 static int DecryptPreKeyMessageImpl(struct Session *session, const struct Store *store, Payload payload, const uint8_t *p, const uint8_t* e) {
   int r;
   if (e-p == 0 || *p++ != ((3 << 4) | 3))

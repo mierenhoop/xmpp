@@ -263,6 +263,7 @@ static void ReAddDevices(struct xmppParser *parser) {
     FormatXml(&client.builder, "<device id='%d'/>", deviceid);
 }
 
+// TODO: there should be a difference between parsing our own and adding ourself or parsing someone else's for remoteid.
 static void ParseDeviceList(struct xmppParser *parser) {
   if (xmppParseElement(parser) && !strcmp(parser->x.elem, "item")) {
     if (xmppParseElement(parser) && !strcmp(parser->x.elem, "list")) {
@@ -591,6 +592,33 @@ static bool IterateClient() {
   return true;
 }
 
+static void SendNormalOmemo(const char *msg, const char *to, int rid) {
+  size_t msgn = strlen(msg);
+  char *payload = Malloc(msgn);
+  char iv[12];
+  Payload encryptionkey;
+  EncryptRealMessage(payload, encryptionkey, iv, msg, msgn);
+
+  struct PreKeyMessage encrypted;
+  int r = EncryptRatchet(&omemosession, &omemostore, &encrypted, encryptionkey);
+  if (r < 0) {
+    LogWarn("Message encryption error: %d", r);
+    return;
+  }
+
+  xmppFormatStanza(
+      &client,
+      "<message to='%s' id='%d' type='chat'><encrypted "
+      "xmlns='eu.siacs.conversations.axolotl'><header sid='%d'><key "
+      "rid='%d'>%b</key><iv>%b</iv></header><payload>%b</payload></"
+      "encrypted>"
+"<encryption xmlns='urn:xmpp:eme:0' name='OMEMO' namespace='eu.siacs.conversations.axolotl'/><body>You received a message encrypted with OMEMO but your client doesn't support OMEMO.</body>"
+"<request xmlns='urn:xmpp:receipts'/><markable xmlns='urn:xmpp:chat-markers:0'/>"
+      "<store xmlns='urn:xmpp:hints'/></message>",
+      to, RandomInt(), deviceid, rid, encrypted.n, encrypted.p, 12, iv, msgn,
+      payload);
+}
+
 static void SendOmemo(struct Bundle *bundle, const char *msg, const char *to, int rid) {
   size_t msgn = strlen(msg);
   char *payload = Malloc(msgn);
@@ -599,7 +627,12 @@ static void SendOmemo(struct Bundle *bundle, const char *msg, const char *to, in
   EncryptRealMessage(payload, encryptionkey, iv, msg, msgn);
 
   struct PreKeyMessage encrypted;
-  int r = EncryptFirstMessage(&omemosession, &omemostore, bundle, &encrypted, encryptionkey);
+  int r = InitFromBundle(&omemosession, &omemostore, bundle);
+  if (r < 0) {
+    LogWarn("Bundle init error: %d", r);
+    return;
+  }
+  r = EncryptRatchet(&omemosession, &omemostore, &encrypted, encryptionkey);
   if (r < 0) {
     LogWarn("Message encryption error: %d", r);
     return;
@@ -644,11 +677,11 @@ static void HandleCommand() {
     if (!xmppIsInitialized(&client)) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
-      //if (omemosession.fsm == 2) { // TODO: SESSION_READY
-      //  SendOmemo(cmd, "user@localhost", remoteid);
-      //} else {
+      if (omemosession.fsm == 2) { // TODO: SESSION_READY
+        SendNormalOmemo(cmd, "user@localhost", remoteid);
+      } else {
         xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", RandomInt(), cmd);
-      //}
+      }
     }
   }
 }

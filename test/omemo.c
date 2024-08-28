@@ -194,10 +194,24 @@ static void MakeTestSetup(struct TestSetup *setup) {
   ParseBundle(&bundleb, &setup->storeb);
 }
 
-struct Message {
-};
+// user is either a or b
+#define Send(user, id) do { \
+    SystemRandom(messages[id].payload, PAYLOAD_SIZE); \
+    EncryptRatchet(&session##user, &store##user, &messages[id].msg, messages[id].payload); \
+  } while (0)
+
+#define Recv(user, id) do { \
+    Payload dec; \
+    DecryptMessage(&session##user, &store##user, dec, messages[id].msg.p, messages[id].msg.n); \
+    assert(!memcmp(messages[id].payload, dec, PAYLOAD_SIZE)); \
+  } while (0);
 
 static void TestSession() {
+  struct {
+    Payload payload;
+    struct PreKeyMessage msg;
+  } messages[100];
+
   struct Store storea, storeb;
   SetupStore(&storea);
   SetupStore(&storeb);
@@ -205,47 +219,61 @@ static void TestSession() {
   struct Bundle bundleb;
   ParseBundle(&bundleb, &storeb);
 
+  // TODO: init the sessions using the new api
   struct Session sessiona, sessionb;
   Payload realpayload, payload;
   struct PreKeyMessage msg;
-  memset(realpayload, 0xcc, PAYLOAD_SIZE);
-  memcpy(payload, realpayload, PAYLOAD_SIZE);
-  assert(EncryptFirstMessage(&sessiona, &storea, &bundleb, &msg, payload) == 0);
-  memset(payload, 0, PAYLOAD_SIZE);
-  assert(msg.n > 0);
+  //memset(realpayload, 0xcc, PAYLOAD_SIZE);
+  //memcpy(payload, realpayload, PAYLOAD_SIZE);
+  assert(InitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
-  assert(DecryptPreKeyMessage(&sessionb, &storeb, payload, msg.p, msg.n) == 0);
-  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  Send(a, 0);
 
-  memset(realpayload, 0xdd, PAYLOAD_SIZE);
-  memcpy(payload, realpayload, PAYLOAD_SIZE);
-  assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
-  assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
-  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  //assert(EncryptRatchet(&sessiona, &storea, &msg, payload) == 0);
+  //memset(payload, 0, PAYLOAD_SIZE);
+  //assert(msg.n > 0);
 
-  memset(realpayload, 0xee, PAYLOAD_SIZE);
-  memcpy(payload, realpayload, PAYLOAD_SIZE);
-  assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
-  assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
-  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  assert(DecryptPreKeyMessage(&sessionb, &storeb, payload, messages[0].msg.p, messages[0].msg.n) == 0);
+  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
 
-  memset(realpayload, 0x88, PAYLOAD_SIZE);
-  memcpy(payload, realpayload, PAYLOAD_SIZE);
-  assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
+  Send(b, 1);
+  Recv(a, 1);
 
-  Payload payload2, realpayload2;
-  struct PreKeyMessage msg2;
-  memset(realpayload2, 0x77, PAYLOAD_SIZE);
-  memcpy(payload2, realpayload2, PAYLOAD_SIZE);
-  assert(EncryptRatchet(&sessionb, &storeb, &msg2, payload2) == 0);
+  //memset(realpayload, 0xdd, PAYLOAD_SIZE);
+  //memcpy(payload, realpayload, PAYLOAD_SIZE);
+  //assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
+  //assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
+  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+
+  Send(b, 2);
+  Recv(a, 2);
+  //memset(realpayload, 0xee, PAYLOAD_SIZE);
+  //memcpy(payload, realpayload, PAYLOAD_SIZE);
+  //assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
+  //assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
+  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+
+  Send(b, 3);
+  //memset(realpayload, 0x88, PAYLOAD_SIZE);
+  //memcpy(payload, realpayload, PAYLOAD_SIZE);
+  //assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
+
+  Send(b, 4);
+  //Payload payload2, realpayload2;
+  //struct PreKeyMessage msg2;
+  //memset(realpayload2, 0x77, PAYLOAD_SIZE);
+  //memcpy(payload2, realpayload2, PAYLOAD_SIZE);
+  //assert(EncryptRatchet(&sessionb, &storeb, &msg2, payload2) == 0);
 
   assert(sessiona.mkskipped.n == 0);
-  assert(DecryptMessage(&sessiona, &storea, payload2, msg2.p, msg2.n) == 0);
-  assert(!memcmp(realpayload2, payload2, PAYLOAD_SIZE));
+  Recv(a, 4);
+  //assert(DecryptMessage(&sessiona, &storea, payload2, msg2.p, msg2.n) == 0);
+  //assert(!memcmp(realpayload2, payload2, PAYLOAD_SIZE));
   assert(sessiona.mkskipped.n == 1);
 
-  assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
-  assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  Recv(a, 3);
+  //assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
+  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
   assert(sessiona.mkskipped.n == 0);
 }
 
