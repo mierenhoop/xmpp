@@ -2,9 +2,6 @@
 
 #include "curve25519.h"
 
-// In the tests we spoof the random source as a hacky way to generate
-// the exact private key we want.
-
 void SystemRandom(void *d, size_t n) {
   assert(getrandom(d, n, 0) == n);
 }
@@ -200,9 +197,9 @@ static void MakeTestSetup(struct TestSetup *setup) {
     EncryptRatchet(&session##user, &store##user, &messages[id].msg, messages[id].payload); \
   } while (0)
 
-#define Recv(user, id) do { \
+#define Recv(user, id, isprekey) do { \
     Payload dec; \
-    DecryptMessage(&session##user, &store##user, dec, messages[id].msg.p, messages[id].msg.n); \
+    DecryptAnyMessage(&session##user, &store##user, dec, isprekey, messages[id].msg.p, messages[id].msg.n); \
     assert(!memcmp(messages[id].payload, dec, PAYLOAD_SIZE)); \
   } while (0);
 
@@ -219,61 +216,26 @@ static void TestSession() {
   struct Bundle bundleb;
   ParseBundle(&bundleb, &storeb);
 
-  // TODO: init the sessions using the new api
   struct Session sessiona, sessionb;
-  Payload realpayload, payload;
-  struct PreKeyMessage msg;
-  //memset(realpayload, 0xcc, PAYLOAD_SIZE);
-  //memcpy(payload, realpayload, PAYLOAD_SIZE);
   assert(InitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
   Send(a, 0);
-
-  //assert(EncryptRatchet(&sessiona, &storea, &msg, payload) == 0);
-  //memset(payload, 0, PAYLOAD_SIZE);
-  //assert(msg.n > 0);
-
-  assert(DecryptPreKeyMessage(&sessionb, &storeb, payload, messages[0].msg.p, messages[0].msg.n) == 0);
-  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  Recv(b, 0, true);
 
   Send(b, 1);
-  Recv(a, 1);
-
-  //memset(realpayload, 0xdd, PAYLOAD_SIZE);
-  //memcpy(payload, realpayload, PAYLOAD_SIZE);
-  //assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
-  //assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
-  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  Recv(a, 1, false);
 
   Send(b, 2);
-  Recv(a, 2);
-  //memset(realpayload, 0xee, PAYLOAD_SIZE);
-  //memcpy(payload, realpayload, PAYLOAD_SIZE);
-  //assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
-  //assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
-  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  Recv(a, 2, false);
 
   Send(b, 3);
-  //memset(realpayload, 0x88, PAYLOAD_SIZE);
-  //memcpy(payload, realpayload, PAYLOAD_SIZE);
-  //assert(EncryptRatchet(&sessionb, &storeb, &msg, payload) == 0);
-
   Send(b, 4);
-  //Payload payload2, realpayload2;
-  //struct PreKeyMessage msg2;
-  //memset(realpayload2, 0x77, PAYLOAD_SIZE);
-  //memcpy(payload2, realpayload2, PAYLOAD_SIZE);
-  //assert(EncryptRatchet(&sessionb, &storeb, &msg2, payload2) == 0);
 
   assert(sessiona.mkskipped.n == 0);
-  Recv(a, 4);
-  //assert(DecryptMessage(&sessiona, &storea, payload2, msg2.p, msg2.n) == 0);
-  //assert(!memcmp(realpayload2, payload2, PAYLOAD_SIZE));
-  assert(sessiona.mkskipped.n == 1);
+  Recv(a, 4, false);
 
-  Recv(a, 3);
-  //assert(DecryptMessage(&sessiona, &storea, payload, msg.p, msg.n) == 0);
-  //assert(!memcmp(realpayload, payload, PAYLOAD_SIZE));
+  assert(sessiona.mkskipped.n == 1);
+  Recv(a, 3, false);
   assert(sessiona.mkskipped.n == 0);
 }
 
@@ -296,11 +258,6 @@ static void TestReceive() {
   CopyHex(msg,"33083812210508a21e22879385c9f5ea5ef0a50b993167659fbc0e90614365b9d0147ac8f1201a21057f1a8715095495c17552d720975d8405c38ed11bee9404bca19062d352a9c7082252330a2105e5bbca217d32f97f860ecd3c47df86f2a71eb8d2e387e31dd1f5f5349863b455100018002220a0bae4d6e5da28a1897fa3562cd4d24ee60bc9a5d4daf0f13646239bec36a2b4fd5aa1843e12d6f128f1eaa07b3001");
   assert(DecryptPreKeyMessage(&session, &store, payload, msg, 164) == 0);
   DumpHex(payload, PAYLOAD_SIZE, "payload");
-
-  // TODO: payload size is different here
-  //CopyHex(msg, "33083812210508a21e22879385c9f5ea5ef0a50b993167659fbc0e90614365b9d0147ac8f1201a21057f1a8715095495c17552d720975d8405c38ed11bee9404bca19062d352a9c7082262330a2105e5bbca217d32f97f860ecd3c47df86f2a71eb8d2e387e31dd1f5f5349863b45510011800223081d1976144dbb3b9e7545b1c5ea72554813e51d312ae87d0e9c0ecc9c1aa01fe9cf0e7b9e371ac3f9aff79c0dc7183bbc6e0df5944062fc528f1eaa07b3001");
-  //assert(DecryptPreKeyMessage(&session, &store, payload, msg, 180) == 0);
-  //DumpHex(payload, PAYLOAD_SIZE, "payload");
 }
 
 static void TestDeriveChainKey() {

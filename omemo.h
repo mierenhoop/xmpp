@@ -77,14 +77,17 @@ typedef uint8_t Payload[PAYLOAD_SIZE];
 struct PreKeyMessage {
   uint8_t p[PREKEYHEADER_MAXSIZE+ENCRYPTED_MAXSIZE];
   size_t n;
+  bool isprekey;
 };
 
 // As the spec notes, a spk should be kept for one more rotation.
 // If prevsignedprekey doesn't exist, its id is 0. Therefore a valid id is always >= 1;
+// pkcounter is the id of the most recently generated prekey.
 struct Store {
   struct KeyPair identity;
   struct SignedPreKey cursignedprekey, prevsignedprekey;
   struct PreKey prekeys[NUMPREKEYS];
+  uint32_t pkcounter;
 };
 
 // TODO: pack for serialization?
@@ -119,6 +122,8 @@ int InitFromBundle(struct Session *session, const struct Store *store, const str
 int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload);
 
 int DecryptPreKeyMessage(struct Session *session, const struct Store *store, Payload payload, const uint8_t *msg, size_t msgn);
+
+int DecryptAnyMessage(struct Session *session, const struct Store *store, Payload payload, bool isprekey, const uint8_t *msg, size_t msgn);
 
 int DecryptMessage(struct Session *session, const struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn);
 

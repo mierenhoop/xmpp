@@ -263,6 +263,27 @@ static bool VerifySignature(const CurveSignature sig, const Key sk,
   return c25519_verify(sig, sk, msg, n);
 }
 
+static inline uint32_t IncrementWrapSkipZero(uint32_t n) {
+  n++;
+  return n + !n;
+}
+
+static void RefillPreKeys(struct Store *store) {
+  int i;
+  for (i = 0; i < 1/*NUMPREKEYS*/; i++) {
+    if (!store->prekeys[i].id) {
+      store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
+      GeneratePreKey(store->prekeys+i, store->pkcounter);
+    }
+  }
+  // HACK: for debugging keep it fast
+  for (; i < NUMPREKEYS; i++) {
+    store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
+    store->prekeys[i].id = store->pkcounter;
+    memcpy(&store->prekeys[i].kp, &store->prekeys[0].kp, sizeof(struct KeyPair));
+  }
+}
+
 void SetupStore(struct Store *store) {
   memset(store, 0, sizeof(struct Store));
   GenerateIdentityKeyPair(&store->identity);
@@ -272,12 +293,7 @@ void SetupStore(struct Store *store) {
   DumpHex(store->cursignedprekey.kp.pub, 32, "spkpub");
   DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
   DumpHex(store->cursignedprekey.sig, 64, "spksig");
-  for (int i = 0; i < NUMPREKEYS; i++) {
-    GeneratePreKey(store->prekeys+i, i+1);
-    printf("id %d\n", i+1);
-    DumpHex(store->prekeys[i].kp.pub, 32, "pkpub");
-    DumpHex(store->prekeys[i].kp.prv, 32, "pkprv");
-  }
+  RefillPreKeys(store);
 }
 
 static void SetupSession(struct Session *session) {
@@ -313,7 +329,7 @@ static void Encrypt(uint8_t out[PAYLOAD_MAXPADDEDSIZE], const Payload in, Key ke
   memcpy(tmp, in, 32);
   memset(tmp+32, 0x10, 0x10);
   mbedtls_aes_context aes;
-  // These functions won't fail, so we can skip error checking.
+  // TODO: error checking
   assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
   assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 48,
                                iv, tmp, out) == 0);
@@ -365,6 +381,8 @@ static int GetBaseMaterials(Key d, Key mk, const Key ck) {
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
 // msg->p                          [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
 static int EncryptRatchetImpl(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload) {
+  if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
+    return OMEMO_ESTATE;
   int r;
   Key mk;
   struct DeriveChainKeyOutput kdfout;
@@ -386,7 +404,8 @@ static int EncryptRatchetImpl(struct Session *session, const struct Store *store
 
   session->state.ns++;
 
-  if (session->fsm != SESSION_READY) {
+  if (session->fsm == SESSION_INIT) {
+    msg->isprekey = true;
     // [message 00...] -> [00... message] -> [header 00... message] ->
     // [header message]
     memmove(msg->p + PREKEYHEADER_MAXSIZE, msg->p, msg->n);
@@ -514,11 +533,6 @@ static const struct SignedPreKey *FindSignedPreKey(const struct Store *store, ui
   return NULL;
 }
 
-static inline uint32_t IncrementWrapSkipZero(uint32_t n) {
-  n++;
-  return n + !n;
-}
-
 static void RotateSignedPreKey(struct Store *store) {
   memcpy(&store->prevsignedprekey, &store->cursignedprekey,
          sizeof(struct SignedPreKey));
@@ -590,8 +604,8 @@ static int DecryptMessageImpl(struct Session *session,
                               Payload decrypted, const uint8_t *msg,
                               size_t msgn) {
   int r;
-  if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
-    return OMEMO_ESTATE;
+  //if (session->fsm == SESSION_UNINIT)
+  //  return OMEMO_ESTATE;
   if (msgn < 9 || msg[0] != ((3 << 4) | 3))
     return OMEMO_ECORRUPT;
   struct ProtobufField fields[5] = {
@@ -670,6 +684,7 @@ static int DecryptMessageImpl(struct Session *session,
   uint8_t tmp[48];
   Decrypt(tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv);
   memcpy(decrypted, tmp, 32);
+  session->fsm = SESSION_READY;
   return 0;
 }
 
@@ -734,9 +749,55 @@ static int DecryptPreKeyMessageImpl(struct Session *session, const struct Store 
     return r;
   RatchetInitBob(&session->state, sk, &spk->kp);
 
-  session->fsm = SESSION_READY;
   // TODO: we could also call DecryptMessageImpl in this case.
   return DecryptMessage(session, store, payload, fields[4].p, fields[4].v);
+}
+
+int DecryptAnyMessageImpl(struct Session *session, const struct Store *store, Payload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+  int r;
+  if (isprekey) {
+    SetupSession(session);
+    if (msgn == 0 || msg[0] != ((3 << 4) | 3))
+      return OMEMO_ECORRUPT;
+    // PreKeyWhisperMessage
+    struct ProtobufField fields[7] = {
+      [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
+      [1] = {PB_REQUIRED | PB_UINT32}, // prekeyid
+      [6] = {PB_REQUIRED | PB_UINT32}, // signedprekeyid
+      [2] = {PB_REQUIRED | PB_LEN, 33}, // basekey/ek
+      [3] = {PB_REQUIRED | PB_LEN, 33}, // identitykey/ik
+      [4] = {PB_REQUIRED | PB_LEN}, // message
+    };
+    if ((r = ParseProtobuf(msg+1, msgn-1, fields, 7)))
+      return r;
+    // later remove this prekey
+    const struct PreKey *pk = FindPreKey(store, fields[1].v);
+    const struct SignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
+    if (!pk || !spk)
+      return OMEMO_ECORRUPT;
+    memcpy(session->remoteidentity, fields[3].p+1, sizeof(Key));
+    Key sk;
+    if ((r = GetSharedSecret(sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1)))
+      return r;
+    RatchetInitBob(&session->state, sk, &spk->kp);
+    msg = fields[4].p;
+    msgn = fields[4].v;
+  }
+  session->fsm = SESSION_READY;
+  // TODO: we could also call DecryptMessageImpl in this case.
+  return DecryptMessage(session, store, payload, msg, msgn);
+}
+
+int DecryptAnyMessage(struct Session *session, const struct Store *store, Payload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+  assert(store);
+  assert(msg && msgn);
+  int r;
+  if ((r = DecryptAnyMessageImpl(session, store, payload, isprekey, msg, msgn))) {
+    //memset(session, 0, sizeof(struct Session));
+    memset(payload, 0, PAYLOAD_SIZE);
+    return r;
+  }
+  return 0;
 }
 
 int DecryptPreKeyMessage(struct Session *session, const struct Store *store, Payload payload, const uint8_t *msg, size_t msgn) {
