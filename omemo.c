@@ -1,6 +1,3 @@
-// TODO: we should remove the dep on mbedtls here since it creates
-// points of failures that wouldn't be there with other crypto
-// implementations (mostly from heap allocation).
 #include <mbedtls/hkdf.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/gcm.h>
@@ -322,26 +319,29 @@ static int GetMac(uint8_t d[static 8], const Key ika, const Key ikb,
   return 0;
 }
 
-static void Encrypt(uint8_t out[PAYLOAD_MAXPADDEDSIZE], const Payload in, Key key,
+static int Encrypt(uint8_t out[PAYLOAD_MAXPADDEDSIZE], const Payload in, Key key,
                     uint8_t iv[static 16]) {
   _Static_assert(PAYLOAD_MAXPADDEDSIZE == 48);
   uint8_t tmp[48];
   memcpy(tmp, in, 32);
   memset(tmp+32, 0x10, 0x10);
   mbedtls_aes_context aes;
-  // TODO: error checking
-  assert(mbedtls_aes_setkey_enc(&aes, key, 256) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 48,
-                               iv, tmp, out) == 0);
+  if (mbedtls_aes_setkey_enc(&aes, key, 256)
+   || mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 48,
+                               iv, tmp, out))
+    return OMEMO_ECRYPTO;
+  return 0;
 }
 
-static void Decrypt(uint8_t *out, const uint8_t *in, size_t n, Key key,
+static int Decrypt(uint8_t *out, const uint8_t *in, size_t n, Key key,
                     uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
-  assert(mbedtls_aes_setkey_dec(&aes, key, 256) == 0);
-  assert(mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, n,
-                               iv, in, out) == 0);
+  if (mbedtls_aes_setkey_dec(&aes, key, 256) ||
+  mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, n,
+                               iv, in, out))
+    return OMEMO_ECRYPTO;
   DumpHex(out, PAYLOAD_SIZE, "decrypted");
+  return 0;
 }
 
 struct __attribute__((__packed__)) DeriveChainKeyOutput {
@@ -395,7 +395,8 @@ static int EncryptRatchetImpl(struct Session *session, const struct Store *store
   msg->n = FormatMessageHeader(msg->p, session->state.ns, session->state.pn, session->state.dhs.pub);
   msg->p[msg->n++] = (4 << 3) | PB_LEN;
   msg->p[msg->n++] = PAYLOAD_MAXPADDEDSIZE;
-  Encrypt(msg->p+msg->n, payload, kdfout.cipher, kdfout.iv);
+  if ((r = Encrypt(msg->p+msg->n, payload, kdfout.cipher, kdfout.iv)))
+    return r;
   msg->n += PAYLOAD_MAXPADDEDSIZE;
 
   if ((r = GetMac(msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mac, msg->p, msg->n)))
@@ -422,6 +423,7 @@ int EncryptRatchet(struct Session *session, const struct Store *store, struct Pr
   int r;
   struct State backup;
   memcpy(&backup, &session->state, sizeof(struct State));
+  memset(msg, 0, sizeof(struct PreKeyMessage));
   if ((r = EncryptRatchetImpl(session, store, msg, payload))) {
     memcpy(&session->state, &backup, sizeof(struct State));
     memset(msg, 0, sizeof(struct PreKeyMessage));
@@ -682,7 +684,8 @@ static int DecryptMessageImpl(struct Session *session,
   if (memcmp(mac, msg+msgn-8, 8))
     return OMEMO_ECORRUPT;
   uint8_t tmp[48];
-  Decrypt(tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv);
+  if ((r = Decrypt(tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv)))
+    return r;
   memcpy(decrypted, tmp, 32);
   session->fsm = SESSION_READY;
   return 0;
@@ -706,51 +709,6 @@ int DecryptMessage(struct Session *session, const struct Store *store, Payload d
   if (session->mkskipped.removed)
     NormalizeSkipMessageKeysTrivial(&session->mkskipped);
   return 0;
-}
-
-// Decrypt the (usually) first message and start/initialize a session.
-// TODO: the prekey message can be sent multiple times, what should we do then?
-// TODO: merge impl of this and DecryptMessage with boolean if is prekey
-static int DecryptPreKeyMessageImpl(struct Session *session, const struct Store *store, Payload payload, const uint8_t *p, const uint8_t* e) {
-  int r;
-  if (e-p == 0 || *p++ != ((3 << 4) | 3))
-    return OMEMO_ECORRUPT;
-  // PreKeyWhisperMessage
-  struct ProtobufField fields[7] = {
-    [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
-    [1] = {PB_REQUIRED | PB_UINT32}, // prekeyid
-    [6] = {PB_REQUIRED | PB_UINT32}, // signedprekeyid
-    [2] = {PB_REQUIRED | PB_LEN, 33}, // basekey/ek
-    [3] = {PB_REQUIRED | PB_LEN, 33}, // identitykey/ik
-    [4] = {PB_REQUIRED | PB_LEN}, // message
-  };
-  if ((r = ParseProtobuf(p, e-p, fields, 7)))
-    return r;
-  assert(fields[2].v == 33);
-  assert(fields[3].v == 33);
-  // later remove this prekey
-  const struct PreKey *pk = FindPreKey(store, fields[1].v);
-  if (!pk)
-    return OMEMO_ECORRUPT;
-  const struct SignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
-  if (!spk)
-    return OMEMO_ECORRUPT;
-  memcpy(session->remoteidentity, fields[3].p+1, sizeof(Key));
-  printf("pkid %d\n", fields[1].v);
-  DumpHex(pk->kp.prv, 32, "pkprv");
-  DumpHex(pk->kp.pub, 32, "pkpub");
-
-  printf("spkid %d\n", fields[6].v);
-  DumpHex(spk->kp.prv, 32, "spkprv");
-  DumpHex(spk->kp.pub, 32, "spkpub");
-
-  Key sk;
-  if ((r = GetSharedSecret(sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1)))
-    return r;
-  RatchetInitBob(&session->state, sk, &spk->kp);
-
-  // TODO: we could also call DecryptMessageImpl in this case.
-  return DecryptMessage(session, store, payload, fields[4].p, fields[4].v);
 }
 
 int DecryptAnyMessageImpl(struct Session *session, const struct Store *store, Payload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
@@ -794,19 +752,6 @@ int DecryptAnyMessage(struct Session *session, const struct Store *store, Payloa
   int r;
   if ((r = DecryptAnyMessageImpl(session, store, payload, isprekey, msg, msgn))) {
     //memset(session, 0, sizeof(struct Session));
-    memset(payload, 0, PAYLOAD_SIZE);
-    return r;
-  }
-  return 0;
-}
-
-int DecryptPreKeyMessage(struct Session *session, const struct Store *store, Payload payload, const uint8_t *msg, size_t msgn) {
-  assert(store);
-  assert(msg && msgn);
-  SetupSession(session);
-  int r;
-  if ((r = DecryptPreKeyMessageImpl(session, store, payload, msg, msg+msgn))) {
-    memset(session, 0, sizeof(struct Session));
     memset(payload, 0, PAYLOAD_SIZE);
     return r;
   }

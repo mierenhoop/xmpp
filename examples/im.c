@@ -275,7 +275,8 @@ static void ParseDeviceList(struct xmppParser *parser) {
           "node='eu.siacs.conversations.axolotl.devicelist'><item "
           "id='current'><list xmlns='eu.siacs.conversations.axolotl'>",
           RandomInt(), deviceid);
-      ReAddDevices(parser);
+      //ReAddDevices(parser);
+      FormatXml(&client.builder, "<device id='%d'/>", deviceid);
       xmppFormatStanza(&client,
                        "</list></item></publish></pubsub></iq>", RandomInt(),
                        deviceid);

@@ -256,7 +256,7 @@ static void TestReceive() {
   Payload payload;
   uint8_t msg[180];
   CopyHex(msg,"33083812210508a21e22879385c9f5ea5ef0a50b993167659fbc0e90614365b9d0147ac8f1201a21057f1a8715095495c17552d720975d8405c38ed11bee9404bca19062d352a9c7082252330a2105e5bbca217d32f97f860ecd3c47df86f2a71eb8d2e387e31dd1f5f5349863b455100018002220a0bae4d6e5da28a1897fa3562cd4d24ee60bc9a5d4daf0f13646239bec36a2b4fd5aa1843e12d6f128f1eaa07b3001");
-  assert(DecryptPreKeyMessage(&session, &store, payload, msg, 164) == 0);
+  assert(DecryptAnyMessage(&session, &store, payload, true, msg, 164) == 0);
   DumpHex(payload, PAYLOAD_SIZE, "payload");
 }
 

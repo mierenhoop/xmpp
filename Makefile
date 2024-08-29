@@ -80,10 +80,13 @@ start-prosody: test/localhost.crt
 stop-prosody:
 	docker-compose -f test/docker-compose.yml down
 
-# TODO: remove old configs to generate new key stuff
-.PHONY: launch-profanity
-launch-profanity:
-	(printf "/connect user@localhost\nuserpass\n"; sleep 1; printf "/tls allow\n/omemo trustmode blind\n/omemo policy always\n"; cat) | profanity
+test/bot-venv/:
+	python -m venv test/bot-venv/
+	./test/bot-venv/bin/pip install slixmpp
+	./test/bot-venv/bin/pip install slixmpp-omemo
+
+start-omemo-bot: | test/bot-venv/
+	./test/bot-venv/bin/python test/bot-omemo.py
 
 .PHONY: tags
 tags:
@@ -95,4 +98,4 @@ clean:
 
 .PHONY: full-clean
 full-clean: clean
-	rm -f test/cacert.inc test/localhost.crt curve25519.c
+	rm -rf test/cacert.inc test/localhost.crt curve25519.c test/bot-venv
