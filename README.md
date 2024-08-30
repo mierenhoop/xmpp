@@ -107,6 +107,10 @@ Run the im (instant messenger) example:
 
  `$ make runim`
 
+ By default the localhost self-signed certificate is used. For a simple
+ test you can spin up prosody (`$ make start-prosody`) and run the echo
+ bot (`$ make start-omemo-bot`).
+
 ## License
 
  The new code in the library is licensed under ISC.

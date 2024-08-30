@@ -54,40 +54,53 @@ bool StrictStrEqual(const char *c, const char *u, size_t n) {
   return !c[1] && !n;
 }
 
-// Usage:
-//  if (s.p && (d = calloc(s.n+1))) xmppReadXmlSlice(d, s);
-// TODO: we can skip the whole prefix initialization since that is
-// static. just memcpy the internal state to the struct.
-void xmppReadXmlSlice(char *d, struct xmppXmlSlice s) {
-  if (s.type == XMPP_SLICE_ATTR || s.type == XMPP_SLICE_CONT) {
+/**
+ * Decode a raw XML slice into buffer.
+ *
+ * Example usage:
+ *
+ *   char *GetId(struct xmppStanza *stanza) {
+ *     char *d = NULL;
+ *     if (stanza->id.p && (d = calloc(stanza->id.n + 1)))
+ *       xmppReadXmlSlice(d, stanza->id);
+ *     return d;
+ *   }
+ *
+ * @param d is the destination buffer
+ * @param s is the slice
+ */
+void xmppReadXmlSlice(char *d, struct xmppXmlSlice *slc) {
+  if (slc->type == XMPP_SLICE_ATTR || slc->type == XMPP_SLICE_CONT) {
+    // TODO: we can skip the whole prefix initialization since that is
+    // static. just memcpy the internal state to the struct.
     static const char attrprefix[] = "<x e=";
     static const char contprefix[] = "<x>";
     char buf[16];
     int i, n;
     yxml_t x;
     yxml_init(&x, buf, sizeof(buf));
-    int target = s.type == XMPP_SLICE_ATTR ? YXML_ATTRVAL : YXML_CONTENT;
-    const char *prefix = s.type == XMPP_SLICE_ATTR ? attrprefix : contprefix;
-    n = s.type == XMPP_SLICE_ATTR ? sizeof(attrprefix)-1 : sizeof(contprefix)-1;
+    int target = slc->type == XMPP_SLICE_ATTR ? YXML_ATTRVAL : YXML_CONTENT;
+    const char *prefix = slc->type == XMPP_SLICE_ATTR ? attrprefix : contprefix;
+    n = slc->type == XMPP_SLICE_ATTR ? sizeof(attrprefix)-1 : sizeof(contprefix)-1;
     for (i = 0; i < n; i++) {
       yxml_parse(&x, prefix[i]);
     }
     i = 0;
-    n = s.rawn;
-    if (s.type == XMPP_SLICE_ATTR) { // Also parse the '/"
+    n = slc->rawn;
+    if (slc->type == XMPP_SLICE_ATTR) { // Also parse the '/"
       i--;
       n++;
     }
     for (; i < n; i++) {
       // with parsing input validation has already succeeded so there is
       // no reason to check for errors again.
-      if (yxml_parse(&x, s.p[i]) == target)
+      if (yxml_parse(&x, slc->p[i]) == target)
         d = stpcpy(d, x.data);
     }
-  } else if (s.type == XMPP_SLICE_B64) {
-    DecodeBase64(d, d+s.n, s.p, s.rawn); // TODO: check if b64 is valid.
+  } else if (slc->type == XMPP_SLICE_B64) {
+    DecodeBase64(d, d+slc->n, slc->p, slc->rawn); // TODO: check if b64 is valid.
   } else {
-    memcpy(d, s.p, s.rawn);
+    memcpy(d, slc->p, slc->rawn);
   }
 }
 
@@ -101,19 +114,17 @@ const char *xmppErrToStr(int e) {
   return "[unknown error]";
 }
 
-struct xmppListIterator {
-  int type;
-  const char *p;
-  size_t i, rawn;
-};
-
+// TODO: we might want to use this in some places
 static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
   return true;
 }
 
 #define HasOverflowed(p, e) ((p) >= (e))
 
-// Skip all the way until the end of the element it has just entered
+/**
+ * Parse an unknown piece of XML up to the end of the most recently
+ * parsed element.
+ */
 void xmppParseUnknown(struct xmppParser *p) {
   int stack = 1;
   while (p->i < p->n) {
@@ -134,27 +145,26 @@ void xmppParseUnknown(struct xmppParser *p) {
   longjmp(p->jb, XMPP_EPARTIAL);
 }
 
-// ret:
-//  = 0: OK
-//  = 1: end
-// attribute name will be in s->x.attr
-// slc will contain the attr value
-// MUST be called directly after YXML_ELEMSTART
-// even for a self-closing element, it will not trigger in this function.
-int xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
+/**
+ * Parse an XML attribute into a slice.
+ *
+ * May only be used after xmppParseElement returns true.
+ *
+ * @return true if there are more attributes remaining and false if
+ * there will be no more attributes
+ */
+bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
   int r;
-  slc->p = NULL;
-  slc->n = 0;
-  slc->rawn = 0;
+  memset(slc, 0, sizeof(*slc));
   slc->type = XMPP_SLICE_ATTR;
   while (1) { // hacky way to check end of attr list
     if (!slc->p && (p->p[p->i-1] == '>' || p->p[p->i-1] == '/'))
-      return 0;
+      return false;
     if (!(p->i < p->n))
       break;
     switch ((r = yxml_parse(&p->x, p->p[p->i++]))) {
     case YXML_ATTREND:
-      return 1;
+      return true;
     case YXML_ATTRVAL:
       if (!slc->p)
         slc->p = p->p + p->i - 1;
@@ -170,9 +180,12 @@ int xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
   longjmp(p->jb, XMPP_EPARTIAL);
 }
 
-// MAY ONLY be called after xmppParseAttribute returns 1
-// or right after ELEMSTART
-// will read all the way to end of element
+/**
+ * Parse XML content into a slice.
+ *
+ * May be used after xmppParseAttribute or after xmppParseElement
+ * returns true.
+ */
 void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   int r;
   bool stop = false;
@@ -204,36 +217,22 @@ void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   longjmp(p->jb, XMPP_EPARTIAL);
 }
 
-// TODO: we don't need this function anymore
-// elem = the found xml element name
-// n = the length of said element name
-// opt = opt string ("<char>=<element-name> <char2>=<element-name2>...")
-// returns found char or 0
-static int FindElement(const char *elem, size_t n, const char *opt) {
-  const char *p = opt;
-  if (!elem || !n)
-    return XMPP_EXML;
-  // might be more efficient with strchr & strspn.
-  while ((p = strstr(p, elem))) {
-    if (p-opt >= 2 && p[-1] == '='
-      && (p[n] == '\0' || p[n] == ' '))
-      return p[-2];
-    p++;
-  }
-  return '?';
-}
-
-// returns 0 when end of parent element
-int xmppParseElement(struct xmppParser *p) {
+/**
+ * Parse an XML element.
+ *
+ * @return true if a new element was parsed or false if the most
+ * recently parsed element is closed.
+ */
+bool xmppParseElement(struct xmppParser *p) {
   int r;
   while (p->i < p->n) {
     switch ((r = yxml_parse(&p->x, p->p[p->i++]))) {
     case YXML_OK:
       break;
     case YXML_ELEMSTART:
-      return 1; //return FindElement(s->x.elem, yxml_symlen(s->x.elem), opt);
+      return true; //return FindElement(s->x.elem, yxml_symlen(s->x.elem), opt);
     case YXML_ELEMEND:
-      return 0;
+      return false;
     default:
       if (r < 0)
         longjmp(p->jb, XMPP_EXML);
@@ -293,7 +292,7 @@ static void ParseOptionalRequired(struct xmppParser *p, struct xmppStream *s, in
 // Read stream and features
 // Features ALWAYS come after server stream according to spec
 // If server too slow, user should read more.
-void xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
+static void xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
   struct xmppXmlSlice attr;
   if (!xmppParseElement(p) || strcmp(p->x.elem, "stream:features"))
     longjmp(p->jb, XMPP_ESPEC);
@@ -342,7 +341,7 @@ void xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
 // small mistake in the parsing code or wrongly handled input the whole
 // stream will be unreadable (in the current implementation that is).
 // TODO: possibly refactor instream
-int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool instream) {
+static int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool instream) {
   int r;
   int i = p->i;
   struct xmppXmlSlice attr, cont;
@@ -486,7 +485,7 @@ static char *SanitizeSaslUsername(char *d, char *e, const char *s) {
 // ret
 //  = 0: success
 //  < 0: XMPP_EMEM
-int xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user) {
+static int xmppInitSaslContext(struct xmppSaslContext *ctx, char *p, size_t n, const char *user) {
   char *e = p + n;
   memset(ctx, 0, sizeof(*ctx));
   ctx->p = p;
@@ -554,12 +553,24 @@ static char *Itoa(char *d, char *e, int i) {
   return d;
 }
 
-// Analogous to the typical printf formatting, except only the following applies:
-// - %s: Encoded XML attribute value string
-// - %b: Base64 string, first arg is len and second is raw data
-// - %d: integer
-// - %x: xmppXmlSlice to encoded XML
-int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
+/**
+ * Appends a formatted XML string to the builder.
+ *
+ * If there is not enough capacity in the builder, all formatted XML
+ * after the most recent start (TODO) will be removed.
+ *
+ * @param c is the builder which is already initialized
+ * @param fmt is a printf-esque format string that only supports the
+ * following specifiers:
+ * - %s: pointer to nul-string which will be generously escaped (for
+ *   attribute and content)
+ * - %b: base64 representation of raw binary data, the first parameter 
+ *   is the length and the second is a pointer to the data
+ * - %d: integer (int)
+ * - %x: xmppXmlSlice to encoded XML
+ * @return 0 if successful or XMPP_EMEM if there is not enough capacity
+ */
+int FormatXml(struct xmppBuilder *c, const char *fmt, ...) {
   va_list ap;
   struct xmppXmlSlice slc;
   size_t n;
@@ -635,11 +646,11 @@ int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...) {
 // length of s not checked, it's expected that invalid input would
 // end with either an unsupported base64 charactor or nul.
 // s = success base64 content
-int xmppVerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice s) {
+static int VerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice *slc) {
   assert(ctx->state == XMPP_SASL_CALCULATED);
   char b1[30], b2[20];
   size_t n;
-  if (mbedtls_base64_decode(b1, 30, &n, s.p, s.rawn)
+  if (mbedtls_base64_decode(b1, 30, &n, slc->p, slc->rawn)
    || mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
     return XMPP_ESPEC;
   return !!memcmp(ctx->srvsig, b2, 20);
@@ -719,7 +730,7 @@ static int CalculateScramSha1(struct xmppSaslContext *ctx, char clientproof[stat
 // make sure pwd is all printable chars
 // return something if ctx->n is too small
 // return something else if corrupt data
-int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, const char *pwd) {
+static int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, const char *pwd) {
   assert(ctx->state >= XMPP_SASL_INITIALIZED);
   size_t n;
   int itrs = 0;
@@ -783,19 +794,6 @@ static void MoveStanza(struct xmppParser *p) {
       "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
       !res, !!res, res)
 
-// XEP-0199: XMPP Ping
-
-#define xmppFormatPing(c, to, id)                                      \
-  FormatXml(c,                                                         \
-            "<iq to='%s' id='ping%d' type='get'><ping "                \
-            "xmlns='urn:xmpp:ping'/></iq>",                            \
-            to, id)
-
-
-// XEP-0030: Service Discovery
-
-#define xmppFormatDisco(c, from, to, id) xmppFormatIq(c, "get", from, to, id, "<query xmlns='http://jabber.org/protocol/disco#info'/>")
-
 // XEP-0198: Stream Management
 
 #define xmppFormatAckEnable(c, resume) FormatXml(c, "<enable xmlns='urn:xmpp:sm:3'[ resume='true']/>", resume)
@@ -804,13 +802,6 @@ static void MoveStanza(struct xmppParser *p) {
 #define xmppFormatAckAnswer(c, h) FormatXml(c, "<a xmlns='urn:xmpp:sm:3' h='%d'/>", h)
 
 #define xmppFormatMessage(c, to, id, body) FormatXml(c, "<message to='%s' id='message%d'><body>%s</body></message>", to, id, body)
-
-/*static void SendDisco(struct xmppClient *c) {
-  int disco = c->lastdisco + 1;
-  FormatXml(c->out+c->outn, c->out+sizeof(c->out), "<iq type='get' to='%s' id='disco%d'><query xmlns='http://jabber.org/protocol/disco#info'/></iq>", "localhost", disco);
-  c->lastdisco = disco;
-  c->actualsent++;
-}*/
 
 enum {
   CLIENTSTATE_UNINIT = 0,
@@ -828,35 +819,16 @@ enum {
   CLIENTSTATE_ENDSTREAM,
 };
 
-static int SendStanzaTrail(struct xmppClient *c) {
-  int r;
-  if (c->features & XMPP_STREAMFEATURE_SMACKS &&
-      (r = xmppFormatAckRequest(&c->builder)))
-    return r;
-  return XMPP_ITER_SEND;
-}
-
-int xmppSendMessage(struct xmppClient *c, const char *to,
-                       const char *body) {
-  int r;
-  if ((r = xmppFormatMessage(&c->builder, to, 1, body)) ||
-      (r = SendStanzaTrail(c)))
-    return r;
-  c->actualsent++;
-  return 0;
-}
-
-static int SendPing(struct xmppClient *c, const char *to) {
-  int r;
-  int ping = c->lastping + 1;
-  if ((r = xmppFormatPing(&c->builder, to, ping)) ||
-      (r = SendStanzaTrail(c)))
-    return r;
-  c->lastping = ping;
-  c->actualsent++;
-  return 0;
-}
-
+/**
+ * Supply user's password while negotiating SASL.
+ *
+ * This function must be used after xmppIterate returns
+ * XMPP_ITER_GIVEPWD. It may be called again after an error was
+ * returned and that error will potentially be resolved.
+ *
+ * @return 0 when successful, XMPP_ESTATE when not called after
+ * XMPP_ITER_GIVEPWD or XMPP_EMEM or XMPP_ESASLBUF or XMPP_ECRYPTO
+ */
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd) {
   int r;
   if (c->state == CLIENTSTATE_SASLPWD) {
@@ -891,6 +863,12 @@ static size_t FindNext(const char *s, char c) {
   return (f = strchr(s, c)) ? f - s + 1 : 0;
 }
 
+/**
+ * Initialize XMPP client before iteration.
+ *
+ * @param jid of the user initiating the XMPP session
+ * @param opts zero or more XMPP_OPT_* |'ed
+ */
 void xmppInitClient(struct xmppClient *c, const char *jid, int opts) {
   memset(c, 0, sizeof(*c));
   c->opts = opts;
@@ -899,6 +877,8 @@ void xmppInitClient(struct xmppClient *c, const char *jid, int opts) {
   c->parser.c = sizeof(c->in);
   c->builder.p = c->out;
   c->builder.c = sizeof(c->out);
+  // TODO: what should we do when we want to register, thus have no JID
+  // yet? Only pass the domain?
   size_t d = FindNext(jid, '@'), r = FindNext(jid, '/'), n = strlen(jid);
   memcpy(c->jid.local, jid, (c->jid.localn = d-1));
   memcpy(c->jid.domain, jid+d, (c->jid.domainn = r-d-1));
@@ -922,6 +902,8 @@ static int ReturnRetry(struct xmppClient *c, int r) {
 // there's no resolution done we want to gracefully exit by sending our
 // stream ending.
 // TODO: should we bzero anywhere?
+// TODO: expose this to the API? returning XMPP_ITER_SEND used in
+// xmppIterate
 int xmppEndStream(struct xmppClient *c) {
   if (!xmppIsInitialized(c))
     return 0;
@@ -962,20 +944,27 @@ static void SetupSkipping(struct xmppParser *p) {
   yxml_init(&p->x, p->xbuf, sizeof(p->xbuf));
 }
 
-// When SEND is returned, the complete out buffer (c->builder.p) with the
-// size specified in (c->builder.n) must be sent over the network before
-// another iteration is done. If c->builder.n is 0, you don't have to write
-// anything. It is recommended that your send function does not block so
-// that you can call Iterate again asap. You may only reallocate the in
-// buffer just before or after reading from the network.
-// When the provided SASL password is incorrect, the stream will be
-// closed and if you want to retry you must create a new stream. We
-// could reuse the same stream, but then we either have to keep track of
-// the amount of attempts and other stuff because some servers will let
-// us retry indefinitely and might cause an infinite loop.
-// ret:
-//  >= 0: XMPP_ITER_*
-//   < 0: XMPP_E*
+/**
+ * Iterate the XMPP client
+ *
+ * You may only reallocate the in
+ * buffer just before or after reading from the network.
+ * When the provided SASL password is incorrect, the stream will be
+ * closed and if you want to retry you must create a new stream. We
+ * could reuse the same stream, but then we either have to keep track of
+ * the amount of attempts and other stuff because some servers will let
+ * us retry indefinitely and might cause an infinite loop.
+ *
+ * @return
+ *   XMPP_ITER_SEND: the complete out buffer (c->builder.p) with the
+ * size specified in (c->builder.n) must be sent over the network before
+ * another iteration is done. If c->builder.n is 0, you don't have to
+ * write anything. It is recommended that your send function does not
+ * block so that you can call Iterate again.
+ *   XMPP_E*: and error has occured, you may fix it and call xmppIterate
+ *   again.
+ */
+// 
 int xmppIterate(struct xmppClient *c) {
   struct xmppStanza *st = &c->stanza;
   int r = 0;
@@ -1077,7 +1066,7 @@ int xmppIterate(struct xmppClient *c) {
         return ReturnStreamError(c, XMPP_EPASS);
       if (st->type != XMPP_STANZA_SASLSUCCESS)
         return ReturnStreamError(c, XMPP_ESPEC);
-      assert(xmppVerifySaslSuccess(&c->saslctx, st->saslsuccess) == 0);
+      assert(VerifySaslSuccess(&c->saslctx, &st->saslsuccess) == 0);
       memset(c->saslctx.p, 0, c->saslctx.n);
       memset(&c->saslctx, 0, sizeof(c->saslctx));
       c->features |= XMPP_STREAMFEATURE_SCRAMSHA1;
@@ -1129,22 +1118,11 @@ int xmppIterate(struct xmppClient *c) {
     return XMPP_ESTATE;
   }
   if (c->features & XMPP_STREAMFEATURE_SMACKS &&
-      (st->type == XMPP_STANZA_PING || st->type == XMPP_STANZA_IQ ||
+      (st->type == XMPP_STANZA_IQ ||
        st->type == XMPP_STANZA_MESSAGE ||
        st->type == XMPP_STANZA_PRESENCE))
       c->actualrecv++;
   switch (st->type) {
-  case XMPP_STANZA_PING: // TODO: deprecate ping
-    if (!(c->opts & XMPP_OPT_HIDEPRESENCE))
-      xmppFormatStanza(c, "<iq to='%x' id='%x' type='result'/>", st->from, st->id);
-    else
-      xmppFormatStanza(
-          c,
-          "<iq to='%x' id='%x' type='error'><ping "
-          "xmlns='urn:xmpp:ping'/><error type='cancel'><service-unavailable "
-          "xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>",
-          st->from, st->id);
-    return XMPP_ITER_OK;
   case XMPP_STANZA_SMACKSENABLED:
     c->features |= XMPP_STREAMFEATURE_SMACKS;
     if (st->smacksenabled.id.p) {

@@ -158,16 +158,6 @@ static void TestXml() {
   assert(xmppParseStanza(&p, &st, false) == 0);
   assert(st.to.p && !strncmp(st.to.p, "juliet@im.example.com", st.to.rawn));
   assert(st.to.rawn == st.to.n);
-  assert(FindElement("proceed", 7, "p=proceed f=failure") == 'p');
-  assert(FindElement("failure", 7, "p=proceed f=failure") == 'f');
-  assert(FindElement("", 0, "p=proceed f=failure") == XMPP_EXML);
-  assert(FindElement("roceed", 6, "p=proceed f=failure") == '?');
-  assert(FindElement("procee", 6, "p=proceed f=failure") == '?');
-  assert(FindElement("ailure", 6, "p=proceed f=failure") == '?');
-  assert(FindElement("failur", 6, "p=proceed f=failure") == '?');
-  assert(FindElement("failuree", 8, "p=proceed f=failure") == '?');
-  assert(FindElement("efailure", 8, "p=proceed f=failure") == '?');
-  assert(FindElement("procee", 6, "p=proceed f=failure c=procee") == 'c');
   assert(!StrictStrEqual("SCRAM-SHA-1", "SCRAM-SHA-1-PLUS", sizeof("SCRAM-SHA-1-PLUS")-1));
   assert(StrictStrEqual("SCRAM-SHA-1", "SCRAM-SHA-1", sizeof("SCRAM-SHA-1")-1));
   assert(!StrictStrEqual("SCRAM-SHA-1", "PLAIN", sizeof("PLAIN")-1));

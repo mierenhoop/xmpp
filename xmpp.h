@@ -26,7 +26,7 @@ struct xmppXmlSlice {
   size_t n, rawn; // TODO: n -> realn, rawn -> n
 };
 
-void xmppReadXmlSlice(char *d, struct xmppXmlSlice s);
+void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
 
 // The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.
 #define XMPP_EMEM -1
@@ -104,9 +104,6 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s);
   (XMPP_STREAMFEATURE_SCRAMSHA1 | XMPP_STREAMFEATURE_SCRAMSHA1PLUS |   \
    XMPP_STREAMFEATURE_PLAIN)
 
-#define XMPP_DISCO_DONE (1 << 0)
-#define XMPP_DISCO_REGISTER (1 << 1)
-
 #define XMPP_STANZA_EMPTY 0
 #define XMPP_STANZA_MESSAGE 1
 #define XMPP_STANZA_PRESENCE 2
@@ -118,9 +115,6 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s);
 #define XMPP_STANZA_ACKANSWER 8
 #define XMPP_STANZA_SASLSUCCESS 9
 #define XMPP_STANZA_SASLCHALLENGE 10
-#define XMPP_STANZA_DISCOREQ 11
-#define XMPP_STANZA_DISCORESP 12
-#define XMPP_STANZA_PING 13
 #define XMPP_STANZA_RESUMED 14
 #define XMPP_STANZA_ACKREQUEST 15
 #define XMPP_STANZA_FAILURE 16
@@ -140,6 +134,7 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice s);
 #define XMPP_FAILURE_NOT_AUTHORIZED         (1 << 9)
 #define XMPP_FAILURE_TEMPORARY_AUTH_FAILURE (1 << 10)
 
+// TODO: remove this
 // Any of the child elements can be null.
 // We only support a single body, subject, etc. This deviates from the spec.
 // It will only read the first instance.
@@ -261,8 +256,7 @@ struct xmppParser {
 // i = start of current stanza
 // n = size of buffer in p
 // c = capacity of buffer in p
-// TODO: rename to Builder
-struct xmppXmlComposer {
+struct xmppBuilder {
   char *p;
   size_t i, n, c;
 };
@@ -278,16 +272,14 @@ struct xmppClient {
   struct xmppSaslContext saslctx;
   struct xmppStanza stanza;
   struct xmppParser parser;
-  struct xmppXmlComposer builder;
+  struct xmppBuilder builder;
   int opts;
   bool isnegotiationdone;
   int state;
-  int disco;
   int features;
   int actualsent, actualrecv;
   int sentacks, recvacks;
-  int lastdisco, lastping;
-  bool disablesmack, disabledisco, enablereceipts;
+  bool disablesmack;
   bool cansmackresume;
 };
 
@@ -305,10 +297,11 @@ static inline int xmppIncrementAck(struct xmppClient *c, int r) {
   return 0;
 }
 
+// TODO: put some of this logic in an actual function
 #define xmppFormatStanza(c, fmt, ...) xmppIncrementAck(c, FormatXml(&(c)->builder, fmt "[<r xmlns='urn:xmpp:sm:3'/>]" __VA_OPT__(,)  __VA_ARGS__, ((c)->features & XMPP_STREAMFEATURE_SMACKS)))
 
 // TODO: rename to something like xmppAppendXml, also have a function that will revert the stanza
-int FormatXml(struct xmppXmlComposer *c, const char *fmt, ...);
+int FormatXml(struct xmppBuilder *c, const char *fmt, ...);
 
 struct StaticData {
   const char in[1], out[1], sasl[1];
@@ -323,12 +316,11 @@ static inline void xmppInitStatic(struct xmppClient *c, struct StaticData *d) {
 
 int xmppIterate(struct xmppClient *c);
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd);
-int xmppSendMessage(struct xmppClient *c, const char *to, const char *body);
 int xmppEndStream(struct xmppClient *c);
 
 void xmppParseUnknown(struct xmppParser *p);
-int xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc);
+bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc);
 void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc);
-int xmppParseElement(struct xmppParser *p);
+bool xmppParseElement(struct xmppParser *p);
 
 #endif

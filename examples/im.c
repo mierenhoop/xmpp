@@ -191,7 +191,7 @@ static void GivePassword() {
 static void PrintSlice(struct xmppXmlSlice *slc, const char *alt) {
   char *p;
   if (slc->p && (p = calloc(slc->n+1, 1))) {
-    xmppReadXmlSlice(p, *slc);
+    xmppReadXmlSlice(p, slc);
     printf("%s", p);
     free(p);
   } else {
