@@ -47,14 +47,15 @@ static FILE *log;
 static struct xmppClient client;
 static char linebuf[1000];
 static char *line;
-static size_t linen;
 static struct Store omemostore;
 static struct Session omemosession;
-static int deviceid, remoteid;
-static int curpending;
-static Uuidv4 pending[1];
+static int32_t deviceid, remoteid;
+static uint32_t curpending;
+static Uuidv4 pending[10];
 
-#define PENDING_SUBDEVICELIST 0
+#define PENDING_REMOTEDEVICELIST 0
+#define PENDING_OURDEVICELIST 1
+#define PENDING_BUNDLE 2
 
 void SystemRandom(void *d, size_t n) {
   assert(getrandom(d, n, 0) == n);
@@ -229,63 +230,36 @@ static int GetPendingFromId(struct xmppXmlSlice *id) {
   return -1;
 }
 
-static void AnnounceOmemoDevice() {
-  //xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='user@localhost' type='get' id='pubsub%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1' /></pubsub></iq>", rand());
-  xmppFormatStanza(
-      &client, "<iq xmlns='jabber:client' type='set' id='announce%d'><pubsub "
-               "xmlns='http://jabber.org/protocol/pubsub'><publish "
-               "node='eu.siacs.conversations.axolotl.devicelist'><item "
-               "id='current'><list "
-               "xmlns='eu.siacs.conversations.axolotl'><device "
-               "id='%d' /></list></item></publish>"
-PUBLISH_OPTIONS_OPEN
-               "</pubsub></iq>", RandomInt(), deviceid);
+static int FindNextChar(const char *s, char c) {
+  const char *p = strchr(s, c);
+  return p ? p - s : strlen(s);
 }
 
-static void ReAddDevices(struct xmppParser *parser) {
-  bool found = false;
-  struct xmppXmlSlice attr;
-  while (xmppParseElement(parser)) {
-    while (xmppParseAttribute(parser, &attr)) {
-      if (!strcmp(parser->x.attr, "id")) {
-        char *e;
-        long id = strtol(attr.p, &e, 10);
-        if (e > attr.p && id > 0) {
-          if (id == deviceid)
-            found = true;
-          FormatXml(&client.builder, "<device id='%d'/>", id);
-        }
+static const char *NextItem(const char *s, int n) {
+  return s[n] == '\0' ? s + n : s + n + 1;
+}
+
+// elems is string with space-separated elements, for example: "iq pubsub items item bundle".
+// returns true if succeeded
+static bool ParseMultiple(struct xmppParser *parser, const char *elems) {
+  int n = FindNextChar(elems, ' ');
+  if (n) {
+    while (xmppParseElement(parser)) {
+      if (!strncmp(elems, parser->x.elem, n) && parser->x.elem[n] == '\0') {
+        return ParseMultiple(parser, NextItem(elems, n));
+      } else {
+        xmppParseUnknown(parser);
       }
     }
-    xmppParseUnknown(parser);
+    return false;
   }
-  if (!found)
-    FormatXml(&client.builder, "<device id='%d'/>", deviceid);
-}
-
-// TODO: there should be a difference between parsing our own and adding ourself or parsing someone else's for remoteid.
-static void ParseDeviceList(struct xmppParser *parser) {
-  if (xmppParseElement(parser) && !strcmp(parser->x.elem, "item")) {
-    if (xmppParseElement(parser) && !strcmp(parser->x.elem, "list")) {
-      FormatXml(
-          &client.builder,
-          "<iq xmlns='jabber:client' type='set' "
-          "id='announce%d'><pubsub "
-          "xmlns='http://jabber.org/protocol/pubsub'><publish "
-          "node='eu.siacs.conversations.axolotl.devicelist'><item "
-          "id='current'><list xmlns='eu.siacs.conversations.axolotl'>",
-          RandomInt(), deviceid);
-      //ReAddDevices(parser);
-      FormatXml(&client.builder, "<device id='%d'/>", deviceid);
-      xmppFormatStanza(&client,
-                       "</list></item></publish></pubsub></iq>", RandomInt(),
-                       deviceid);
-    }
-  }
+  return true;
 }
 
 static void FetchBundle() {
-xmppFormatStanza(&client, "<iq type='get' to='%s' id='%d'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.bundles:%d'/></pubsub></iq>", "user@localhost", RandomInt(), remoteid);
+  GenerateUuidv4(pending[PENDING_BUNDLE]);
+  xmppFormatStanza(&client, "<iq type='get' to='%s' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.bundles:%d'/></pubsub></iq>", "user@localhost", pending[PENDING_BUNDLE], remoteid);
+  curpending |= (1 << PENDING_BUNDLE);
 }
 
 static void *Malloc(size_t n) {
@@ -326,7 +300,6 @@ static int ParseNumberAttribute(struct xmppParser *parser, const char *name) {
 }
 
 static bool ParseRandomPreKey(struct xmppParser *parser, struct Bundle *bundle) {
-  struct xmppXmlSlice cont;
   int i = 0;
   while (xmppParseElement(parser)) {
     assert(!strcmp(parser->x.elem, "preKeyPublic"));
@@ -463,7 +436,7 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
         if (xmppParseElement(parser) &&
             !strcmp(parser->x.elem, "items")) {
           if (HasExactAttribute(parser, "node", "eu.siacs.conversations.axolotl.devicelist")) {
-            ParseDeviceList(parser);
+            //ParseDeviceList(parser);
           } else {
             assert(xmppParseElement(parser) && !strcmp(parser->x.elem, "item"));
             if (xmppParseElement(parser) && !strcmp(parser->x.elem, "bundle"))
@@ -480,9 +453,74 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
   }
 }
 
-static void SubscribeDeviceList() {
-  GenerateUuidv4(pending[PENDING_SUBDEVICELIST]);
-  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='user@localhost' type='get' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1'/></pubsub></iq>", pending[PENDING_SUBDEVICELIST]);
+static int ParseDeviceId(struct xmppParser *parser) {
+  struct xmppXmlSlice attr;
+  int id;
+  while (xmppParseAttribute(parser, &attr)) {
+    if (!strcmp(parser->x.attr, "id")) {
+      char *e;
+      id = strtol(attr.p, &e, 10);
+      //if e < p+n
+      //  id = -1;
+    }
+  }
+  xmppParseUnknown(parser);
+  return id;
+}
+
+static void ParseOurDeviceList(struct xmppStanza *st) {
+  SetupParser(parser, r, st->raw.p, st->raw.n) {
+    LogWarn("Parsing the stanza failed with error %d", r);
+    return;
+  }
+  // TODO: xmppFormatBegin (this would clear an unfinished stanza)
+  FormatXml(
+      &client.builder,
+      "<iq xmlns='jabber:client' type='set' "
+      "id='announce%d'><pubsub "
+      "xmlns='http://jabber.org/protocol/pubsub'><publish "
+      "node='eu.siacs.conversations.axolotl.devicelist'><item "
+      "id='current'><list xmlns='eu.siacs.conversations.axolotl'>",
+      RandomInt(), deviceid);
+  if (ParseMultiple(parser, "iq pubsub items item list")) {
+    while (xmppParseElement(parser)) {
+      int id = ParseDeviceId(parser);
+      if (id != deviceid)
+        FormatXml(&client.builder, "<device id='%d'/>", id);
+    }
+  }
+  FormatXml(&client.builder, "<device id='%d'/>", deviceid);
+  xmppFormatStanza(&client,
+                   "</list></item></publish>" PUBLISH_OPTIONS_OPEN "</pubsub></iq>", RandomInt(),
+                   deviceid);
+}
+
+
+static void ParseRemoteDeviceList(struct xmppStanza *st) {
+  SetupParser(parser, r, st->raw.p, st->raw.n) {
+    LogWarn("Parsing the stanza failed with error %d", r);
+    return;
+  }
+  if (ParseMultiple(parser, "iq pubsub items item list")) {
+    while (xmppParseElement(parser)) {
+      int id = ParseDeviceId(parser);
+      if (id > 0) {
+        remoteid = id;
+        Log("REMOTE ID FOUND");
+        FetchBundle();
+      } else
+        LogWarn("Id attr corrupt");
+      return;
+    }
+  }
+  Log("REMOTE ID NOT FOUND");
+}
+
+static void SubscribeDeviceList(const char *jid, int pendid) {
+  GenerateUuidv4(pending[pendid]);
+  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='%s' type='get' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1'/></pubsub></iq>", jid, pending[pendid]);
+  // only pending if format succeeded
+  curpending |= (1 << pendid);
 }
 
 static void AnnounceOmemoBundle() {
@@ -527,10 +565,9 @@ static bool IterateClient() {
       Log("Polling...");
       if (!sent) {
         xmppFormatStanza(&client, "<presence/>");
-        SubscribeDeviceList();
-        AnnounceOmemoDevice();
+        SubscribeDeviceList("admin@localhost", PENDING_OURDEVICELIST);
+        SubscribeDeviceList("user@localhost", PENDING_REMOTEDEVICELIST);
         AnnounceOmemoBundle();
-        FetchBundle();
         sent = 1;
         continue;
       }
@@ -564,13 +601,17 @@ static bool IterateClient() {
       if (client.stanza.type == XMPP_STANZA_MESSAGE && client.stanza.message.body.p) {
         PrintMessage(&client.stanza);
       }
-      ParseSpecificStanza(&client.stanza);
-      //switch (GetPendingFromId(client.stanza.id)) {
-      //break; case PENDING_SUBDEVICELIST:
-      //  ParseDeviceList();
-      //}
+      switch (GetPendingFromId(&client.stanza.id)) {
+      break; case PENDING_OURDEVICELIST:
+        puts("DEVICE LIST");
+        ParseOurDeviceList(&client.stanza);
+      break; case PENDING_REMOTEDEVICELIST:
+        ParseRemoteDeviceList(&client.stanza);
+      break; default:
+        ParseSpecificStanza(&client.stanza);
+      }
       break;
-    case XMPP_ITER_OK:
+    case XMPP_ITER_OK: // fallthrough
     default:
       if (r < 0) {
         Log("Error encountered %d", r);
@@ -636,7 +677,10 @@ static void HandleCommand() {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
       if (omemosession.fsm > 0) { // TODO: SESSION_READY
-        SendNormalOmemo(cmd, "user@localhost", remoteid);
+        if (remoteid)
+          SendNormalOmemo(cmd, "user@localhost", remoteid);
+        else
+          LogWarn("Remote id has not been found yet");
       } else {
         xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", RandomInt(), cmd);
       }
@@ -645,8 +689,7 @@ static void HandleCommand() {
 }
 
 static void Loop() {
-  char *line = NULL, *msgbody;
-  size_t n;
+  char *line = NULL;
   for (;;) {
     if (xmppIsInitialized(&client)) {
       if (IterateClient()) {
@@ -726,7 +769,6 @@ static void LoadStore() {
 
 int main() {
   deviceid = 1024;
-  remoteid = 258487665;
   LoadStore();
   RunIm();
 }

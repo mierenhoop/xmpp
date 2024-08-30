@@ -1,4 +1,5 @@
-CFLAGS+= -g -Wall -Wno-unused -Wno-pointer-sign -fmax-errors=4 -I.
+CFLAGS+= -g -Wall -Wno-pointer-sign -fmax-errors=4 -I. \
+		 -Wno-unused
 
 all: o/test o/im o/test-omemo
 
