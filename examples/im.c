@@ -45,6 +45,7 @@ static char *logdata;
 static size_t logdatan;
 static FILE *log;
 static struct xmppClient client;
+static struct StaticData sd;
 static char linebuf[1000];
 static char *line;
 static struct Store omemostore;
@@ -134,8 +135,8 @@ static void InitializeConn(const char *server, const char *port) {
 }
 
 static void Initialize(const char *jid) {
-  xmppInitClient(&client, jid, 0);
-  InitializeConn(client.jid.domain, "5222");
+  xmppInitClient(&client, &sd, jid, 0);
+  InitializeConn(client.jid.domainp, "5222");
 }
 
 static void Close() {
@@ -421,8 +422,9 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
 
 #define SetupParser(parser, ret, p_, n_) \
   int ret; \
+  uint8_t xbuf[200]; \
   struct xmppParser parser[1] = {{ .p = (p_), .n = (n_), .c = (n_) }}; \
-  yxml_init(&parser->x, parser->xbuf, sizeof(parser->xbuf)); \
+  yxml_init(&parser->x, xbuf, sizeof(xbuf)); /* TODO: should we remove xbuf(n) from the struct? */ \
   if ((ret = setjmp(parser->jb)))
 
 static void ParseSpecificStanza(struct xmppStanza *st) {
@@ -676,7 +678,7 @@ static void HandleCommand() {
     if (!xmppIsInitialized(&client)) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
-      if (omemosession.fsm > 0) { // TODO: SESSION_READY
+      if (IsSessionInitialized(&omemosession)) {
         if (remoteid)
           SendNormalOmemo(cmd, "user@localhost", remoteid);
         else

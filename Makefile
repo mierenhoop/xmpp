@@ -6,13 +6,13 @@ all: o/test o/im o/test-omemo
 o:
 	mkdir -p o
 
-o/xmpp.o: xmpp.c | o
+o/xmpp.o: xmpp.c xmpp.h | o
 	$(CC) -c -o $@ $(CFLAGS) xmpp.c
 
 # TODO: when we eventually move away from integration tests in
 # test/xmpp.c (keep those integrations tests in the IM example), we can
 # remove mbedtls and mbedx509
-o/test: o/xmpp.o test/cacert.inc
+o/test: o/xmpp.o test/cacert.inc test/xmpp.c
 	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
 
 o/test-omemo: test/omemo.c omemo.c c25519.c | o curve25519.c

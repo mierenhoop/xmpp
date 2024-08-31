@@ -12,6 +12,7 @@ static mbedtls_x509_crt cacert;
 static mbedtls_ssl_config conf;
 
 static struct xmppClient client;
+static struct StaticData sd;
 
 static void SetupTls(const char *domain, const char *port) {
   mbedtls_ssl_init(&ssl);
@@ -76,7 +77,7 @@ static bool HasDataAvailable() {
 
 static void TestClient() {
   SetupTls("localhost", "5222");
-  xmppInitClient(&client, "admin@localhost/resource", 0);
+  xmppInitClient(&client, &sd, "admin@localhost/resource", 0);
   bool sent = false;
   int r;
   while ((r = xmppIterate(&client))) {
@@ -129,13 +130,17 @@ stop:
   CleanupTls();
 }
 
+static char in[50000], xbuf[2000];
+
 static struct xmppParser SetupXmppParser(const char *xml) {
   static char buf[1000];
   struct xmppParser p = {0};
-  p.p = client.in;
-  p.c = sizeof(client.in);
+  p.p = in;
+  p.c = sizeof(in);
   strcpy(p.p, xml);
-  p.n = strlen(xml);
+  p.n = strlen(p.p);
+  p.xbuf = xbuf;
+  p.xbufn = sizeof(xbuf);
   return p;
 }
 
@@ -193,7 +198,7 @@ static void Send(const char *s) {
 }
 
 static void SetupStream() {
-  xmppInitClient(&client, "admin@localhost/resource", XMPP_OPT_FORCEPLAIN);
+  xmppInitClient(&client, &sd, "admin@localhost/resource", XMPP_OPT_FORCEPLAIN);
   ExpectUntil(XMPP_ITER_RECV, "<?xml version='1.0'?><stream:stream xmlns='jabber:client' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' to='localhost'>");
   Send("<?xml version='1.0'?><stream:stream from='localhost' xml:lang='en' id='some-stream-id' version='1.0' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams'><stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>SCRAM-SHA-1</mechanism></mechanisms><register xmlns='urn:xmpp:invite'/><register xmlns='urn:xmpp:ibr-token:0'/><starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/><register xmlns='http://jabber.org/features/iq-register'/></stream:features>");
   ExpectUntil(XMPP_ITER_RECV, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>");
@@ -225,11 +230,22 @@ static void TestSkipper() {
   ExpectUntil(XMPP_ESKIP, "");
 }
 
+static void TestParseJid() {
+  char buf[50];
+  struct xmppJid jid;
+  xmppParseJid(&jid, buf, sizeof(buf), "admin@localhost/resource");
+  assert(jid.localp == buf);
+  assert(!strcmp(jid.localp, "admin"));
+  assert(!strcmp(jid.domainp, "localhost"));
+  assert(!strcmp(jid.resourcep, "resource"));
+}
+
 int main() {
   puts("Starting tests");
   TestClient();
   TestXml();
   TestSkipper();
+  TestParseJid();
   puts("All tests passed");
   return 0;
 }

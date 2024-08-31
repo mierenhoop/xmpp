@@ -7,11 +7,20 @@
 
 #include "yxml.h"
 
+// https://xmpp.org/rfcs/rfc6120.html#:~:text=A%20deployed%20server%27s%20maximum%20stanza%20size%20MUST%20NOT%20be%20smaller%20than%2010000%20bytes
+#define XMPP_CONFIG_INBUF_SIZE 50000
+#define XMPP_CONFIG_OUTBUF_SIZE 50000
+// https://xmpp.org/rfcs/rfc6120.html#:~:text=xs%3AmaxLength%20value%3D%27-,3071,-%27/%3E%0A%20%20%20%20%3C/xs%3Arestriction%3E%0A%20%20%3C/xs
 #define XMPP_CONFIG_MAX_JID_SIZE 3071
-#define XMPP_CONFIG_MAX_STANZA_SIZE 50000
+// https://xmpp.org/extensions/attic/xep-0198-1.6.1.html#:~:text=The%20SM%2DID%20SHOULD%20NOT%20be%20longer%20than%204000%20bytes.
 #define XMPP_CONFIG_MAX_SMACKID_SIZE 4000
-#define XMPP_CONFIG_MAX_YXMLBUF_SIZE 2000
+#define XMPP_CONFIG_MAX_SASLBUF_SIZE 2000
+#define XMPP_CONFIG_YXMLBUF_SIZE 2000
 #define XMPP_CONFIG_MAX_SASLSCRAM1_ITERS 10000
+
+struct StaticData {
+  char in[XMPP_CONFIG_INBUF_SIZE], out[XMPP_CONFIG_OUTBUF_SIZE], saslbuf[XMPP_CONFIG_MAX_SASLBUF_SIZE], xbuf[XMPP_CONFIG_YXMLBUF_SIZE], smackid[XMPP_CONFIG_MAX_SMACKID_SIZE], jid[XMPP_CONFIG_MAX_JID_SIZE+1];
+};
 
 #define XMPP_SLICE_XML  0
 #define XMPP_SLICE_ATTR 1
@@ -122,18 +131,6 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
 #define XMPP_STANZA_ERROR 18
 #define XMPP_STANZA_STREAM 19
 
-#define XMPP_FAILURE_ABORTED                (1 << 0)
-#define XMPP_FAILURE_ACCOUNT_DISABLED       (1 << 1)
-#define XMPP_FAILURE_CREDENTIALS_EXPIRED    (1 << 2)
-#define XMPP_FAILURE_ENCRYPTION_REQUIRED    (1 << 3)
-#define XMPP_FAILURE_INCORRECT_ENCODING     (1 << 4)
-#define XMPP_FAILURE_INVALID_AUTHZID        (1 << 5)
-#define XMPP_FAILURE_INVALID_MECHANISM      (1 << 6)
-#define XMPP_FAILURE_MALFORMED_REQUEST      (1 << 7)
-#define XMPP_FAILURE_MECHANISM_TOO_WEAK     (1 << 8)
-#define XMPP_FAILURE_NOT_AUTHORIZED         (1 << 9)
-#define XMPP_FAILURE_TEMPORARY_AUTH_FAILURE (1 << 10)
-
 // TODO: remove this
 // Any of the child elements can be null.
 // We only support a single body, subject, etc. This deviates from the spec.
@@ -141,18 +138,6 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
 struct xmppMessage {
   struct xmppXmlSlice body, thread, treadparent, subject;
 };
-
-#define XMPP_ERRORTYPE_AUTH 1
-#define XMPP_ERRORTYPE_CANCEL 2
-#define XMPP_ERRORTYPE_CONTINUE 3
-#define XMPP_ERRORTYPE_MODIFY 4
-#define XMPP_ERRORTYPE_WAIT 5
-
-#define XMPP_ERRORCONDITION_BAD_REQUEST
-#define XMPP_ERRORCONDITION_CONFLICT
-#define XMPP_ERRORCONDITION_FEATURE_NOT_IMPLEMENTED
-#define XMPP_ERRORCONDITION_FORBIDDEN
-#define XMPP_ERRORCONDITION_GONE
 
 struct xmppError {
   int stanzakind;
@@ -204,8 +189,8 @@ struct xmppStanza {
 };
 
 struct xmppJid {
-  size_t localn, domainn, resourcen;
-  char local[1024], domain[1024], resource[1024];
+  char *localp, *domainp, *resourcep;
+  size_t c;
 };
 
 // p is a buffer allocated by a parent as heap or static
@@ -246,7 +231,8 @@ struct xmppSaslContext {
 // All other fields should be zeroed.
 struct xmppParser {
   yxml_t x;
-  char xbuf[XMPP_CONFIG_MAX_YXMLBUF_SIZE];
+  char *xbuf;
+  size_t xbufn;
   jmp_buf jb;
   size_t i, n, c;
   char *p;
@@ -265,10 +251,8 @@ struct xmppBuilder {
 // xmppIterate.
 struct xmppClient {
   struct xmppJid jid;
-  char smackid[XMPP_CONFIG_MAX_SMACKID_SIZE+1],
-      in[XMPP_CONFIG_MAX_STANZA_SIZE], out[XMPP_CONFIG_MAX_STANZA_SIZE];
-  size_t smackidn;
-  char saslbuf[2000];
+  char *smackid;
+  size_t smackidn, smackidc;
   struct xmppSaslContext saslctx;
   struct xmppStanza stanza;
   struct xmppParser parser;
@@ -303,20 +287,38 @@ static inline int xmppIncrementAck(struct xmppClient *c, int r) {
 // TODO: rename to something like xmppAppendXml, also have a function that will revert the stanza
 int FormatXml(struct xmppBuilder *c, const char *fmt, ...);
 
-struct StaticData {
-  const char in[1], out[1], sasl[1];
-};
+void xmppParseJid(struct xmppJid *jid, char *p, size_t n, const char *s);
 
-void xmppInitClient(struct xmppClient *c, const char *jid, int opts);
+/**
+ * Initialize XMPP client before iteration.
+ *
+ * @param jid of the user initiating the XMPP session
+ * @param opts zero or more XMPP_OPT_* |'ed
+ */
+static inline void xmppInitClient(struct xmppClient *c, struct StaticData *d, const char *jid, int opts) {
+  memset(c, 0, sizeof(*c));
+  c->parser.p = d->in;
+  c->parser.c = sizeof(d->in);
+  c->parser.xbuf = d->xbuf;
+  c->parser.xbufn = sizeof(d->xbuf);
+  c->builder.p = d->out;
+  c->builder.c = sizeof(d->out);
+  c->saslctx.p = d->saslbuf;
+  c->saslctx.n = sizeof(d->saslbuf);
+  c->smackid = d->smackid;
+  c->smackidc = sizeof(d->smackid);
+  // TODO: what should we do when we want to register, thus have no JID
+  // yet? Only pass the domain?
+  xmppParseJid(&c->jid, d->jid, sizeof(d->jid), jid);
+  c->opts = opts;
+  c->state = 1; // CLIENTSTATE_INIT
+}
 
 #define xmppIsInitialized(c) (!!(c)->state)
 
-static inline void xmppInitStatic(struct xmppClient *c, struct StaticData *d) {
-}
-
 int xmppIterate(struct xmppClient *c);
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd);
-int xmppEndStream(struct xmppClient *c);
+void xmppEndStream(struct xmppClient *c);
 
 void xmppParseUnknown(struct xmppParser *p);
 bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc);

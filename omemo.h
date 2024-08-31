@@ -117,6 +117,7 @@ struct Bundle {
 
 void SetupStore(struct Store *store);
 
+#define IsSessionInitialized(session) (!!(session)->fsm)
 
 int InitFromBundle(struct Session *session, const struct Store *store, const struct Bundle *bundle);
 int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload);
