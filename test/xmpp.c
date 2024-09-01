@@ -53,6 +53,8 @@ static void CleanupTls() {
   mbedtls_entropy_free(&entropy);
 }
 
+// TODO: maybe have API: GetSendBuffer(client, out buffer, out size, out
+// istls) and EverythingHasBeenSent(client)
 static void SendAll() {
   int n, i = 0;
   do {
@@ -63,6 +65,7 @@ static void SendAll() {
     i += n;
   } while (n > 0);
   client.builder.n = 0;
+  client.builder.i = 0;
   memset(client.builder.p, 0, client.builder.c); // just in case
 }
 
@@ -97,6 +100,7 @@ static void TestClient() {
       // fallthrough
     case XMPP_ITER_RECV:
       Log("Waiting for recv...");
+      // TODO: maybe have API: GetReceiveBuffer(client, out buffer, out maxsize, out istls) and AddAmountReceived(client, amount)
       if (client.features & XMPP_STREAMFEATURE_STARTTLS)
         r = mbedtls_ssl_read(&ssl, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
       else
@@ -240,12 +244,35 @@ static void TestParseJid() {
   assert(!strcmp(jid.resourcep, "resource"));
 }
 
+static void TestBuilderInClient() {
+  memset(&client, 0, sizeof(client));
+  memset(&sd, 0, sizeof(sd));
+  xmppInitClient(&client, &sd, "admin@localhost", 0);
+  client.features |= XMPP_STREAMFEATURE_SMACKS;
+  assert(!xmppFormatStanza(&client, "test"));
+  assert(!strcmp(client.builder.p, "test<r xmlns='urn:xmpp:sm:3'/>"));
+  assert(client.actualsent == 1);
+}
+
+static void TestBuilder() {
+  char buf[100] = {0};
+  struct xmppBuilder builder;
+  memset(&builder, 0, sizeof(builder));
+  builder.p = buf;
+  builder.c = sizeof(buf);
+  xmppAppendXml(&builder, "%s %d", "test<>", 100);
+  assert(builder.n == 16);
+  assert(!strcmp(buf, "test&lt;&gt; 100"));
+}
+
 int main() {
   puts("Starting tests");
   TestClient();
   TestXml();
   TestSkipper();
   TestParseJid();
+  TestBuilder();
+  TestBuilderInClient();
   puts("All tests passed");
   return 0;
 }

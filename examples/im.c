@@ -160,6 +160,7 @@ static void SendAll() {
     i += n;
   } while (n > 0);
   client.builder.n = 0;
+  client.builder.i = 0;
   memset(client.builder.p, 0, client.builder.c); // just in case
 }
 
@@ -476,7 +477,8 @@ static void ParseOurDeviceList(struct xmppStanza *st) {
     return;
   }
   // TODO: xmppFormatBegin (this would clear an unfinished stanza)
-  FormatXml(
+  xmppStartStanza(&client.builder);
+  xmppAppendXml(
       &client.builder,
       "<iq xmlns='jabber:client' type='set' "
       "id='announce%d'><pubsub "
@@ -488,13 +490,14 @@ static void ParseOurDeviceList(struct xmppStanza *st) {
     while (xmppParseElement(parser)) {
       int id = ParseDeviceId(parser);
       if (id != deviceid)
-        FormatXml(&client.builder, "<device id='%d'/>", id);
+        xmppAppendXml(&client.builder, "<device id='%d'/>", id);
     }
   }
-  FormatXml(&client.builder, "<device id='%d'/>", deviceid);
-  xmppFormatStanza(&client,
+  xmppAppendXml(&client.builder, "<device id='%d'/>", deviceid);
+  xmppAppendXml(&client.builder,
                    "</list></item></publish>" PUBLISH_OPTIONS_OPEN "</pubsub></iq>", RandomInt(),
                    deviceid);
+  xmppFlush(&client, true);
 }
 
 
@@ -529,7 +532,8 @@ static void AnnounceOmemoBundle() {
   SerializedKey spk, ik;
   SerializeKey(spk, omemostore.cursignedprekey.kp.pub);
   SerializeKey(ik, omemostore.identity.pub);
-  FormatXml(
+  xmppStartStanza(&client.builder);
+  xmppAppendXml(
       &client.builder,
       "<iq type='set' id='announce%d'><pubsub "
       "xmlns='http://jabber.org/protocol/pubsub'><publish "
@@ -544,13 +548,14 @@ static void AnnounceOmemoBundle() {
   for (int i = 0; i < NUMPREKEYS; i++) {
     SerializedKey pk;
     SerializeKey(pk, omemostore.prekeys[i].kp.pub);
-    FormatXml(&client.builder,
+    xmppAppendXml(&client.builder,
               "<preKeyPublic preKeyId='%d'>%b</preKeyPublic>", omemostore.prekeys[i].id,
               33, pk);
   }
 
-  xmppFormatStanza(&client, "</prekeys></bundle></"
+  xmppAppendXml(&client.builder, "</prekeys></bundle></"
                             "item></publish>" PUBLISH_OPTIONS_OPEN "</pubsub></iq>");
+  xmppFlush(&client, true);
 }
 
 // returns true if stream is done for

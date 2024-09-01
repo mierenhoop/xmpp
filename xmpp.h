@@ -13,6 +13,7 @@
 // https://xmpp.org/rfcs/rfc6120.html#:~:text=xs%3AmaxLength%20value%3D%27-,3071,-%27/%3E%0A%20%20%20%20%3C/xs%3Arestriction%3E%0A%20%20%3C/xs
 #define XMPP_CONFIG_MAX_JID_SIZE 3071
 // https://xmpp.org/extensions/attic/xep-0198-1.6.1.html#:~:text=The%20SM%2DID%20SHOULD%20NOT%20be%20longer%20than%204000%20bytes.
+// TODO: note server-specific common sizes (4000 is overkill)
 #define XMPP_CONFIG_MAX_SMACKID_SIZE 4000
 #define XMPP_CONFIG_MAX_SASLBUF_SIZE 2000
 #define XMPP_CONFIG_YXMLBUF_SIZE 2000
@@ -27,6 +28,7 @@ struct StaticData {
 #define XMPP_SLICE_CONT 2
 #define XMPP_SLICE_B64  3
 
+// TODO: we can remove the type field and each type to a separate struct
 // type = XMPP_SLICE_*
 // p can be null!
 struct xmppXmlSlice {
@@ -272,20 +274,26 @@ bool StrictStrEqual(const char *c, const char *u, size_t n);
 // Only call when XMPP_ITER_ACK
 #define xmppIsSynchronized(c) ((c)->stanza.type == XMPP_STANZA_ACKANSWER && (c)->stanza.ack == (c)->actualsent)
 
-// TODO: rename to something like xmppFlushStanza
-static inline int xmppIncrementAck(struct xmppClient *c, int r) {
-  if (r)
-    return r;
-  c->builder.i = c->builder.n;
-  c->actualsent++;
-  return 0;
+#define xmppFormatStanza(c, fmt, ...) (xmppStartStanza(&(c)->builder), xmppAppendXml(&(c)->builder, fmt __VA_OPT__(,) __VA_ARGS__), xmppFlush((c), true))
+
+// TODO: rename to something like xmppAppendXml
+void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...);
+
+static inline void xmppStartStanza(struct xmppBuilder *builder) {
+  builder->n = builder->i;
 }
 
-// TODO: put some of this logic in an actual function
-#define xmppFormatStanza(c, fmt, ...) xmppIncrementAck(c, FormatXml(&(c)->builder, fmt "[<r xmlns='urn:xmpp:sm:3'/>]" __VA_OPT__(,)  __VA_ARGS__, ((c)->features & XMPP_STREAMFEATURE_SMACKS)))
-
-// TODO: rename to something like xmppAppendXml, also have a function that will revert the stanza
-int FormatXml(struct xmppBuilder *c, const char *fmt, ...);
+static inline int xmppFlush(struct xmppClient *c, bool isstanza) {
+  if (isstanza && (c->features & XMPP_STREAMFEATURE_SMACKS))
+    xmppAppendXml(&c->builder, "<r xmlns='urn:xmpp:sm:3'/>");
+  if (c->parser.n >= c->parser.c) {
+    return XMPP_EMEM;
+  }
+  c->builder.i = c->builder.n;
+  if (isstanza && (c->features & XMPP_STREAMFEATURE_SMACKS))
+    c->actualsent++;
+  return 0;
+}
 
 void xmppParseJid(struct xmppJid *jid, char *p, size_t n, const char *s);
 

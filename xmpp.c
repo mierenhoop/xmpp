@@ -586,7 +586,7 @@ static char *Itoa(char *d, char *e, int i) {
  * - %n: length and pointer to string which will be escaped
  * @return 0 if successful or XMPP_EMEM if there is not enough capacity
  */
-int FormatXml(struct xmppBuilder *c, const char *fmt, ...) {
+void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...) {
   va_list ap;
   struct xmppXmlSlice slc;
   size_t n;
@@ -629,33 +629,52 @@ int FormatXml(struct xmppBuilder *c, const char *fmt, ...) {
   va_end(ap);
   if (d < e)
     *d = 0;
-  if (HasOverflowed(d, e)) {
-    c->n = c->i;
-    return XMPP_EMEM;
-  }
+  // TODO: move this check to xmppFlush
+  //if (HasOverflowed(d, e)) {
+  //  c->n = c->i;
+  //  return XMPP_EMEM;
+  //}
   c->n = d - c->p;
-  return 0;
 }
 
-#define FormatSaslPlain(c, ctx)                                        \
-  FormatXml(c,                                                         \
+// same as xmppFormatStanza but with xmppFlush isstanza = false instead of true
+#define BuildComplete(client, fmt, ...) (xmppAppendXml(&(client)->builder, fmt __VA_OPT__(,) __VA_ARGS__), xmppFlush((c), false))
+
+// TODO: better way to do this?
+// res: string or NULL if you want the server to generate it
+#define xmppFormatBindResource(c, res) \
+  BuildComplete(c, \
+      "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
+      !res, !!res, res)
+
+// XEP-0198: Stream Management
+
+#define xmppFormatAckEnable(client, resume) BuildComplete(client, "<enable xmlns='urn:xmpp:sm:3'[ resume='true']/>", resume)
+#define xmppFormatAckResume(client, h, previd) BuildComplete(client, "<resume xmlns='urn:xmpp:sm:3' h='%d' previd='%s'/>", h, previd)
+#define xmppFormatAckRequest(client) BuildComplete(client, "<r xmlns='urn:xmpp:sm:3'/>")
+#define xmppFormatAckAnswer(client, h) BuildComplete(client, "<a xmlns='urn:xmpp:sm:3' h='%d'/>", h)
+
+#define xmppFormatMessage(client, to, id, body) xmppFormatComplete(client, "<message to='%s' id='message%d'><body>%s</body></message>", to, id, body)
+
+#define FormatSaslPlain(client, ctx)                                        \
+  BuildComplete(client,                                                         \
             "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' "          \
             "mechanism='PLAIN'>%b</auth>",                             \
             (ctx)->end, (ctx)->p)
 
-#define xmppFormatStream(c, to) FormatXml(c, \
+#define xmppFormatStream(client, to) BuildComplete(client, \
     "<?xml version='1.0'?>" \
     "<stream:stream xmlns='jabber:client'" \
     " version='1.0' xmlns:stream='http://etherx.jabber.org/streams'" \
     " to='%s'>", to)
 
 // For static XML we can directly call SafeStpCpy
-#define xmppFormatStartTls(c) FormatXml(c, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+#define xmppFormatStartTls(client) BuildComplete(client, "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
 
-#define xmppFormatSaslInitialMessage(c, ctx) \
-  FormatXml(c, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>%b</auth>", (ctx)->serverfirstmsg-1, (ctx)->p)
+#define xmppFormatSaslInitialMessage(client, ctx) \
+  BuildComplete(c, "<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='SCRAM-SHA-1'>%b</auth>", (ctx)->serverfirstmsg-1, (ctx)->p)
 
-#define xmppFormatSaslResponse(c, ctx) FormatXml(c, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>%b</response>", (ctx)->end-(ctx)->clientfinalmsg, (ctx)->p+(ctx)->clientfinalmsg)
+#define xmppFormatSaslResponse(client, ctx) BuildComplete(client, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>%b</response>", (ctx)->end-(ctx)->clientfinalmsg, (ctx)->p+(ctx)->clientfinalmsg)
 
 // TODO: use a single buf? mbedtls decode base64 probably allows overlap
 // length of s not checked, it's expected that invalid input would
@@ -794,30 +813,6 @@ static void MoveStanza(struct xmppParser *p) {
   }
 }
 
-#define xmppFormatIq(c, type, from, to, id, fmt, ...) FormatXml(c, "<iq" \
-    " type='" type "'" \
-    " from='%s'" \
-    " to='%s'" \
-    " id='%s'>" fmt "</iq>", \
-    from, to, id \
-    __VA_OPT__(,) __VA_ARGS__)
-
-// TODO: better way to do this?
-// res: string or NULL if you want the server to generate it
-#define xmppFormatBindResource(c, res) \
-  FormatXml(c, \
-      "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
-      !res, !!res, res)
-
-// XEP-0198: Stream Management
-
-#define xmppFormatAckEnable(c, resume) FormatXml(c, "<enable xmlns='urn:xmpp:sm:3'[ resume='true']/>", resume)
-#define xmppFormatAckResume(c, h, previd) FormatXml(c, "<resume xmlns='urn:xmpp:sm:3' h='%d' previd='%s'/>", h, previd)
-#define xmppFormatAckRequest(c) FormatXml(c, "<r xmlns='urn:xmpp:sm:3'/>")
-#define xmppFormatAckAnswer(c, h) FormatXml(c, "<a xmlns='urn:xmpp:sm:3' h='%d'/>", h)
-
-#define xmppFormatMessage(c, to, id, body) FormatXml(c, "<message to='%s' id='message%d'><body>%s</body></message>", to, id, body)
-
 enum {
   CLIENTSTATE_UNINIT = 0,
   CLIENTSTATE_INIT,
@@ -848,12 +843,12 @@ int xmppSupplyPassword(struct xmppClient *c, const char *pwd) {
   int r;
   if (c->state == CLIENTSTATE_SASLPWD) {
     xmppSolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
-    if ((r = xmppFormatSaslResponse(&c->builder, &c->saslctx)))
+    if ((r = xmppFormatSaslResponse(c, &c->saslctx)))
       return r;
     c->state = CLIENTSTATE_SASLCHECKRESULT;
   } else if (c->state == CLIENTSTATE_SASLPLAIN) {
     MakeSaslPlain(&c->saslctx, c->jid.localp, pwd);
-    if ((r = FormatSaslPlain(&c->builder, &c->saslctx)))
+    if ((r = FormatSaslPlain(c, &c->saslctx)))
       return r;
     c->state = CLIENTSTATE_SASLRESULT;
   } else {
@@ -924,7 +919,7 @@ static int ReturnRetry(struct xmppClient *c, int r) {
 // xmppIterate
 static int EndStream(struct xmppClient *c) {
   c->state = CLIENTSTATE_UNINIT;
-  return FormatXml(&c->builder, "</stream:stream>") ? XMPP_ITER_OK
+  return BuildComplete(c, "</stream:stream>") ? XMPP_ITER_OK
                                                     : XMPP_ITER_SEND;
 }
 
@@ -1003,7 +998,7 @@ int xmppIterate(struct xmppClient *c) {
     return XMPP_ESKIP;
   }
   if (c->state == CLIENTSTATE_INIT) {
-    if ((r = xmppFormatStream(&c->builder, c->jid.domainp)))
+    if ((r = xmppFormatStream(c, c->jid.domainp)))
       return ReturnRetry(c, r);
     c->state = CLIENTSTATE_STREAMSENT;
     return XMPP_ITER_SEND;
@@ -1029,7 +1024,7 @@ int xmppIterate(struct xmppClient *c) {
     memcpy(&stream, &st->stream, sizeof(struct xmppStream));
     if (!(c->features & XMPP_STREAMFEATURE_STARTTLS) && !(c->opts & XMPP_OPT_FORCEUNENCRYPTED)) {
       if (stream.features & XMPP_STREAMFEATURE_STARTTLS) {
-        if ((r = xmppFormatStartTls(&c->builder)))
+        if ((r = xmppFormatStartTls(c)))
           return ReturnRetry(c, r);
         c->state = CLIENTSTATE_STARTTLS;
         return XMPP_ITER_SEND;
@@ -1041,7 +1036,7 @@ int xmppIterate(struct xmppClient *c) {
       // TODO: -PLUS
       if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1 && !(c->opts & XMPP_OPT_FORCEPLAIN)) {
         xmppInitSaslContext(&c->saslctx, c->jid.localp);
-        if ((r = xmppFormatSaslInitialMessage(&c->builder, &c->saslctx)))
+        if ((r = xmppFormatSaslInitialMessage(c, &c->saslctx)))
           return ReturnRetry(c, r);
         c->state = CLIENTSTATE_SASLINIT;
         return XMPP_ITER_SEND;
@@ -1057,13 +1052,13 @@ int xmppIterate(struct xmppClient *c) {
     if (!(stream.features & XMPP_STREAMFEATURE_SMACKS)) {
       c->opts |= XMPP_OPT_DISABLESMACKS;
     } else if (c->smackidn) {
-      if ((r = xmppFormatAckResume(&c->builder, c->actualrecv, c->smackid)))
+      if ((r = xmppFormatAckResume(c, c->actualrecv, c->smackid)))
         return ReturnRetry(c, r);
       c->state = CLIENTSTATE_RESUME;
       return XMPP_ITER_SEND;
     }
     assert(stream.features & XMPP_STREAMFEATURE_BIND);
-    if ((r = xmppFormatBindResource(&c->builder,  c->jid.resourcep)))
+    if ((r = xmppFormatBindResource(c,  c->jid.resourcep)))
       return ReturnRetry(c, r);
     c->state = CLIENTSTATE_BIND;
     return XMPP_ITER_SEND;
@@ -1119,7 +1114,7 @@ int xmppIterate(struct xmppClient *c) {
       // TODO: check if returned bind address is either empty or the same as
       // c->jid, maybe put the new resource into c->jid.resource
       if (!(c->opts & XMPP_OPT_DISABLESMACKS)) {
-        if ((r = xmppFormatAckEnable(&c->builder, true)))
+        if ((r = xmppFormatAckEnable(c, true)))
           return ReturnRetry(c, r);
         c->features |= XMPP_STREAMFEATURE_SMACKS;
         c->state = CLIENTSTATE_ACCEPTSTANZA;
@@ -1155,7 +1150,7 @@ int xmppIterate(struct xmppClient *c) {
   case XMPP_STANZA_ACKANSWER:
     return XMPP_ITER_ACK;
   case XMPP_STANZA_ACKREQUEST:
-    if ((r = xmppFormatAckAnswer(&c->builder, c->actualrecv)))
+    if ((r = xmppFormatAckAnswer(c, c->actualrecv)))
       return r;
     return XMPP_ITER_SEND;
   default:
