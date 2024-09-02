@@ -53,20 +53,32 @@ static void CleanupTls() {
   mbedtls_entropy_free(&entropy);
 }
 
-// TODO: maybe have API: GetSendBuffer(client, out buffer, out size, out
-// istls) and EverythingHasBeenSent(client)
-static void SendAll() {
-  int n, i = 0;
-  do {
-    if (client.features & XMPP_STREAMFEATURE_STARTTLS)
-      n = mbedtls_ssl_write(&ssl, client.builder.p+i, client.builder.n-i);
-    else
-      n = mbedtls_net_send(&server_fd, client.builder.p+i, client.builder.n-i);
-    i += n;
-  } while (n > 0);
-  client.builder.n = 0;
-  client.builder.i = 0;
-  memset(client.builder.p, 0, client.builder.c); // just in case
+static void NetSend() {
+  char *buf;
+  size_t sz;
+  int n;
+  bool istls;
+  xmppGetSendBuffer(&client, &buf, &sz, &istls);
+  if (istls)
+    n = mbedtls_ssl_write(&ssl, buf, sz);
+  else
+    n = mbedtls_net_send(&server_fd, buf, sz);
+  assert(n > 0);
+  xmppAddAmountSent(&client, n);
+}
+
+static void Receive() {
+  int r;
+  char *buf;
+  size_t maxsz;
+  bool istls;
+  xmppGetReceiveBuffer(&client, &buf, &maxsz, &istls);
+  if (istls)
+    r = mbedtls_ssl_read(&ssl, buf, maxsz);
+  else
+    r = mbedtls_net_recv(&server_fd, buf, maxsz);
+  assert(r >= 0);
+  xmppAddAmountReceived(&client, r);
 }
 
 static bool HasDataAvailable() {
@@ -87,7 +99,7 @@ static void TestClient() {
     switch (r) {
     case XMPP_ITER_SEND:
       Log("Out: \e[32m%.*s\e[0m", (int)client.builder.n, client.builder.p);
-      SendAll();
+      NetSend();
       break;
     case XMPP_ITER_READY:
       if (!sent) {
@@ -100,13 +112,7 @@ static void TestClient() {
       // fallthrough
     case XMPP_ITER_RECV:
       Log("Waiting for recv...");
-      // TODO: maybe have API: GetReceiveBuffer(client, out buffer, out maxsize, out istls) and AddAmountReceived(client, amount)
-      if (client.features & XMPP_STREAMFEATURE_STARTTLS)
-        r = mbedtls_ssl_read(&ssl, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
-      else
-        r = mbedtls_net_recv(&server_fd, client.parser.p+client.parser.n, client.parser.c-client.parser.n);
-      assert(r >= 0);
-      client.parser.n += r;
+      Receive();
       Log("In:  \e[34m%.*s\e[0m", (int)client.parser.n, client.parser.p);
       break;
     case XMPP_ITER_STARTTLS:

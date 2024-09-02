@@ -322,6 +322,75 @@ static inline void xmppInitClient(struct xmppClient *c, struct StaticData *d, co
   c->state = 1; // CLIENTSTATE_INIT
 }
 
+// TODO: have these function take Parser and Builder respectively and
+// have a separate function for IsTls? Also maybe move these to xmpp.c
+
+/**
+ * Get buffer and maximimum size for receiving data.
+ *
+ * @param buf (out) buffer in which data will be read, may be NULL
+ * @param maxsz (out) maximum amount of data that can be read in buf, may be NULL
+ * @param istls (out) is true if data must be received over TLS, may be NULL
+ */
+static inline void xmppGetReceiveBuffer(const struct xmppClient *client, char **buf, size_t *maxsz, bool *istls) {
+  if (buf)
+    *buf = client->parser.p + client->parser.n;
+  if (maxsz)
+    *maxsz = client->parser.c - client->parser.n;
+  if (istls)
+    *istls = !!(client->features & XMPP_STREAMFEATURE_STARTTLS);
+}
+
+/**
+ * Notify the client that data has been received.
+ *
+ * @param amount must be less than or equal to the maximum size returned
+ * by xmppGetReceiveBuffer
+ * @see xmppGetReceiveBuffer()
+ */
+static inline void xmppAddAmountReceived(struct xmppClient *client, size_t amount) {
+  client->parser.n += amount;
+  assert(client->parser.n <= client->parser.c);
+}
+
+/**
+ * Get buffer and size for data that must be sent.
+ *
+ * The only logical time this function should be used is after
+ * xmppIterate returns XMPP_ITER_SEND. If not all data has been sent in
+ * this call, xmppIterate will return XMPP_ITER_SEND again.
+ *
+ * @param buf (out) buffer in which contains data which needs
+ * to be sent, may be NULL
+ * @param sz (out) amount of data that must be sent in buf, may be NULL
+ * @param istls (out) is true if data must be sent over TLS, may be NULL
+ * @see xmppAddAmountSent()
+ */
+static inline void xmppGetSendBuffer(const struct xmppClient *client, char **buf, size_t *sz, bool *istls) {
+  if (buf)
+    *buf = client->builder.p;
+  if (sz)
+    *sz = client->builder.n;
+  if (istls)
+    *istls = !!(client->features & XMPP_STREAMFEATURE_STARTTLS);
+}
+
+/**
+ * Notify the client that data has been sent.
+ *
+ * @param amount must be less than or equal to the size returned by
+ * xmppGetSendBuffer
+ * @see xmppGetSendBuffer()
+ */
+static inline void xmppAddAmountSent(struct xmppClient *client, size_t amount) {
+  assert(amount <= client->builder.n);
+  client->builder.n -= amount;
+  client->builder.i = client->builder.n;
+  memmove(client->builder.p, client->builder.p + amount, client->builder.n);
+  // TODO: remove
+  memset(client->builder.p + client->builder.n, 0, client->builder.c - client->builder.n);
+}
+
 #define xmppIsInitialized(c) (!!(c)->state)
 
 int xmppIterate(struct xmppClient *c);
