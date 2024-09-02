@@ -111,12 +111,20 @@ void SerializeKey(SerializedKey k, const Key pub) {
   memcpy(k + 1, pub, sizeof(SerializedKey) - 1);
 }
 
-static uint8_t *FormatKey(uint8_t *d, int id, const Key k) {
+static uint8_t *FormatKey(uint8_t d[35], int id, const Key k) {
   assert(id < 16);
   *d++ = (id << 3) | PB_LEN;
   *d++ = 33;
   SerializeKey(d, k);
   return d + 33;
+}
+
+static uint8_t *FormatPrivateKey(uint8_t d[34], int id, const Key k) {
+  assert(id < 16);
+  *d++ = (id << 3) | PB_LEN;
+  *d++ = 32;
+  memcpy(d, k, 32);
+  return d + 32;
 }
 
 // Format Protobuf PreKeyWhisperMessage without message (it should be
@@ -782,21 +790,82 @@ void EncryptRealMessage(uint8_t *d, Payload payload,
   mbedtls_gcm_free(&ctx);
 }
 
-static void SerializeStore(uint8_t d[static sizeof(struct Store)], const struct Store *store) {
+static int GetSerializedStoreSize(void) {
+  return sizeof(struct Store);
+}
+
+static void SerializeStore(uint8_t *d, const struct Store *store) {
   memcpy(d, store, sizeof(struct Store));
 }
 
-static void DeserializeStore(struct Store *store, uint8_t s[static sizeof(struct Store)]) {
+static void DeserializeStore(struct Store *store, const uint8_t s[static sizeof(struct Store)]) {
   memcpy(store, s, sizeof(struct Store));
 }
 
-// TODO: use Protobuf for this.
+static int GetSerializedSessionSize(struct Session *session) {
+  return 0;
+}
+
 static void SerializeSession(uint8_t *d, struct Session *session) {
-  memcpy(d, &session->state, sizeof(struct State));
-  d += sizeof(struct State);
-  for (int i = 0; i < session->mkskipped.n; i++) {
-    memcpy(d, &session->mkskipped.p+i, sizeof(struct MessageKey));
-    d += sizeof(struct MessageKey);
-  }
+  d = FormatKey(d, 1, session->remoteidentity);
+  d = FormatPrivateKey(d, 2, session->state.dhs.prv);
+  d = FormatKey(d, 3, session->state.dhs.pub);
+  d = FormatKey(d, 4, session->state.dhr);
+  d = FormatPrivateKey(d, 5, session->state.rk);
+  d = FormatPrivateKey(d, 6, session->state.cks);
+  d = FormatPrivateKey(d, 7, session->state.ckr);
+  d = FormatVarInt(d, 8, session->state.ns);
+  d = FormatVarInt(d, 9, session->state.nr);
+  d = FormatVarInt(d, 10, session->state.pn);
+  d = FormatKey(d, 11, session->pendingek);
+  d = FormatVarInt(d, 12, session->pendingpk_id);
+  d = FormatVarInt(d, 13, session->pendingspk_id);
+  d = FormatVarInt(d, 14, session->fsm);
+  // TODO: mkskipped
+  //memcpy(d, &session->state, sizeof(struct State));
+  //d += sizeof(struct State);
+  //for (int i = 0; i < session->mkskipped.n; i++) {
+  //  memcpy(d, &session->mkskipped.p+i, sizeof(struct MessageKey));
+  //  d += sizeof(struct MessageKey);
+  //}
   // TODO: message keys and crc?
+}
+
+
+
+/**
+ * @param nmk amount of messagekeys, if it's less than there are in the
+ * buffer, only the most recent ones will be deserialized
+ */
+static void DeserializeSession(struct Session *session, struct SkippedMessageKeys* mks, int nmk) {
+  struct ProtobufField fields[] = {
+    [1] = {PB_REQUIRED | PB_LEN, 33},
+    [2] = {PB_REQUIRED | PB_LEN, 32},
+    [3] = {PB_REQUIRED | PB_LEN, 33},
+    [4] = {PB_REQUIRED | PB_LEN, 33},
+    [5] = {PB_REQUIRED | PB_LEN, 32},
+    [6] = {PB_REQUIRED | PB_LEN, 32},
+    [7] = {PB_REQUIRED | PB_LEN, 32},
+    [8] = {PB_REQUIRED | PB_UINT32},
+    [9] = {PB_REQUIRED | PB_UINT32},
+    [10] = {PB_REQUIRED | PB_UINT32},
+    [11] = {PB_REQUIRED | PB_LEN, 33},
+    [12] = {PB_REQUIRED | PB_UINT32},
+    [13] = {PB_REQUIRED | PB_UINT32},
+    [14] = {PB_REQUIRED | PB_UINT32},
+  };
+  memcpy(session->remoteidentity, fields[1].p+1, 32);
+  memcpy(session->state.dhs.prv, fields[2].p, 32);
+  memcpy(session->state.dhs.pub, fields[3].p+1, 32);
+  memcpy(session->state.dhr, fields[4].p+1, 32);
+  memcpy(session->state.rk, fields[5].p, 32);
+  memcpy(session->state.cks, fields[6].p, 32);
+  memcpy(session->state.ckr, fields[7].p, 32);
+  session->state.ns = fields[8].v;
+  session->state.nr = fields[9].v;
+  session->state.pn = fields[10].v;
+  memcpy(session->pendingek, fields[11].p+1, 32);
+  session->pendingpk_id = fields[12].v;
+  session->pendingspk_id = fields[13].v;
+  session->fsm = fields[14].v;
 }

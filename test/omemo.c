@@ -1,5 +1,7 @@
 #include "../omemo.c"
 
+#include <stdlib.h>
+
 #include "curve25519.h"
 
 void SystemRandom(void *d, size_t n) {
@@ -177,18 +179,6 @@ static void TestEncryption() {
   EncryptRealMessage(encrypted, payload, iv, msg, n);
   DecryptRealMessage(decrypted, payload, PAYLOAD_SIZE, iv, encrypted, n);
   assert(!memcmp(msg, decrypted, n));
-}
-
-struct TestSetup {
-  struct Store storea, storeb;
-  struct Session sessiona, sessionb;
-};
-
-static void MakeTestSetup(struct TestSetup *setup) {
-  SetupStore(&setup->storea);
-  SetupStore(&setup->storeb);
-  struct Bundle bundleb;
-  ParseBundle(&bundleb, &setup->storeb);
 }
 
 // user is either a or b
@@ -399,6 +389,26 @@ static void TestRatchet() {
   assert(!memcmp(ck, receiverAndSenderChain, 32));
 }
 
+static void TestSerialization() {
+  struct Store storea, storeb;
+  SetupStore(&storea);
+  SetupStore(&storeb);
+
+  struct Bundle bundleb;
+  ParseBundle(&bundleb, &storeb);
+
+  struct Session sessiona, sessionb;
+  assert(InitFromBundle(&sessiona, &storea, &bundleb) == 0);
+
+  uint8_t *buf = malloc(GetSerializedStoreSize());
+  assert(buf);
+  SerializeStore(buf, &storea);
+  memset(&storeb, 0, sizeof(storeb));
+  DeserializeStore(&storeb, buf);
+  assert(!memcmp(&storea, &storeb, sizeof(struct Store)));
+  // TODO: session
+}
+
 #define RunTest(t)                                                     \
   do {                                                                 \
     puts("\e[34mRunning test " #t "\e[0m");                            \
@@ -418,5 +428,6 @@ int main() {
   RunTest(DeriveChainKey);
   RunTest(Hkdf);
   RunTest(Ratchet);
+  RunTest(Serialization);
   puts("All tests succeeded");
 }
