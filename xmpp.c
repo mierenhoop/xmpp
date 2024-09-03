@@ -114,11 +114,6 @@ const char *xmppErrToStr(int e) {
   return "[unknown error]";
 }
 
-// TODO: we might want to use this in some places
-static bool ComparePaddedString(const char *p, const char *s, size_t pn) {
-  return true;
-}
-
 #define HasOverflowed(p, e) ((p) >= (e))
 
 /**
@@ -340,7 +335,6 @@ static void xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
 // be done externally. Partly for the reason that whenever there's a
 // small mistake in the parsing code or wrongly handled input the whole
 // stream will be unreadable (in the current implementation that is).
-// TODO: possibly refactor instream
 static int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool instream) {
   int r;
   int i = p->i;
@@ -550,7 +544,6 @@ static char *EncodeXmlString(char *d, char *e, const char *s, int n) {
   return d;
 }
 
-// TODO: maybe add more features like padding
 static char *Itoa(char *d, char *e, int i) {
   char buf[16];
   int mult = 1;
@@ -573,7 +566,7 @@ static char *Itoa(char *d, char *e, int i) {
  * Appends a formatted XML string to the builder.
  *
  * If there is not enough capacity in the builder, all formatted XML
- * after the most recent start (TODO) will be removed.
+ * after the most recent xmppStartStanza will be removed.
  *
  * @param c is the builder which is already initialized
  * @param fmt is a printf-esque format string that only supports the

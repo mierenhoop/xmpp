@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <sys/random.h>
 
@@ -301,11 +302,21 @@ void SetupStore(struct Store *store) {
   RefillPreKeys(store);
 }
 
-static void SetupSession(struct Session *session) {
+static int SetupSession(struct Session *session, size_t cap) {
   memset(session, 0, sizeof(struct Session));
-  session->mkskipped.p = session->mkskipped._data;
-  session->mkskipped.c = 2000;
+  if (!(session->mkskipped.p = malloc(cap * sizeof(struct MessageKey)))) {
+    return -1; // TODO: EALLOC
+  }
+  session->mkskipped.c = cap;
   session->mkskipped.maxskip = 1000;
+  return 0;
+}
+
+static void FreeSession(struct Session *session) {
+  if (session->mkskipped.p) {
+    free(session->mkskipped.p);
+    session->mkskipped.p = NULL;
+  }
 }
 
 //  AD = Encode(IKA) || Encode(IKB)
@@ -501,7 +512,6 @@ static int RatchetInitAlice(struct State *state, const Key sk, const Key ekb, co
 int InitFromBundle(struct Session *session, const struct Store *store, const struct Bundle *bundle) {
   int r;
   SerializedKey serspk;
-  SetupSession(session);
   SerializeKey(serspk, bundle->spk);
   if (!VerifySignature(bundle->spks, bundle->ik, serspk,
                        sizeof(SerializedKey))) {
@@ -722,7 +732,6 @@ int DecryptMessage(struct Session *session, const struct Store *store, Payload d
 int DecryptAnyMessageImpl(struct Session *session, const struct Store *store, Payload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   int r;
   if (isprekey) {
-    SetupSession(session);
     if (msgn == 0 || msg[0] != ((3 << 4) | 3))
       return OMEMO_ECORRUPT;
     // PreKeyWhisperMessage

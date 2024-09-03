@@ -276,7 +276,6 @@ bool StrictStrEqual(const char *c, const char *u, size_t n);
 
 #define xmppFormatStanza(c, fmt, ...) (xmppStartStanza(&(c)->builder), xmppAppendXml(&(c)->builder, fmt __VA_OPT__(,) __VA_ARGS__), xmppFlush((c), true))
 
-// TODO: rename to something like xmppAppendXml
 void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...);
 
 static inline void xmppStartStanza(struct xmppBuilder *builder) {

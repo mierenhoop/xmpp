@@ -207,6 +207,8 @@ static void TestSession() {
   ParseBundle(&bundleb, &storeb);
 
   struct Session sessiona, sessionb;
+  assert(!SetupSession(&sessiona, 1000));
+  assert(!SetupSession(&sessionb, 1000));
   assert(InitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
   Send(a, 0);
@@ -227,11 +229,15 @@ static void TestSession() {
   assert(sessiona.mkskipped.n == 1);
   Recv(a, 3, false);
   assert(sessiona.mkskipped.n == 0);
+
+  FreeSession(&sessiona);
+  FreeSession(&sessionb);
 }
 
 // Test session built by Gajim
 static void TestReceive() {
   struct Session session;
+  assert(!SetupSession(&session, 1000));
   struct Store store;
   memset(&store, 0, sizeof(struct Store));
   store.prekeys[55].id = 56;
@@ -248,6 +254,7 @@ static void TestReceive() {
   CopyHex(msg,"33083812210508a21e22879385c9f5ea5ef0a50b993167659fbc0e90614365b9d0147ac8f1201a21057f1a8715095495c17552d720975d8405c38ed11bee9404bca19062d352a9c7082252330a2105e5bbca217d32f97f860ecd3c47df86f2a71eb8d2e387e31dd1f5f5349863b455100018002220a0bae4d6e5da28a1897fa3562cd4d24ee60bc9a5d4daf0f13646239bec36a2b4fd5aa1843e12d6f128f1eaa07b3001");
   assert(DecryptAnyMessage(&session, &store, payload, true, msg, 164) == 0);
   DumpHex(payload, PAYLOAD_SIZE, "payload");
+  FreeSession(&session);
 }
 
 static void TestDeriveChainKey() {
@@ -398,6 +405,8 @@ static void TestSerialization() {
   ParseBundle(&bundleb, &storeb);
 
   struct Session sessiona, sessionb;
+  assert(!SetupSession(&sessiona, 1000));
+  assert(!SetupSession(&sessionb, 1000));
   assert(InitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
   uint8_t *buf = malloc(GetSerializedStoreSize());
@@ -407,6 +416,8 @@ static void TestSerialization() {
   DeserializeStore(&storeb, buf);
   assert(!memcmp(&storea, &storeb, sizeof(struct Store)));
   // TODO: session
+  FreeSession(&sessiona);
+  FreeSession(&sessionb);
 }
 
 #define RunTest(t)                                                     \

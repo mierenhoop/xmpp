@@ -48,7 +48,6 @@ struct MessageKey {
 // contents so that the array doesn't contain holes.
 // c >= maxskip
 struct SkippedMessageKeys {
-  struct MessageKey _data[2000]; // TODO: remove
   struct MessageKey *p, *removed;
   size_t n, c, maxskip;
 };
