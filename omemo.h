@@ -9,6 +9,7 @@
 #define OMEMO_ESKIPBUF (-6)
 #define OMEMO_EMAXSKIP (-7)
 #define OMEMO_EKEYGONE (-8)
+#define OMEMO_EALLOC (-9)
 
 typedef uint8_t Key[32];
 
@@ -115,6 +116,7 @@ struct Bundle {
 };
 
 void SetupStore(struct Store *store);
+int SetupSession(struct Session *session, size_t cap);
 
 #define IsSessionInitialized(session) (!!(session)->fsm)
 

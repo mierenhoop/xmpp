@@ -187,14 +187,6 @@ static void PrintSlice(struct xmppXmlSlice *slc, const char *alt) {
   }
 }
 
-static void PrintMessage(struct xmppStanza *st) {
-  PrintSlice(&st->from, "[unknown]");
-  printf("> ");
-  PrintSlice(&st->message.body, "[empty]");
-  puts("");
-  fflush(stdout);
-}
-
 // This function might be useful for xmpp.c
 static bool HasExactAttribute(struct xmppParser *parser, const char *k, const char *v) {
   struct xmppXmlSlice attr;
@@ -433,13 +425,32 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
           }
         }
       }
-      if (st->type == XMPP_STANZA_MESSAGE && !strcmp(parser->x.elem, "encrypted")) {
-        ParseEncryptedMessage(parser);
-      } else {
-        xmppParseUnknown(parser);
-      }
+      xmppParseUnknown(parser);
     }
   }
+}
+
+static void ParseMessage(struct xmppStanza *st) {
+  struct xmppXmlSlice body = {0};
+  SetupParser(parser, r, st->raw.p, st->raw.n) {
+    LogWarn("Parsing the message stanza failed with error %d", r);
+    return;
+  }
+  assert(xmppParseElement(parser));
+  while (xmppParseElement(parser)) {
+    if (!strcmp(parser->x.elem, "encrypted")) {
+      ParseEncryptedMessage(parser);
+    } else if (!strcmp(parser->x.elem, "body")) {
+      xmppParseContent(parser, &body);
+    } else {
+      xmppParseUnknown(parser);
+    }
+  }
+  PrintSlice(&st->from, "[unknown]");
+  printf("> ");
+  PrintSlice(&body, "[empty]");
+  puts("");
+  fflush(stdout);
 }
 
 static int ParseDeviceId(struct xmppParser *parser) {
@@ -614,17 +625,18 @@ static bool IterateClient() {
       break;
     case XMPP_ITER_STANZA:
       Log("Stanza type %d", client.stanza.type);
-      if (client.stanza.type == XMPP_STANZA_MESSAGE && client.stanza.message.body.p) {
-        PrintMessage(&client.stanza);
-      }
-      switch (GetPendingFromId(&client.stanza.id)) {
-      break; case PENDING_OURDEVICELIST:
-        puts("DEVICE LIST");
-        ParseOurDeviceList(&client.stanza);
-      break; case PENDING_REMOTEDEVICELIST:
-        ParseRemoteDeviceList(&client.stanza);
-      break; default:
-        ParseSpecificStanza(&client.stanza);
+      if (client.stanza.type == XMPP_STANZA_MESSAGE) {
+        ParseMessage(&client.stanza);
+      } else {
+        switch (GetPendingFromId(&client.stanza.id)) {
+        break; case PENDING_OURDEVICELIST:
+          puts("DEVICE LIST");
+          ParseOurDeviceList(&client.stanza);
+        break; case PENDING_REMOTEDEVICELIST:
+          ParseRemoteDeviceList(&client.stanza);
+        break; default:
+          ParseSpecificStanza(&client.stanza);
+        }
       }
       break;
     case XMPP_ITER_OK: // fallthrough
@@ -785,6 +797,7 @@ static void LoadStore() {
 
 int main() {
   deviceid = 1024;
+  assert(!SetupSession(&omemosession, 1000));
   LoadStore();
   RunIm();
 }

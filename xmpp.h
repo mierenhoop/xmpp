@@ -137,9 +137,6 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
 // Any of the child elements can be null.
 // We only support a single body, subject, etc. This deviates from the spec.
 // It will only read the first instance.
-struct xmppMessage {
-  struct xmppXmlSlice body, thread, treadparent, subject;
-};
 
 struct xmppError {
   int stanzakind;
@@ -181,7 +178,6 @@ struct xmppStanza {
     struct xmppFailure failure;
     struct xmppXmlSlice saslchallenge;
     struct xmppXmlSlice saslsuccess;
-    struct xmppMessage message;
     struct xmppError error;
     struct xmppXmlSlice bindjid;
     struct xmppSmacksEnabled smacksenabled;

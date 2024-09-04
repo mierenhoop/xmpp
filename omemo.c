@@ -302,12 +302,13 @@ void SetupStore(struct Store *store) {
   RefillPreKeys(store);
 }
 
-static int SetupSession(struct Session *session, size_t cap) {
+int SetupSession(struct Session *session, size_t cap) {
   memset(session, 0, sizeof(struct Session));
   if (!(session->mkskipped.p = malloc(cap * sizeof(struct MessageKey)))) {
-    return -1; // TODO: EALLOC
+    return OMEMO_EALLOC;
   }
   session->mkskipped.c = cap;
+  // TODO: allow this to be set via arg or #define?
   session->mkskipped.maxskip = 1000;
   return 0;
 }
@@ -497,7 +498,6 @@ static int GetSharedSecret(Key sk, bool isbob, const Key ika, const Key ska, con
 //  state.Nr = 0
 //  state.PN = 0
 //  state.MKSKIPPED = {}
-// TODO: when we are sending a prekeymessage a second time, we should not regenerate the dhs (ek), so we must not call RatchetInitAlice again...
 static int RatchetInitAlice(struct State *state, const Key sk, const Key ekb, const struct KeyPair *eka) {
   memset(state, 0, sizeof(struct State));
   memcpy(&state->dhs, eka, sizeof(struct KeyPair));

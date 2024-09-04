@@ -411,12 +411,7 @@ static int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool ins
   } else if (!strcmp(p->x.elem, "message")) {
     st->type = XMPP_STANZA_MESSAGE;
     ParseCommonStanzaAttributes(p, st);
-    while (xmppParseElement(p)) {
-      if (!strcmp(p->x.elem, "body"))
-        xmppParseContent(p, &st->message.body);
-      else
-        xmppParseUnknown(p);
-    }
+    xmppParseUnknown(p);
   } else if (!strcmp(p->x.elem, "presence")) {
     st->type = XMPP_STANZA_PRESENCE;
     ParseCommonStanzaAttributes(p, st);
