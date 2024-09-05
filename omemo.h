@@ -11,31 +11,31 @@
 #define OMEMO_EKEYGONE (-8)
 #define OMEMO_EALLOC (-9)
 
-typedef uint8_t Key[32];
+typedef uint8_t omemoKey[32];
 
-typedef uint8_t SerializedKey[1+32];
-typedef uint8_t CurveSignature[64];
+typedef uint8_t omemoSerializedKey[1+32];
+typedef uint8_t omemoCurveSignature[64];
 
-struct KeyPair {
-  Key prv;
-  Key pub;
+struct omemoKeyPair {
+  omemoKey prv;
+  omemoKey pub;
 };
 
-struct PreKey {
+struct omemoPreKey {
   uint32_t id;
-  struct KeyPair kp;
+  struct omemoKeyPair kp;
 };
 
-struct SignedPreKey {
+struct omemoSignedPreKey {
   uint32_t id;
-  struct KeyPair kp;
-  CurveSignature sig;
+  struct omemoKeyPair kp;
+  omemoCurveSignature sig;
 };
 
-struct MessageKey {
+struct omemoMessageKey {
   uint32_t nr;
-  Key dh;
-  Key mk;
+  omemoKey dh;
+  omemoKey mk;
 };
 
 // p is a pointer to the array of message keys with capacity c.
@@ -48,34 +48,33 @@ struct MessageKey {
 // the API consumer to remove the key from the array and move the
 // contents so that the array doesn't contain holes.
 // c >= maxskip
-struct SkippedMessageKeys {
-  struct MessageKey *p, *removed;
+struct omemoSkippedMessageKeys {
+  struct omemoMessageKey *p, *removed;
   size_t n, c, maxskip;
 };
 
-struct State {
-  struct KeyPair dhs;
-  Key dhr;
-  Key rk, cks, ckr;
+struct omemoState {
+  struct omemoKeyPair dhs;
+  omemoKey dhr;
+  omemoKey rk, cks, ckr;
   uint32_t ns, nr, pn;
 };
 
-#define PAYLOAD_SIZE 32
-#define PAYLOAD_MAXPADDEDSIZE 48
-#define HEADER_MAXSIZE (2+33+2*6)
-#define FULLMSG_MAXSIZE (1+HEADER_MAXSIZE+2+PAYLOAD_MAXPADDEDSIZE)
-#define ENCRYPTED_MAXSIZE (FULLMSG_MAXSIZE+8)
-#define PREKEYHEADER_MAXSIZE (1+18+35*2+2)
+#define OMEMO_PAYLOAD_SIZE 32
+#define OMEMO_PAYLOAD_MAXPADDEDSIZE 48
+#define OMEMO_HEADER_MAXSIZE (2+33+2*6)
+#define OMEMO_FULLMSG_MAXSIZE (1+OMEMO_HEADER_MAXSIZE+2+OMEMO_PAYLOAD_MAXPADDEDSIZE)
+#define OMEMO_ENCRYPTED_MAXSIZE (OMEMO_FULLMSG_MAXSIZE+8)
+#define OMEMO_PREKEYHEADER_MAXSIZE (1+18+35*2+2)
 
-#define NUMPREKEYS 100
+#define OMEMO_NUMPREKEYS 100
 
 // [        16        |   16  ]
 //  GCM encryption key GCM tag
-typedef uint8_t Payload[PAYLOAD_SIZE];
+typedef uint8_t omemoPayload[OMEMO_PAYLOAD_SIZE];
 
-// TODO: GenericMessage? we could reuse this for normal OMEMOMessages, they just don't include the PreKey header.
-struct PreKeyMessage {
-  uint8_t p[PREKEYHEADER_MAXSIZE+ENCRYPTED_MAXSIZE];
+struct omemoKeyMessage {
+  uint8_t p[OMEMO_PREKEYHEADER_MAXSIZE+OMEMO_ENCRYPTED_MAXSIZE];
   size_t n;
   bool isprekey;
 };
@@ -83,20 +82,19 @@ struct PreKeyMessage {
 // As the spec notes, a spk should be kept for one more rotation.
 // If prevsignedprekey doesn't exist, its id is 0. Therefore a valid id is always >= 1;
 // pkcounter is the id of the most recently generated prekey.
-struct Store {
-  struct KeyPair identity;
-  struct SignedPreKey cursignedprekey, prevsignedprekey;
-  struct PreKey prekeys[NUMPREKEYS];
+struct omemoStore {
+  struct omemoKeyPair identity;
+  struct omemoSignedPreKey cursignedprekey, prevsignedprekey;
+  struct omemoPreKey prekeys[OMEMO_NUMPREKEYS];
   uint32_t pkcounter;
 };
 
-// TODO: pack for serialization?
-struct Session {
+struct omemoSession {
   int fsm;
-  Key remoteidentity;
-  struct State state;
-  struct SkippedMessageKeys mkskipped;
-  Key pendingek;
+  omemoKey remoteidentity;
+  struct omemoState state;
+  struct omemoSkippedMessageKeys mkskipped;
+  omemoKey pendingek;
   uint32_t pendingpk_id, pendingspk_id;
 };
 
@@ -106,32 +104,28 @@ struct Session {
 void SystemRandom(void *d, size_t n);
 // void SystemRandom(void *d, size_t n) { esp_fill_random(d, n); }
 
-void SerializeKey(SerializedKey k, const Key pub);
+void omemoSerializeKey(omemoSerializedKey k, const omemoKey pub);
 
-struct Bundle {
-  CurveSignature spks;
-  Key spk, ik;
-  Key pk; // Randomly selected prekey
+struct omemoBundle {
+  omemoCurveSignature spks;
+  omemoKey spk, ik;
+  omemoKey pk; // Randomly selected prekey
   uint32_t pk_id, spk_id;
 };
 
-void SetupStore(struct Store *store);
-int SetupSession(struct Session *session, size_t cap);
+void omemoSetupStore(struct omemoStore *store);
+int omemoSetupSession(struct omemoSession *session, size_t cap);
 
-#define IsSessionInitialized(session) (!!(session)->fsm)
+#define omemoIsSessionInitialized(session) (!!(session)->fsm)
 
-int InitFromBundle(struct Session *session, const struct Store *store, const struct Bundle *bundle);
-int EncryptRatchet(struct Session *session, const struct Store *store, struct PreKeyMessage *msg, const Payload payload);
+int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *store, const struct omemoBundle *bundle);
+int omemoEncryptRatchet(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoPayload payload);
 
-int DecryptPreKeyMessage(struct Session *session, const struct Store *store, Payload payload, const uint8_t *msg, size_t msgn);
+int omemoDecryptAnyMessage(struct omemoSession *session, const struct omemoStore *store, omemoPayload payload, bool isprekey, const uint8_t *msg, size_t msgn);
 
-int DecryptAnyMessage(struct Session *session, const struct Store *store, Payload payload, bool isprekey, const uint8_t *msg, size_t msgn);
-
-int DecryptMessage(struct Session *session, const struct Store *store, Payload decrypted, const uint8_t *msg, size_t msgn);
-
-void EncryptRealMessage(uint8_t *d, Payload payload,
+int omemoEncryptRealMessage(uint8_t *d, omemoPayload payload,
                                uint8_t iv[12], const uint8_t *s,
                                size_t n);
-void DecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n);
+int omemoDecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n);
 
 #endif

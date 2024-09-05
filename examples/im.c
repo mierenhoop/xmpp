@@ -48,8 +48,8 @@ static struct xmppClient client;
 static struct StaticData sd;
 static char linebuf[1000];
 static char *line;
-static struct Store omemostore;
-static struct Session omemosession;
+static struct omemoStore omemostore;
+static struct omemoSession omemosession;
 static int32_t deviceid, remoteid;
 static uint32_t curpending;
 static Uuidv4 pending[10];
@@ -243,7 +243,7 @@ static void FetchBundle() {
 }
 
 static void *Malloc(size_t n) {
-  void *p = malloc(n);
+  void *p = calloc(1, n);
   assert(p);
   return p;
 }
@@ -262,8 +262,8 @@ static void ParseBase64Content(struct xmppParser *parser, uint8_t *d, int n) {
   assert(olen == n);
 }
 
-static void ParseBase64PubKey(struct xmppParser *parser, Key d) {
-  SerializedKey ser;
+static void ParseBase64PubKey(struct xmppParser *parser, omemoKey d) {
+  omemoSerializedKey ser;
   ParseBase64Content(parser, ser, 33);
   memcpy(d, ser+1, 32);
 }
@@ -279,7 +279,7 @@ static int ParseNumberAttribute(struct xmppParser *parser, const char *name) {
   return 0;
 }
 
-static bool ParseRandomPreKey(struct xmppParser *parser, struct Bundle *bundle) {
+static bool ParseRandomPreKey(struct xmppParser *parser, struct omemoBundle *bundle) {
   int i = 0;
   while (xmppParseElement(parser)) {
     assert(!strcmp(parser->x.elem, "preKeyPublic"));
@@ -295,7 +295,7 @@ static bool ParseRandomPreKey(struct xmppParser *parser, struct Bundle *bundle) 
 }
 
 static void ParseBundle(struct xmppParser *parser) {
-  struct Bundle bundle;
+  struct omemoBundle bundle;
   int found = 0;
   while (xmppParseElement(parser)) {
     if (!strcmp(parser->x.elem, "signedPreKeyPublic")) {
@@ -320,7 +320,7 @@ static void ParseBundle(struct xmppParser *parser) {
     }
   }
   assert(found == 0xf);
-  int r = InitFromBundle(&omemosession, &omemostore, &bundle);
+  int r = omemoInitFromBundle(&omemosession, &omemostore, &bundle);
   if (r < 0) {
     LogWarn("Bundle init fail: %d", r);
     return;
@@ -389,14 +389,22 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
   DecodeBase64(&payload, &payloadsz, &payloadslc);
   char *decryptedpayload = Malloc(payloadsz+1);
   decryptedpayload[payloadsz] = 0;
-  Payload decryptedkey;
-  int r = DecryptAnyMessage(&omemosession, &omemostore, decryptedkey, isprekey, key, keysz);
+  omemoPayload decryptedkey;
+  int r = omemoDecryptAnyMessage(&omemosession, &omemostore, decryptedkey, isprekey, key, keysz);
   if (r < 0) {
-    LogWarn("PreKeyMessage decryption error: %d", r);
-    return;
+    LogWarn("omemoKeyMessage decryption error: %d", r);
+    goto free;
   }
-  DecryptRealMessage(decryptedpayload, decryptedkey, PAYLOAD_SIZE, iv, payload, payloadsz);
+  r = omemoDecryptRealMessage(decryptedpayload, decryptedkey, OMEMO_PAYLOAD_SIZE, iv, payload, payloadsz);
+  if (r < 0) {
+    LogWarn("Message decryption error: %d", r);
+    goto free;
+  }
   Log("Got OMEMO msg: %s", decryptedpayload);
+free:
+  free(key);
+  free(iv);
+  free(payload);
 }
 
 #define SetupParser(parser, ret, p_, n_) \
@@ -526,9 +534,9 @@ static void SubscribeDeviceList(const char *jid, int pendid) {
 }
 
 static void AnnounceOmemoBundle() {
-  SerializedKey spk, ik;
-  SerializeKey(spk, omemostore.cursignedprekey.kp.pub);
-  SerializeKey(ik, omemostore.identity.pub);
+  omemoSerializedKey spk, ik;
+  omemoSerializeKey(spk, omemostore.cursignedprekey.kp.pub);
+  omemoSerializeKey(ik, omemostore.identity.pub);
   xmppStartStanza(&client.builder);
   xmppAppendXml(
       &client.builder,
@@ -542,9 +550,9 @@ static void AnnounceOmemoBundle() {
       "signedPreKeySignature><identityKey>%b</"
       "identityKey><prekeys>", RandomInt(), deviceid, omemostore.cursignedprekey.id,
       33, spk, 64, omemostore.cursignedprekey.sig, 33, ik);
-  for (int i = 0; i < NUMPREKEYS; i++) {
-    SerializedKey pk;
-    SerializeKey(pk, omemostore.prekeys[i].kp.pub);
+  for (int i = 0; i < OMEMO_NUMPREKEYS; i++) {
+    omemoSerializedKey pk;
+    omemoSerializeKey(pk, omemostore.prekeys[i].kp.pub);
     xmppAppendXml(&client.builder,
               "<preKeyPublic preKeyId='%d'>%b</preKeyPublic>", omemostore.prekeys[i].id,
               33, pk);
@@ -655,11 +663,15 @@ static void SendNormalOmemo(const char *msg, const char *to, int rid) {
   size_t msgn = strlen(msg);
   char *payload = Malloc(msgn);
   char iv[12];
-  Payload encryptionkey;
-  EncryptRealMessage(payload, encryptionkey, iv, msg, msgn);
+  omemoPayload encryptionkey;
+  int r = omemoEncryptRealMessage(payload, encryptionkey, iv, msg, msgn);
+  if (r < 0) {
+    LogWarn("Message encryption error: %d", r);
+    return;
+  }
 
-  struct PreKeyMessage encrypted;
-  int r = EncryptRatchet(&omemosession, &omemostore, &encrypted, encryptionkey);
+  struct omemoKeyMessage encrypted;
+  r = omemoEncryptRatchet(&omemosession, &omemostore, &encrypted, encryptionkey);
   if (r < 0) {
     LogWarn("Message encryption error: %d", r);
     return;
@@ -704,7 +716,7 @@ static void HandleCommand() {
     if (!xmppIsInitialized(&client)) {
       puts("Can not send messages yet.\nTry: /login jid password");
     } else {
-      if (IsSessionInitialized(&omemosession)) {
+      if (omemoIsSessionInitialized(&omemosession)) {
         if (remoteid)
           SendNormalOmemo(cmd, "user@localhost", remoteid);
         else
@@ -775,7 +787,7 @@ static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
 static void SaveStore() {
   FILE *f = fopen(STORE_LOCATION, "w");
   if (f) {
-    fwrite(&omemostore, sizeof(struct Store), 1,  f);
+    fwrite(&omemostore, sizeof(struct omemoStore), 1,  f);
     fclose(f);
   }
 }
@@ -784,20 +796,20 @@ static void LoadStore() {
   uint8_t *data;
   size_t n;
   if (ReadWholeFile(STORE_LOCATION, &data, &n)) {
-    if (n == sizeof(struct Store)) {
-      memcpy(&omemostore, data, sizeof(struct Store));
+    if (n == sizeof(struct omemoStore)) {
+      memcpy(&omemostore, data, sizeof(struct omemoStore));
       free(data);
       return;
     }
     free(data);
   }
-  SetupStore(&omemostore);
+  omemoSetupStore(&omemostore);
   SaveStore();
 }
 
 int main() {
   deviceid = 1024;
-  assert(!SetupSession(&omemosession, 1000));
+  assert(!omemoSetupSession(&omemosession, 1000));
   LoadStore();
   RunIm();
 }
