@@ -44,15 +44,28 @@ test/localhost.crt:
 test/cacert.inc: test/localhost.crt
 	(cat test/localhost.crt; printf "\0") | xxd -i -name cacert_pem > $@
 
-ESPIDF_DOCKERCMD=docker run --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp espressif/idf idf.py
+# TODO: don't add --device when ESP_DEV does not exist, so we can still
+# build even when ESP32 is not connected.
+
+ESP_DEV?=/dev/ttyUSB0
+
+ESPIDF_DOCKERCMD=docker run -it --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp --device=$(ESP_DEV) espressif/idf idf.py -B o/example-esp-im -C examples/esp-im
 
 .PHONY: esp-im
 esp-im: | o
-	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im build
+	$(ESPIDF_DOCKERCMD) build
 
 .PHONY: size-esp-im
 size-esp-im: | o
-	 $(ESPIDF_DOCKERCMD) -B o/example-esp-im -C examples/esp-im size-files
+	$(ESPIDF_DOCKERCMD) size-files
+
+.PHONY: esp-upload
+esp-upload:
+	$(ESPIDF_DOCKERCMD) flash
+
+.PHONY: esp-monitor
+esp-monitor:
+	$(ESPIDF_DOCKERCMD) monitor
 
 # TODO: remove LD_LIBRARY_PATH, it's needed for MbedTls being installed in /usr/local.
 .PHONY: test
@@ -91,7 +104,7 @@ start-omemo-bot: | test/bot-venv/
 
 .PHONY: tags
 tags:
-	ctags-exuberant -R --exclude=o
+	ctags-exuberant -R --exclude=o --exclude=test/bot-venv
 
 .PHONY: clean
 clean:

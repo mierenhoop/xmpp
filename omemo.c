@@ -664,7 +664,7 @@ static int DecryptMessageImpl(struct omemoSession *session,
     memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
   } else {
-    printf("nr %d headern %d headerpn %d\n", session->state.nr, headern, headerpn);
+    //printf("nr %d headern %d headerpn %d\n", session->state.nr, headern, headerpn);
     if (!shouldstep && headern < session->state.nr) return OMEMO_EKEYGONE;
     if (shouldstep && headerpn < session->state.nr) return OMEMO_EKEYGONE;
     uint64_t nskips = shouldstep ?
@@ -709,26 +709,6 @@ static int DecryptMessageImpl(struct omemoSession *session,
   return 0;
 }
 
-static int omemoDecryptMessage(struct omemoSession *session, const struct omemoStore *store, omemoPayload decrypted, const uint8_t *msg, size_t msgn) {
-  int r;
-  assert(session && session->mkskipped.p && !session->mkskipped.removed);
-  assert(store);
-  assert(msg);
-  struct omemoState backup;
-  uint32_t mkskippednbackup = session->mkskipped.n;
-  memcpy(&backup, &session->state, sizeof(struct omemoState));
-  if ((r = DecryptMessageImpl(session, store, decrypted, msg, msgn))) {
-    memcpy(&session->state, &backup, sizeof(struct omemoState));
-    memset(decrypted, 0, OMEMO_PAYLOAD_SIZE);
-    session->mkskipped.n = mkskippednbackup;
-    session->mkskipped.removed = NULL;
-    return r;
-  }
-  if (session->mkskipped.removed)
-    NormalizeSkipMessageKeysTrivial(&session->mkskipped);
-  return 0;
-}
-
 static int DecryptAnyMessageImpl(struct omemoSession *session, const struct omemoStore *store, omemoPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   int r;
   if (isprekey) {
@@ -760,18 +740,26 @@ static int DecryptAnyMessageImpl(struct omemoSession *session, const struct omem
   }
   session->fsm = SESSION_READY;
   // TODO: we could also call DecryptMessageImpl in this case.
-  return omemoDecryptMessage(session, store, payload, msg, msgn);
+  return DecryptMessageImpl(session, store, payload, msg, msgn);
 }
 
 int omemoDecryptAnyMessage(struct omemoSession *session, const struct omemoStore *store, omemoPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+  assert(session && session->mkskipped.p && !session->mkskipped.removed);
   assert(store);
   assert(msg && msgn);
+  struct omemoState backup;
+  uint32_t mkskippednbackup = session->mkskipped.n;
+  memcpy(&backup, &session->state, sizeof(struct omemoState));
   int r;
   if ((r = DecryptAnyMessageImpl(session, store, payload, isprekey, msg, msgn))) {
-    //memset(session, 0, sizeof(struct Session));
+    memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(payload, 0, OMEMO_PAYLOAD_SIZE);
+    session->mkskipped.n = mkskippednbackup;
+    session->mkskipped.removed = NULL;
     return r;
   }
+  if (session->mkskipped.removed)
+    NormalizeSkipMessageKeysTrivial(&session->mkskipped);
   return 0;
 }
 

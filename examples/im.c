@@ -463,7 +463,7 @@ static void ParseMessage(struct xmppStanza *st) {
 
 static int ParseDeviceId(struct xmppParser *parser) {
   struct xmppXmlSlice attr;
-  int id;
+  int id = -1;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "id")) {
       char *e;
