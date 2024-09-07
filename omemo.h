@@ -115,6 +115,7 @@ struct omemoBundle {
 
 void omemoSetupStore(struct omemoStore *store);
 int omemoSetupSession(struct omemoSession *session, size_t cap);
+void omemoFreeSession(struct omemoSession *session);
 
 #define omemoIsSessionInitialized(session) (!!(session)->fsm)
 

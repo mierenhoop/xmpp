@@ -274,7 +274,7 @@ static inline uint32_t IncrementWrapSkipZero(uint32_t n) {
 
 static void RefillPreKeys(struct omemoStore *store) {
   int i;
-#if 0
+#if 1
   for (i = 0; i < 1; i++) {
     if (!store->prekeys[i].id) {
       store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
@@ -320,7 +320,7 @@ int omemoSetupSession(struct omemoSession *session, size_t cap) {
   return 0;
 }
 
-static void FreeSession(struct omemoSession *session) {
+void omemoFreeSession(struct omemoSession *session) {
   if (session->mkskipped.p) {
     free(session->mkskipped.p);
     session->mkskipped.p = NULL;

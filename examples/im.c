@@ -748,7 +748,6 @@ static void Loop() {
 void RunIm() {
   log = open_memstream(&logdata, &logdatan);
   assert(log);
-  InitializeConn("localhost", "5222");
   Loop();
   Die();
 }
