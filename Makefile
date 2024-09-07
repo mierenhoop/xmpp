@@ -9,9 +9,6 @@ o:
 o/xmpp.o: xmpp.c xmpp.h | o
 	$(CC) -c -o $@ $(CFLAGS) xmpp.c
 
-# TODO: when we eventually move away from integration tests in
-# test/xmpp.c (keep those integrations tests in the IM example), we can
-# remove mbedtls and mbedx509
 o/test: o/xmpp.o test/cacert.inc test/xmpp.c
 	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
 
@@ -26,7 +23,6 @@ LIBOMEMO_DIR=o/libomemo-c-0.5.0
 CURVE_DIR=$(LIBOMEMO_DIR)/src/curve25519
 DEST_AMALG_C=$(CURVE_DIR)/amalg.c
 
-# TODO patch: typedef crypto_*int* to stdint types, remove malloc from ed25519/additions?
 curve25519.c: | o
 	wget -O $(LIBOMEMO_DIR).tar.gz https://github.com/dino/libomemo-c/archive/refs/tags/v0.5.0.tar.gz
 	echo "03195a24ef7a86c339cdf9069d7f7569ed511feaf55e853bfcb797d2698ba983  $(LIBOMEMO_DIR).tar.gz" \
@@ -44,12 +40,13 @@ test/localhost.crt:
 test/cacert.inc: test/localhost.crt
 	(cat test/localhost.crt; printf "\0") | xxd -i -name cacert_pem > $@
 
-# TODO: don't add --device when ESP_DEV does not exist, so we can still
-# build even when ESP32 is not connected.
-
 ESP_DEV?=/dev/ttyUSB0
 
-ESPIDF_DOCKERCMD=docker run -it --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp --device=$(ESP_DEV) espressif/idf idf.py -B o/example-esp-im -C examples/esp-im
+ifneq (,$(wildcard $(ESP_DEV)))
+	ESP_DEVARG= --device=$(ESP_DEV)
+endif
+
+ESPIDF_DOCKERCMD=docker run -it --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp $(ESP_DEVARG) espressif/idf idf.py -B o/example-esp-im -C examples/esp-im
 
 .PHONY: esp-im
 esp-im: | o
@@ -67,14 +64,13 @@ esp-upload:
 esp-monitor:
 	$(ESPIDF_DOCKERCMD) monitor
 
-# TODO: remove LD_LIBRARY_PATH, it's needed for MbedTls being installed in /usr/local.
 .PHONY: test
 test: o/test
-	LD_LIBRARY_PATH=/usr/local/lib ./o/test
+	./o/test
 
 .PHONY: test-omemo
 test-omemo: o/test-omemo
-	LD_LIBRARY_PATH=/usr/local/lib ./o/test-omemo
+	./o/test-omemo
 
 define IM_INPUT
 /login admin@localhost
@@ -84,7 +80,7 @@ export IM_INPUT
 
 .PHONY: runim
 runim: o/im
-	LD_LIBRARY_PATH=/usr/local/lib rlwrap -P "$$IM_INPUT" ./o/im
+	rlwrap -P "$$IM_INPUT" ./o/im
 
 .PHONY: start-prosody
 start-prosody: test/localhost.crt

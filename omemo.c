@@ -215,13 +215,11 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
   return !!edsign_verify(sig2, ed, msg, msgn);
 }
 
-static const uint8_t basepoint[32] = {9};
-
 static void GenerateKeyPair(struct omemoKeyPair *kp) {
   memset(kp, 0, sizeof(*kp));
   SystemRandom(kp->prv, sizeof(kp->prv));
   c25519_prepare(kp->prv);
-  c25519_smult(kp->pub, c25519_base_x, kp->prv);
+  curve25519(kp->pub, kp->prv, c25519_base_x);
 }
 
 static void GeneratePreKey(struct omemoPreKey *pk, uint32_t id) {
@@ -250,7 +248,7 @@ static void CalculateCurveSignature(omemoCurveSignature sig, omemoKey signprv,
 static void CalculateCurveAgreement(uint8_t d[static 32], const omemoKey prv,
                                     const omemoKey pub) {
 
-  c25519_smult(d, pub, prv);
+  curve25519(d, prv, pub);
 }
 
 static void GenerateSignedPreKey(struct omemoSignedPreKey *spk, uint32_t id,
@@ -276,7 +274,8 @@ static inline uint32_t IncrementWrapSkipZero(uint32_t n) {
 
 static void RefillPreKeys(struct omemoStore *store) {
   int i;
-  for (i = 0; i < 1/*NUMPREKEYS*/; i++) {
+#if 0
+  for (i = 0; i < 1; i++) {
     if (!store->prekeys[i].id) {
       store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
       GeneratePreKey(store->prekeys+i, store->pkcounter);
@@ -288,6 +287,14 @@ static void RefillPreKeys(struct omemoStore *store) {
     store->prekeys[i].id = store->pkcounter;
     memcpy(&store->prekeys[i].kp, &store->prekeys[0].kp, sizeof(struct omemoKeyPair));
   }
+#else
+  for (i = 0; i < OMEMO_NUMPREKEYS; i++) {
+    if (!store->prekeys[i].id) {
+      store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
+      GeneratePreKey(store->prekeys+i, store->pkcounter);
+    }
+  }
+#endif
 }
 
 void omemoSetupStore(struct omemoStore *store) {

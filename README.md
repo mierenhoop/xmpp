@@ -85,6 +85,11 @@ Compile the esp-idf version of the im:
 
  `$ make esp-im`
 
+ `$ ESP_DEV=/dev/ttyUSB0 make esp-upload`
+
+ `$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
+
+
 Using this library for your own project:
 
  Copy over `/xmpp.c`, `/xmpp.h`, `/yxml.c` and `/yxml.h` to your

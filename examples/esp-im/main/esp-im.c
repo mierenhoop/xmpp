@@ -1,6 +1,7 @@
 #include <stdio.h>
 
 #include "esp_random.h"
+#include "esp_timer.h"
 
 #include "system.h"
 
@@ -13,11 +14,17 @@
 
 void app_main(void)
 {
+  const unsigned MEASUREMENTS = 5;
   omemoKey pub, prv;
-  puts("Starting calc");
   esp_fill_random(prv, 32);
   c25519_prepare(prv);
-  c25519_smult(pub, c25519_base_x, prv);
-  puts("Done calc");
+  uint64_t start = esp_timer_get_time();
+  for (int retries = 0; retries < MEASUREMENTS; retries++) {
+    curve25519(pub, prv, c25519_base_x);
+  }
+  uint64_t end = esp_timer_get_time();
+  printf("%u iterations took %llu milliseconds (%llu microseconds per invocation)\n",
+     MEASUREMENTS, (end - start)/1000, (end - start)/MEASUREMENTS);
+
   //RunIm();
 }
