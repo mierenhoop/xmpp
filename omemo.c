@@ -307,6 +307,7 @@ void omemoSetupStore(struct omemoStore *store) {
   DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
   DumpHex(store->cursignedprekey.sig, 64, "spksig");
   RefillPreKeys(store);
+  store->isinitialized = true;
 }
 
 int omemoSetupSession(struct omemoSession *session, size_t cap) {

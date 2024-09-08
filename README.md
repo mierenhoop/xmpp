@@ -81,15 +81,6 @@ Running the tests:
 
  `$ make test`
 
-Compile the esp-idf version of the im:
-
- `$ make esp-im`
-
- `$ ESP_DEV=/dev/ttyUSB0 make esp-upload`
-
- `$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
-
-
 Using this library for your own project:
 
  Copy over `/xmpp.c`, `/xmpp.h`, `/yxml.c` and `/yxml.h` to your
@@ -115,6 +106,24 @@ Run the im (instant messenger) example:
  By default the localhost self-signed certificate is used. For a simple
  test you can spin up prosody (`$ make start-prosody`) and run the echo
  bot (`$ make start-omemo-bot`).
+
+Compile the esp-idf version of the im:
+
+```bash
+$ cat > examples/esp-im/config.h <<EOF
+#define IM_WIFI_SSID "ssid"
+#define IM_WIFI_PASS "password"
+#define IM_SERVER_IP "192.168.1.2"
+EOF
+```
+
+ `$ make esp-im`
+
+ `$ ESP_DEV=/dev/ttyUSB0 make esp-upload`
+
+ `$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
+
+
 
 ## License
 

@@ -41,6 +41,7 @@
 
 typedef char Uuidv4[36+1];
 
+static const char *serverip;
 static char *logdata;
 static size_t logdatan;
 static FILE *log;
@@ -105,7 +106,7 @@ static struct {
   mbedtls_ssl_config conf;
 } conn;
 
-static void InitializeConn(const char *server, const char *port) {
+static void InitializeConn(const char *server, const char *hostname, const char *port) {
   mbedtls_ssl_init(&conn.ssl);
   mbedtls_x509_crt_init(&conn.cacert);
   mbedtls_ctr_drbg_init(&conn.ctr_drbg);
@@ -117,7 +118,7 @@ static void InitializeConn(const char *server, const char *port) {
   //           &conn.cacert, "/etc/ssl/certs/ca-certificates.crt") >= 0);
   assert(mbedtls_x509_crt_parse(&conn.cacert, cacert_pem, cacert_pem_len) >=
          0);
-  assert(mbedtls_ssl_set_hostname(&conn.ssl, server) == 0);
+  assert(mbedtls_ssl_set_hostname(&conn.ssl, hostname) == 0);
   assert(mbedtls_ssl_config_defaults(&conn.conf, MBEDTLS_SSL_IS_CLIENT,
                                      MBEDTLS_SSL_TRANSPORT_STREAM,
                                      MBEDTLS_SSL_PRESET_DEFAULT) == 0);
@@ -136,7 +137,7 @@ static void InitializeConn(const char *server, const char *port) {
 
 static void Initialize(const char *jid) {
   xmppInitClient(&client, &sd, jid, 0);
-  InitializeConn(client.jid.domainp, "5222");
+  InitializeConn(serverip ? serverip : client.jid.domainp, client.jid.domainp, "5222");
 }
 
 static void Close() {
@@ -481,7 +482,6 @@ static void ParseOurDeviceList(struct xmppStanza *st) {
     LogWarn("Parsing the stanza failed with error %d", r);
     return;
   }
-  // TODO: xmppFormatBegin (this would clear an unfinished stanza)
   xmppStartStanza(&client.builder);
   xmppAppendXml(
       &client.builder,
@@ -745,9 +745,14 @@ static void Loop() {
   free(line);
 }
 
-void RunIm() {
+void RunIm(const char *ip) {
   log = open_memstream(&logdata, &logdatan);
   assert(log);
+  serverip = ip;
+  deviceid = 1024;
+  if (!omemostore.isinitialized)
+    omemoSetupStore(&omemostore);
+  assert(!omemoSetupSession(&omemosession, 100));
   Loop();
   Die();
 }
@@ -807,10 +812,8 @@ static void LoadStore() {
 }
 
 int main() {
-  deviceid = 1024;
-  assert(!omemoSetupSession(&omemosession, 1000));
   LoadStore();
-  RunIm();
+  RunIm(NULL);
 }
 
 #endif

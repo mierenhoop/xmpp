@@ -83,6 +83,7 @@ struct omemoKeyMessage {
 // If prevsignedprekey doesn't exist, its id is 0. Therefore a valid id is always >= 1;
 // pkcounter is the id of the most recently generated prekey.
 struct omemoStore {
+  bool isinitialized;
   struct omemoKeyPair identity;
   struct omemoSignedPreKey cursignedprekey, prevsignedprekey;
   struct omemoPreKey prekeys[OMEMO_NUMPREKEYS];

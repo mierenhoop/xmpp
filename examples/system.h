@@ -5,6 +5,6 @@
 
 bool SystemPoll();
 
-void RunIm();
+void RunIm(const char *);
 
 #endif

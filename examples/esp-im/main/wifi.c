@@ -19,13 +19,13 @@
 #include "lwip/err.h"
 #include "lwip/sys.h"
 
+#include "../config.h"
+
 /* The examples use WiFi configuration that you can set via project configuration menu
 
    If you'd rather not, just change the below entries to strings with
    the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
 */
-#define EXAMPLE_ESP_WIFI_SSID      "somessid"
-#define EXAMPLE_ESP_WIFI_PASS      "53cur3p455w0rd"
 #define EXAMPLE_ESP_MAXIMUM_RETRY  10
 
 #define ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD WIFI_AUTH_WPA_WPA2_PSK
@@ -93,8 +93,8 @@ void wifi_init_sta(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = EXAMPLE_ESP_WIFI_SSID,
-            .password = EXAMPLE_ESP_WIFI_PASS,
+            .ssid = IM_WIFI_SSID,
+            .password = IM_WIFI_PASS,
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
@@ -114,11 +114,9 @@ void wifi_init_sta(void)
     /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s password:%s",
-                 EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
+        ESP_LOGI(TAG, "connected to ap");
     } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
-                 EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
+        ESP_LOGI(TAG, "Failed to connect to ap");
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
     }
