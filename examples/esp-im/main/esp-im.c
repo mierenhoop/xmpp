@@ -23,6 +23,10 @@
 
 void ConnectWifi(void);
 
+void SystemRandom(void *p, size_t n) {
+  esp_fill_random(p, n);
+}
+
 static void SetupStdio(void) {
   setvbuf(stdin, NULL, _IONBF, 0);
   ESP_ERROR_CHECK( uart_driver_install( (uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM,

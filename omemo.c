@@ -347,7 +347,7 @@ static int GetMac(uint8_t d[static 8], const omemoKey ika, const omemoKey ikb,
   return 0;
 }
 
-static int Encrypt(uint8_t out[OMEMO_PAYLOAD_MAXPADDEDSIZE], const omemoPayload in, omemoKey key,
+static int Encrypt(uint8_t out[OMEMO_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
                     uint8_t iv[static 16]) {
   _Static_assert(OMEMO_PAYLOAD_MAXPADDEDSIZE == 48);
   uint8_t tmp[48];
@@ -408,7 +408,7 @@ static int GetBaseMaterials(omemoKey d, omemoKey mk, const omemoKey ck) {
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
 // msg->p                          [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
-static int EncryptRatchetImpl(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoPayload payload) {
+static int EncryptKeyImpl(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
     return OMEMO_ESTATE;
   int r;
@@ -447,12 +447,12 @@ static int EncryptRatchetImpl(struct omemoSession *session, const struct omemoSt
   return 0;
 }
 
-int omemoEncryptRatchet(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoPayload payload) {
+int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
   int r;
   struct omemoState backup;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   memset(msg, 0, sizeof(struct omemoKeyMessage));
-  if ((r = EncryptRatchetImpl(session, store, msg, payload))) {
+  if ((r = EncryptKeyImpl(session, store, msg, payload))) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(msg, 0, sizeof(struct omemoKeyMessage));
   }
@@ -629,11 +629,9 @@ static int SkipMessageKeys(struct omemoState *state, struct omemoSkippedMessageK
 
 static int DecryptMessageImpl(struct omemoSession *session,
                               const struct omemoStore *store,
-                              omemoPayload decrypted, const uint8_t *msg,
+                              omemoKeyPayload decrypted, const uint8_t *msg,
                               size_t msgn) {
   int r;
-  //if (session->fsm == SESSION_UNINIT)
-  //  return OMEMO_ESTATE;
   if (msgn < 9 || msg[0] != ((3 << 4) | 3))
     return OMEMO_ECORRUPT;
   struct ProtobufField fields[5] = {
@@ -717,7 +715,7 @@ static int DecryptMessageImpl(struct omemoSession *session,
   return 0;
 }
 
-static int DecryptAnyMessageImpl(struct omemoSession *session, const struct omemoStore *store, omemoPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+static int DecryptKeyImpl(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   int r;
   if (isprekey) {
     if (msgn == 0 || msg[0] != ((3 << 4) | 3))
@@ -745,21 +743,24 @@ static int DecryptAnyMessageImpl(struct omemoSession *session, const struct omem
     RatchetInitBob(&session->state, sk, &spk->kp);
     msg = fields[4].p;
     msgn = fields[4].v;
+  } else {
+    if (!session->fsm) // TODO: specify which states are allowed here
+      return OMEMO_ESTATE;
   }
   session->fsm = SESSION_READY;
   // TODO: we could also call DecryptMessageImpl in this case.
   return DecryptMessageImpl(session, store, payload, msg, msgn);
 }
 
-int omemoDecryptAnyMessage(struct omemoSession *session, const struct omemoStore *store, omemoPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
-  assert(session && session->mkskipped.p && !session->mkskipped.removed);
-  assert(store);
-  assert(msg && msgn);
+int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+  if (!session || !store || !store->isinitialized || !msg || !msgn)
+    return OMEMO_ESTATE;
+  //assert(session->mkskipped.p && !session->mkskipped.removed);
   struct omemoState backup;
   uint32_t mkskippednbackup = session->mkskipped.n;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   int r;
-  if ((r = DecryptAnyMessageImpl(session, store, payload, isprekey, msg, msgn))) {
+  if ((r = DecryptKeyImpl(session, store, payload, isprekey, msg, msgn))) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(payload, 0, OMEMO_PAYLOAD_SIZE);
     session->mkskipped.n = mkskippednbackup;
@@ -778,7 +779,7 @@ int omemoDecryptAnyMessage(struct omemoSession *session, const struct omemoStore
  * @param pn is the size of payload, some clients might make the tag larger than 16 bytes
  * @param n is the size of the buffer in d and s
  */
-int omemoDecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n) {
+int omemoDecryptMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n) {
   int r = 0;
   assert(pn >= 32);
   mbedtls_gcm_context ctx;
@@ -795,7 +796,7 @@ int omemoDecryptRealMessage(uint8_t *d, const uint8_t *payload, size_t pn, const
  * @param payload (out) will contain the encrypted 
  * @param n is the size of the buffer in d and s
  */
-int omemoEncryptRealMessage(uint8_t *d, omemoPayload payload,
+int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
                                uint8_t iv[12], const uint8_t *s,
                                size_t n) {
   int r = 0;

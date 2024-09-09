@@ -175,27 +175,27 @@ static void TestEncryption() {
   const uint8_t *msg = "Hello there!";
   size_t n = strlen(msg);
   uint8_t encrypted[100], decrypted[100], iv[12];
-  omemoPayload payload;
-  assert(!omemoEncryptRealMessage(encrypted, payload, iv, msg, n));
-  assert(!omemoDecryptRealMessage(decrypted, payload, OMEMO_PAYLOAD_SIZE, iv, encrypted, n));
+  omemoKeyPayload payload;
+  assert(!omemoEncryptMessage(encrypted, payload, iv, msg, n));
+  assert(!omemoDecryptMessage(decrypted, payload, OMEMO_PAYLOAD_SIZE, iv, encrypted, n));
   assert(!memcmp(msg, decrypted, n));
 }
 
 // user is either a or b
 #define Send(user, id) do { \
     SystemRandom(messages[id].payload, OMEMO_PAYLOAD_SIZE); \
-    omemoEncryptRatchet(&session##user, &store##user, &messages[id].msg, messages[id].payload); \
+    omemoEncryptKey(&session##user, &store##user, &messages[id].msg, messages[id].payload); \
   } while (0)
 
 #define Recv(user, id, isprekey) do { \
-    omemoPayload dec; \
-    omemoDecryptAnyMessage(&session##user, &store##user, dec, isprekey, messages[id].msg.p, messages[id].msg.n); \
+    omemoKeyPayload dec; \
+    omemoDecryptKey(&session##user, &store##user, dec, isprekey, messages[id].msg.p, messages[id].msg.n); \
     assert(!memcmp(messages[id].payload, dec, OMEMO_PAYLOAD_SIZE)); \
   } while (0);
 
 static void TestSession() {
   struct {
-    omemoPayload payload;
+    omemoKeyPayload payload;
     struct omemoKeyMessage msg;
   } messages[100];
 
@@ -240,6 +240,7 @@ static void TestReceive() {
   assert(!omemoSetupSession(&session, 1000));
   struct omemoStore store;
   memset(&store, 0, sizeof(struct omemoStore));
+  store.isinitialized = true;
   store.prekeys[55].id = 56;
   CopyHex(store.prekeys[55].kp.pub, "c0a2e2216d40765490501fcf8d31892c1a4cf60ed880ae3422daa767c430916b");
   CopyHex(store.prekeys[55].kp.prv, "e8f9420a195d93f6d4acf9a5d92748aebd235bcd7648b19849882d96f8fdcf41");
@@ -249,10 +250,10 @@ static void TestReceive() {
   CopyHex(store.cursignedprekey.kp.pub, "0a90c1ea3558b15625ad78e20861a39b1f30ca1c425a0e50557b0868821c661f");
   CopyHex(store.cursignedprekey.kp.prv, "805eb8a8982b4206d0bec56bd1e861141f2c1b48386fa35ee7231834be1dd478");
   CopyHex(store.cursignedprekey.sig, "0fa2490e4899a3da85a94093fb27e97f15d05e99bab361c9a4ca388bec6685c61d96241c0020c101854388fd41e8932a7e4fba37bc454a21a6bcc037b0407808");
-  omemoPayload payload;
+  omemoKeyPayload payload;
   uint8_t msg[180];
   CopyHex(msg,"33083812210508a21e22879385c9f5ea5ef0a50b993167659fbc0e90614365b9d0147ac8f1201a21057f1a8715095495c17552d720975d8405c38ed11bee9404bca19062d352a9c7082252330a2105e5bbca217d32f97f860ecd3c47df86f2a71eb8d2e387e31dd1f5f5349863b455100018002220a0bae4d6e5da28a1897fa3562cd4d24ee60bc9a5d4daf0f13646239bec36a2b4fd5aa1843e12d6f128f1eaa07b3001");
-  assert(omemoDecryptAnyMessage(&session, &store, payload, true, msg, 164) == 0);
+  assert(omemoDecryptKey(&session, &store, payload, true, msg, 164) == 0);
   DumpHex(payload, OMEMO_PAYLOAD_SIZE, "payload");
   omemoFreeSession(&session);
 }

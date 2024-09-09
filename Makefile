@@ -18,22 +18,6 @@ o/test-omemo: test/omemo.c omemo.c c25519.c | o curve25519.c
 o/im: o/xmpp.o examples/im.c test/cacert.inc omemo.c c25519.c
 	$(CC) -o o/im examples/im.c yxml.c omemo.c c25519.c curve25519.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
 
-LIBOMEMO_DIR=o/libomemo-c-0.5.0
-
-CURVE_DIR=$(LIBOMEMO_DIR)/src/curve25519
-DEST_AMALG_C=$(CURVE_DIR)/amalg.c
-
-curve25519.c: | o
-	wget -O $(LIBOMEMO_DIR).tar.gz https://github.com/dino/libomemo-c/archive/refs/tags/v0.5.0.tar.gz
-	echo "03195a24ef7a86c339cdf9069d7f7569ed511feaf55e853bfcb797d2698ba983  $(LIBOMEMO_DIR).tar.gz" \
-		| sha256sum -c -
-	tar -xzf $(LIBOMEMO_DIR).tar.gz -C o
-	patch -d $(LIBOMEMO_DIR) -p1 < build/amalg.patch
-	cp build/amalg.c $(DEST_AMALG_C)
-	echo "#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include <stdint.h>\n" > $@
-	cpp $(DEST_AMALG_C) -I $(CURVE_DIR)/ed25519/nacl_includes/ -I $(CURVE_DIR)/ed25519/additions/ -I $(CURVE_DIR)/ed25519 \
-		| awk '/# 5 .*amalg\.c.*/ {k=1} /# / {next} k {print $0}' >> $@
-
 test/localhost.crt:
 	openssl req -new -x509 -key test/localhost.key -out $@ -days 3650 -config test/localhost.cnf
 

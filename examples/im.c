@@ -59,10 +59,6 @@ static Uuidv4 pending[10];
 #define PENDING_OURDEVICELIST 1
 #define PENDING_BUNDLE 2
 
-void SystemRandom(void *d, size_t n) {
-  assert(getrandom(d, n, 0) == n);
-}
-
 static int RandomInt() {
   uint16_t n;
   SystemRandom(&n, 2);
@@ -276,7 +272,7 @@ static int ParseNumberAttribute(struct xmppParser *parser, const char *name) {
       return strtol(attr.p, NULL, 10);
     }
   }
-  assert(false); // TODO: instead of such assertions, we may longjmp
+  longjmp(parser->jb, XMPP_ESPEC);
   return 0;
 }
 
@@ -390,13 +386,13 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
   DecodeBase64(&payload, &payloadsz, &payloadslc);
   char *decryptedpayload = Malloc(payloadsz+1);
   decryptedpayload[payloadsz] = 0;
-  omemoPayload decryptedkey;
-  int r = omemoDecryptAnyMessage(&omemosession, &omemostore, decryptedkey, isprekey, key, keysz);
+  omemoKeyPayload decryptedkey;
+  int r = omemoDecryptKey(&omemosession, &omemostore, decryptedkey, isprekey, key, keysz);
   if (r < 0) {
     LogWarn("omemoKeyMessage decryption error: %d", r);
     goto free;
   }
-  r = omemoDecryptRealMessage(decryptedpayload, decryptedkey, OMEMO_PAYLOAD_SIZE, iv, payload, payloadsz);
+  r = omemoDecryptMessage(decryptedpayload, decryptedkey, OMEMO_PAYLOAD_SIZE, iv, payload, payloadsz);
   if (r < 0) {
     LogWarn("Message decryption error: %d", r);
     goto free;
@@ -663,15 +659,15 @@ static void SendNormalOmemo(const char *msg, const char *to, int rid) {
   size_t msgn = strlen(msg);
   char *payload = Malloc(msgn);
   char iv[12];
-  omemoPayload encryptionkey;
-  int r = omemoEncryptRealMessage(payload, encryptionkey, iv, msg, msgn);
+  omemoKeyPayload encryptionkey;
+  int r = omemoEncryptMessage(payload, encryptionkey, iv, msg, msgn);
   if (r < 0) {
     LogWarn("Message encryption error: %d", r);
     return;
   }
 
   struct omemoKeyMessage encrypted;
-  r = omemoEncryptRatchet(&omemosession, &omemostore, &encrypted, encryptionkey);
+  r = omemoEncryptKey(&omemosession, &omemostore, &encrypted, encryptionkey);
   if (r < 0) {
     LogWarn("Message encryption error: %d", r);
     return;
@@ -773,6 +769,10 @@ bool SystemPoll() {
 }
 
 #ifdef IM_NATIVE
+
+void SystemRandom(void *d, size_t n) {
+  assert(getrandom(d, n, 0) == n);
+}
 
 static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
   FILE *f = fopen(path, "r");
