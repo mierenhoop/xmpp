@@ -37,6 +37,21 @@ struct xmppXmlSlice {
   size_t n, rawn; // TODO: n -> realn, rawn -> n
 };
 
+/**
+ * Decode a raw XML slice into buffer.
+ *
+ * Example usage:
+ *
+ *   char *GetId(struct xmppStanza *stanza) {
+ *     char *d = NULL;
+ *     if (stanza->id.p && (d = calloc(stanza->id.n + 1)))
+ *       xmppReadXmlSlice(d, stanza->id);
+ *     return d;
+ *   }
+ *
+ * @param d is the destination buffer
+ * @param s is the slice
+ */
 void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
 
 // The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.
@@ -81,6 +96,7 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
 // Don't authenticate (for e.g. In-Band Registration).
 #define XMPP_OPT_NOAUTH (1 << 9)
 
+// TODO: make this an enum
 // Don't call xmppIterate again.
 #define XMPP_ITER_STREAMEND 0
 // A stanza was read. You can access the stanza in c->stanza, it will be valid up until the next call of Iterate.
@@ -272,6 +288,23 @@ bool StrictStrEqual(const char *c, const char *u, size_t n);
 
 #define xmppFormatStanza(c, fmt, ...) (xmppStartStanza(&(c)->builder), xmppAppendXml(&(c)->builder, fmt __VA_OPT__(,) __VA_ARGS__), xmppFlush((c), true))
 
+/**
+ * Appends a formatted XML string to the builder.
+ *
+ * If there is not enough capacity in the builder, all formatted XML
+ * after the most recent xmppStartStanza will be removed.
+ *
+ * @param c is the builder which is already initialized
+ * @param fmt is a printf-esque format string that only supports the
+ * following specifiers:
+ * - %s: pointer to nul-string which will be generously escaped (for
+ *   attribute and content) TODO: make this %z
+ * - %b: base64 representation of raw binary data, the first parameter 
+ *   is the length and the second is a pointer to the data
+ * - %d: integer (int)
+ * - %n: length and pointer to string which will be escaped
+ * @return 0 if successful or XMPP_EMEM if there is not enough capacity
+ */
 void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...);
 
 static inline void xmppStartStanza(struct xmppBuilder *builder) {
@@ -290,6 +323,17 @@ static inline int xmppFlush(struct xmppClient *c, bool isstanza) {
   return 0;
 }
 
+/**
+ * Parse JID string into the xmppJid structure.
+ *
+ * The structure will be dependent on the lifetime of the buffer
+ * specified by p and n.
+ *
+ * @param jid destination
+ * @param p pointer to buffer
+ * @param n size of buffer
+ * @param s jid in string format
+ */
 void xmppParseJid(struct xmppJid *jid, char *p, size_t n, const char *s);
 
 /**
@@ -388,13 +432,78 @@ static inline void xmppAddAmountSent(struct xmppClient *client, size_t amount) {
 
 #define xmppIsInitialized(c) (!!(c)->state)
 
+/**
+ * Iterate the XMPP client
+ *
+ * You may only reallocate the in
+ * buffer just before or after reading from the network.
+ * When the provided SASL password is incorrect, the stream will be
+ * closed and if you want to retry you must create a new stream. We
+ * could reuse the same stream, but then we either have to keep track of
+ * the amount of attempts and other stuff because some servers will let
+ * us retry indefinitely and might cause an infinite loop.
+ *
+ * @return
+ *   XMPP_ITER_SEND: the complete out buffer (c->builder.p) with the
+ * size specified in (c->builder.n) must be sent over the network before
+ * another iteration is done. If c->builder.n is 0, you don't have to
+ * write anything. It is recommended that your send function does not
+ * block so that you can call Iterate again.
+ *   XMPP_E*: and error has occured, you may fix it and call xmppIterate
+ *   again.
+ */
 int xmppIterate(struct xmppClient *c);
+
+/**
+ * Supply user's password while negotiating SASL.
+ *
+ * This function must be used after xmppIterate returns
+ * XMPP_ITER_GIVEPWD. It may be called again after an error was
+ * returned and that error will potentially be resolved.
+ *
+ * @return 0 when successful, XMPP_ESTATE when not called after
+ * XMPP_ITER_GIVEPWD or XMPP_EMEM or XMPP_ESASLBUF or XMPP_ECRYPTO
+ */
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd);
+
+/**
+ * Gracefully end the XMPP stream.
+ *
+ * xmppIterate should still be called afterwards. It will return
+ * XMPP_ITER_SEND and then XMPP_ITER_STREAMEND.
+ */
 void xmppEndStream(struct xmppClient *c);
 
+/**
+ * Parse an unknown piece of XML up to the end of the most recently
+ * parsed element.
+ */
 void xmppParseUnknown(struct xmppParser *p);
+
+/**
+ * Parse an XML attribute into a slice.
+ *
+ * May only be used after xmppParseElement returns true.
+ *
+ * @return true if there are more attributes remaining and false if
+ * there will be no more attributes
+ */
 bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc);
+
+/**
+ * Parse XML content into a slice.
+ *
+ * May be used after xmppParseAttribute or after xmppParseElement
+ * returns true.
+ */
 void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc);
+
+/**
+ * Parse an XML element.
+ *
+ * @return true if a new element was parsed or false if the most
+ * recently parsed element is closed.
+ */
 bool xmppParseElement(struct xmppParser *p);
 
 #endif

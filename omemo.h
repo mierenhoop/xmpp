@@ -120,13 +120,34 @@ void omemoFreeSession(struct omemoSession *session);
 #define omemoIsStoreInitialized(store) ((store)->isinitialized)
 
 int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *store, const struct omemoBundle *bundle);
+
+/**
+ * Encrypt message encryption key payload for a specific recipient.
+ */
 int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload);
 
+/**
+ * Decrypt message encryption key payload for a specific recipient.
+ */
 int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn);
 
+/**
+ * Encrypt message which will be stored in the <payload> element.
+ *
+ * @param payload (out) will contain the encrypted 
+ * @param n is the size of the buffer in d and s
+ */
 int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
                                uint8_t iv[12], const uint8_t *s,
                                size_t n);
+
+/**
+ * Decrypt message taken from the <payload> element.
+ *
+ * @param payload is the decrypted payload of the omemoKeyMessage
+ * @param pn is the size of payload, some clients might make the tag larger than 16 bytes
+ * @param n is the size of the buffer in d and s
+ */
 int omemoDecryptMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n);
 
 #endif

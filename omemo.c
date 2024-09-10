@@ -46,20 +46,26 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
   return s;
 }
 
-// ParseProtobuf parses string `s` with length `n` containing Protobuf
-// data. For each field encountered it does the following:
-// - Make sure the field number can be stored in `fields` and that the
-//   type corresponds with the one specified in the associated field.
-// - Mark the field number as found which later will be used to check whether
-//   all required fields are found.
-// - Parse the value.
-// - If there already is a non-zero value specified in the field, it is
-//   used to check whether the parsed value is the same.
-// `nfields` is the amount of fields in the `fields` array. It should have the value of the highest possible
-// field number + 1. `nfields` must be less than or equal to 16 because
-// we only support a single byte field number, the number is stored like
-// this in the byte: 0nnnnttt where n is the field number and t is the
-// type.
+/**
+ * Parse data in Protobuf format.
+ *
+ * For each field encountered it does the following:
+ * - Make sure the field number can be stored in `fields` and that the
+ *   type corresponds with the one specified in the associated field.
+ * - Mark the field number as found which later will be used to check
+ * whether all required fields are found.
+ * - Parse the value.
+ * - If there already is a non-zero value specified in the field, it is
+ *   used to check whether the parsed value is the same.
+ * `nfields` is the amount of fields in the `fields` array. It should
+ * have the value of the highest possible field number + 1. `nfields`
+ * must be less than or equal to 16 because we only support a single
+ * byte field number, the number is stored like this in the byte:
+ * 0nnnnttt where n is the field number and t is the type.
+ *
+ * @param s is protobuf data
+ * @param n is the length of said data
+ */
 static int ParseProtobuf(const uint8_t *s, size_t n,
                          struct ProtobufField *fields, int nfields) {
   int type, id;
@@ -173,7 +179,6 @@ NormalizeSkipMessageKeysTrivial(struct omemoSkippedMessageKeys *s) {
     s->removed = NULL;
   }
 }
-
 
 static void DumpHex(const uint8_t *p, int n, const char *msg) {
   for (int i=0;i<n;i++)
@@ -300,12 +305,7 @@ static void RefillPreKeys(struct omemoStore *store) {
 void omemoSetupStore(struct omemoStore *store) {
   memset(store, 0, sizeof(struct omemoStore));
   GenerateIdentityKeyPair(&store->identity);
-  DumpHex(store->identity.pub, 32, "ikpub");
-  DumpHex(store->identity.prv, 32, "ikprv");
   GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
-  DumpHex(store->cursignedprekey.kp.pub, 32, "spkpub");
-  DumpHex(store->cursignedprekey.kp.prv, 32, "spkprv");
-  DumpHex(store->cursignedprekey.sig, 64, "spksig");
   RefillPreKeys(store);
   store->isinitialized = true;
 }
@@ -368,7 +368,6 @@ static int Decrypt(uint8_t *out, const uint8_t *in, size_t n, omemoKey key,
   mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, n,
                                iv, in, out))
     return OMEMO_ECRYPTO;
-  DumpHex(out, OMEMO_PAYLOAD_SIZE, "decrypted");
   return 0;
 }
 
@@ -416,7 +415,6 @@ static int EncryptKeyImpl(struct omemoSession *session, const struct omemoStore 
   struct DeriveChainKeyOutput kdfout;
   if ((r = GetBaseMaterials(session->state.cks, mk, session->state.cks)))
     return r;
-  DumpHex(mk, 32, "encrypt mk");
   if ((r = DeriveChainKey(&kdfout, mk)))
     return r;
 
@@ -490,11 +488,9 @@ static int GetSharedSecret(omemoKey sk, bool isbob, const omemoKey ika, const om
   memset(salt, 0, 32);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) != 0)
     return OMEMO_ECRYPTO;
-  DumpHex(sk, 32, "shared secret");
   uint8_t full[64];
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, full, 64) != 0)
     return OMEMO_ECRYPTO;
-  DumpHex(full+32, 32, "full");
   return 0;
 }
 
@@ -585,13 +581,9 @@ static int DHRatchet(struct omemoState *state, const omemoKey dh) {
   memcpy(state->dhr, dh, 32);
   if ((r = DeriveRootKey(state, state->ckr)))
     return r;
-  DumpHex(state->rk, 32, "new rootkey");
-  DumpHex(state->ckr, 32, "new ckr");
   GenerateKeyPair(&state->dhs);
   if ((r = DeriveRootKey(state, state->cks)))
     return r;
-  DumpHex(state->rk, 32, "new rootkey");
-  DumpHex(state->cks, 32, "new cks");
   return 0;
 }
 
@@ -640,7 +632,6 @@ static int DecryptMessageImpl(struct omemoSession *session,
     [3] = {PB_REQUIRED | PB_UINT32}, // pn
     [4] = {PB_REQUIRED | PB_LEN}, // ciphertext
   };
-  DumpHex(msg+1, msgn-9, "PB");
 
   if ((r = ParseProtobuf(msg+1, msgn-9, fields, 5)))
     return r;
@@ -652,8 +643,6 @@ static int DecryptMessageImpl(struct omemoSession *session,
   uint32_t headern = fields[2].v;
   uint32_t headerpn = fields[3].v;
   const uint8_t *headerdh = fields[1].p+1;
-
-  DumpHex(headerdh, 32, "headerdh");
 
   bool shouldstep = !!memcmp(session->state.dhr, headerdh, 32);
 
@@ -688,23 +677,14 @@ static int DecryptMessageImpl(struct omemoSession *session,
       return r;
     if ((r = GetBaseMaterials(session->state.ckr, mk, session->state.ckr)))
       return r;
-    DumpHex(session->state.ckr, 32, "new ckr");
-    DumpHex(mk, 32, "decrypt mk");
     session->state.nr++;
   }
   struct DeriveChainKeyOutput kdfout;
   if ((r = DeriveChainKey(&kdfout, mk)))
     return r;
-  DumpHex(kdfout.cipher, 32, "derived ck");
-  DumpHex(kdfout.mac, 32, "derived mk (mackey)");
-  DumpHex(kdfout.iv, 16, "derived iv");
   uint8_t mac[8];
-  DumpHex(session->remoteidentity, 32, "remote ik");
-  DumpHex(store->identity.pub, 32, "our ik");
   if ((r = GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mac, msg, msgn-8)))
     return r;
-  DumpHex(mac, 8, "genmac");
-  DumpHex(msg+msgn-8, 8, "realmac");
   if (memcmp(mac, msg+msgn-8, 8))
     return OMEMO_ECORRUPT;
   uint8_t tmp[48];
@@ -772,13 +752,6 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
   return 0;
 }
 
-/**
- * Decrypt message payload.
- *
- * @param payload is the decrypted payload of the omemoKeyMessage
- * @param pn is the size of payload, some clients might make the tag larger than 16 bytes
- * @param n is the size of the buffer in d and s
- */
 int omemoDecryptMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n) {
   int r = 0;
   assert(pn >= 32);
@@ -790,12 +763,6 @@ int omemoDecryptMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uin
   return r;
 }
 
-/**
- * Encrypt message.
- *
- * @param payload (out) will contain the encrypted 
- * @param n is the size of the buffer in d and s
- */
 int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
                                uint8_t iv[12], const uint8_t *s,
                                size_t n) {

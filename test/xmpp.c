@@ -4,6 +4,9 @@
 
 #include "cacert.inc"
 
+#define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
+#define LogWarn(fmt, ...) fprintf(stdout, "\e[33m" fmt "\e[0m\n" __VA_OPT__(,) __VA_ARGS__)
+
 static mbedtls_ssl_context ssl;
 static mbedtls_net_context server_fd;
 static mbedtls_entropy_context entropy;

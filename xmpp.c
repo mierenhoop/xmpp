@@ -21,14 +21,6 @@
 #include "xmpp.h"
 #include "yxml.h"
 
-#ifndef NDEBUG
-#define Log(fmt, ...) printf(fmt "\n" __VA_OPT__(,) __VA_ARGS__)
-#define LogWarn(fmt, ...) fprintf(stderr, "\e[31mWarning:\e[0m " fmt "\n" __VA_OPT__(,)  __VA_ARGS__)
-#else
-#define Log(fmt, ...) ((void)0)
-#define LogWarn(fmt, ...) ((void)0)
-#endif
-
 static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
   if (mbedtls_base64_encode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
     return e;
@@ -54,21 +46,6 @@ bool StrictStrEqual(const char *c, const char *u, size_t n) {
   return !c[1] && !n;
 }
 
-/**
- * Decode a raw XML slice into buffer.
- *
- * Example usage:
- *
- *   char *GetId(struct xmppStanza *stanza) {
- *     char *d = NULL;
- *     if (stanza->id.p && (d = calloc(stanza->id.n + 1)))
- *       xmppReadXmlSlice(d, stanza->id);
- *     return d;
- *   }
- *
- * @param d is the destination buffer
- * @param s is the slice
- */
 void xmppReadXmlSlice(char *d, struct xmppXmlSlice *slc) {
   if (slc->type == XMPP_SLICE_ATTR || slc->type == XMPP_SLICE_CONT) {
     // TODO: we can skip the whole prefix initialization since that is
@@ -116,10 +93,6 @@ const char *xmppErrToStr(int e) {
 
 #define HasOverflowed(p, e) ((p) >= (e))
 
-/**
- * Parse an unknown piece of XML up to the end of the most recently
- * parsed element.
- */
 void xmppParseUnknown(struct xmppParser *p) {
   int stack = 1;
   while (p->i < p->n) {
@@ -140,14 +113,6 @@ void xmppParseUnknown(struct xmppParser *p) {
   longjmp(p->jb, XMPP_EPARTIAL);
 }
 
-/**
- * Parse an XML attribute into a slice.
- *
- * May only be used after xmppParseElement returns true.
- *
- * @return true if there are more attributes remaining and false if
- * there will be no more attributes
- */
 bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
   int r;
   memset(slc, 0, sizeof(*slc));
@@ -175,12 +140,6 @@ bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
   longjmp(p->jb, XMPP_EPARTIAL);
 }
 
-/**
- * Parse XML content into a slice.
- *
- * May be used after xmppParseAttribute or after xmppParseElement
- * returns true.
- */
 void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   int r;
   bool stop = false;
@@ -212,12 +171,6 @@ void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   longjmp(p->jb, XMPP_EPARTIAL);
 }
 
-/**
- * Parse an XML element.
- *
- * @return true if a new element was parsed or false if the most
- * recently parsed element is closed.
- */
 bool xmppParseElement(struct xmppParser *p) {
   int r;
   while (p->i < p->n) {
@@ -557,23 +510,6 @@ static char *Itoa(char *d, char *e, int i) {
   return d;
 }
 
-/**
- * Appends a formatted XML string to the builder.
- *
- * If there is not enough capacity in the builder, all formatted XML
- * after the most recent xmppStartStanza will be removed.
- *
- * @param c is the builder which is already initialized
- * @param fmt is a printf-esque format string that only supports the
- * following specifiers:
- * - %s: pointer to nul-string which will be generously escaped (for
- *   attribute and content) TODO: make this %z
- * - %b: base64 representation of raw binary data, the first parameter 
- *   is the length and the second is a pointer to the data
- * - %d: integer (int)
- * - %n: length and pointer to string which will be escaped
- * @return 0 if successful or XMPP_EMEM if there is not enough capacity
- */
 void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...) {
   va_list ap;
   struct xmppXmlSlice slc;
@@ -681,7 +617,6 @@ static int VerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice *s
 static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, size_t slen, int itrs) {
   int r = mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA1, pwd, plen, salt, slen, itrs, 20, k);
   if (r != 0) {
-    LogWarn("MbedTLS PBKDF2-HMAC error: %s", mbedtls_high_level_strerr(r));
     return 0;
   }
   return 1;
@@ -690,7 +625,6 @@ static int H(char k[static 20], const char *pwd, size_t plen, const char *salt, 
 static int HMAC(char d[static 20], const char *p, size_t n, const char k[static 20]) {
   int r = mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), k, 20, p, n, d);
   if (r != 0) {
-    LogWarn("MbedTLS HMAC error: %s", mbedtls_high_level_strerr(r));
     return 0;
   }
   return 1;
@@ -699,7 +633,6 @@ static int HMAC(char d[static 20], const char *p, size_t n, const char k[static 
 static int Sha1(char d[static 20], const char p[static 20]) {
   int r = mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), p, 20, d);
   if (r != 0) {
-    LogWarn("MbedTLS SHA1 error: %s", mbedtls_high_level_strerr(r));
     return 0;
   }
   return 1;
@@ -817,16 +750,6 @@ enum {
   CLIENTSTATE_ENDSTREAM,
 };
 
-/**
- * Supply user's password while negotiating SASL.
- *
- * This function must be used after xmppIterate returns
- * XMPP_ITER_GIVEPWD. It may be called again after an error was
- * returned and that error will potentially be resolved.
- *
- * @return 0 when successful, XMPP_ESTATE when not called after
- * XMPP_ITER_GIVEPWD or XMPP_EMEM or XMPP_ESASLBUF or XMPP_ECRYPTO
- */
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd) {
   int r;
   if (c->state == CLIENTSTATE_SASLPWD) {
@@ -854,17 +777,6 @@ static bool xmppResume(struct xmppClient *c) {
   return true;
 }
 
-/**
- * Parse JID string into the xmppJid structure.
- *
- * The structure will be dependent on the lifetime of the buffer
- * specified by p and n.
- *
- * @param jid destination
- * @param p pointer to buffer
- * @param n size of buffer
- * @param s jid in string format
- */
 void xmppParseJid(struct xmppJid *jid, char *p, size_t n, const char *s) {
   assert(n > 0);
   memset(jid, 0, sizeof(struct xmppJid));
@@ -948,26 +860,6 @@ static void SetupSkipping(struct xmppParser *p) {
   yxml_init(&p->x, p->xbuf, p->xbufn);
 }
 
-/**
- * Iterate the XMPP client
- *
- * You may only reallocate the in
- * buffer just before or after reading from the network.
- * When the provided SASL password is incorrect, the stream will be
- * closed and if you want to retry you must create a new stream. We
- * could reuse the same stream, but then we either have to keep track of
- * the amount of attempts and other stuff because some servers will let
- * us retry indefinitely and might cause an infinite loop.
- *
- * @return
- *   XMPP_ITER_SEND: the complete out buffer (c->builder.p) with the
- * size specified in (c->builder.n) must be sent over the network before
- * another iteration is done. If c->builder.n is 0, you don't have to
- * write anything. It is recommended that your send function does not
- * block so that you can call Iterate again.
- *   XMPP_E*: and error has occured, you may fix it and call xmppIterate
- *   again.
- */
 int xmppIterate(struct xmppClient *c) {
   struct xmppStanza *st = &c->stanza;
   int r = 0;
