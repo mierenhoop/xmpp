@@ -96,29 +96,31 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
 // Don't authenticate (for e.g. In-Band Registration).
 #define XMPP_OPT_NOAUTH (1 << 9)
 
-// TODO: make this an enum
-// Don't call xmppIterate again.
-#define XMPP_ITER_STREAMEND 0
-// A stanza was read. You can access the stanza in c->stanza, it will be valid up until the next call of Iterate.
-#define XMPP_ITER_STANZA   1
-// Data should be sent and received.
-#define XMPP_ITER_SEND 2
-// TLS handshake must be done now.
-#define XMPP_ITER_STARTTLS 3
-// Stream negotation has completed, you can now send and receive
-// stanzas. After ready is returned, you may send new stanzas. When data
-// is available you should read it.
-#define XMPP_ITER_READY 4
-// returned when SASL negotiation starts, xmppSupplyPassword will perform the SASL calculations. To strengthen security, the password is not stored in plaintext inside the xmppClient, also after calling said function, the buffer in the `pwd` argument should be zero'd.
-#define XMPP_ITER_GIVEPWD 5
-#define XMPP_ITER_RECV 6
-#define XMPP_ITER_NEGOTIATIONDONE  7
-// Nothing should be done, make another call to xmppIterate.
-#define XMPP_ITER_OK 8
-#define XMPP_ITER_ACK 9
 
-#define XMPP_SASL_INITIALIZED 1
-#define XMPP_SASL_CALCULATED 2
+enum {
+  /** Don't call xmppIterate() again */
+  XMPP_ITER_STREAMEND = 0,
+  /** No action has to be performed, call xmppIterate() again */
+  XMPP_ITER_OK,
+  /** Data should be sent, @see xmppGetSendBuffer() */
+  XMPP_ITER_SEND,
+  /** Data should be read, @see xmppGetReceiveBuffer() */
+  XMPP_ITER_RECV,
+  /** A TLS handshake must be done now */
+  XMPP_ITER_STARTTLS,
+  /** You should now give the password to advance the SASL negotiation,
+     @see xmppSupplyPassword() */
+  XMPP_ITER_GIVEPWD,
+  /** Stream negotation is complete. You may send new stanzas, but when
+     data is available you should read it first. */
+  XMPP_ITER_READY,
+  /** A stanza was read. You can access the stanza in client->stanza, it
+     will be valid up until the next call of Iterate. */
+  XMPP_ITER_STANZA,
+  /** Our ack request has been answered, you may look at
+     client->stanza.ack to see how far the server has caught up. */
+  XMPP_ITER_ACK,
+};
 
 #define XMPP_STREAMFEATURE_STARTTLS (1 << 0)
 #define XMPP_STREAMFEATURE_BIND (1 << 1)
@@ -131,28 +133,25 @@ void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
   (XMPP_STREAMFEATURE_SCRAMSHA1 | XMPP_STREAMFEATURE_SCRAMSHA1PLUS |   \
    XMPP_STREAMFEATURE_PLAIN)
 
-#define XMPP_STANZA_EMPTY 0
-#define XMPP_STANZA_MESSAGE 1
-#define XMPP_STANZA_PRESENCE 2
-#define XMPP_STANZA_IQ 3
-#define XMPP_STANZA_STREAMFEATURES 4
-#define XMPP_STANZA_BINDJID 5
-#define XMPP_STANZA_SMACKSENABLED 6
-#define XMPP_STANZA_STARTTLSPROCEED 7
-#define XMPP_STANZA_ACKANSWER 8
-#define XMPP_STANZA_SASLSUCCESS 9
-#define XMPP_STANZA_SASLCHALLENGE 10
-#define XMPP_STANZA_RESUMED 14
-#define XMPP_STANZA_ACKREQUEST 15
-#define XMPP_STANZA_FAILURE 16
-#define XMPP_STANZA_STREAMEND 17
-#define XMPP_STANZA_ERROR 18
-#define XMPP_STANZA_STREAM 19
-
-// TODO: remove this
-// Any of the child elements can be null.
-// We only support a single body, subject, etc. This deviates from the spec.
-// It will only read the first instance.
+enum {
+  XMPP_STANZA_EMPTY = 0,
+  XMPP_STANZA_STREAM,
+  XMPP_STANZA_STREAMFEATURES,
+  XMPP_STANZA_STARTTLSPROCEED,
+  XMPP_STANZA_SASLCHALLENGE,
+  XMPP_STANZA_SASLSUCCESS,
+  XMPP_STANZA_FAILURE,
+  XMPP_STANZA_BINDJID,
+  XMPP_STANZA_SMACKSENABLED,
+  XMPP_STANZA_RESUMED,
+  XMPP_STANZA_ACKREQUEST,
+  XMPP_STANZA_ACKANSWER,
+  XMPP_STANZA_PRESENCE,
+  XMPP_STANZA_MESSAGE,
+  XMPP_STANZA_IQ,
+  XMPP_STANZA_ERROR,
+  XMPP_STANZA_STREAMEND,
+};
 
 struct xmppError {
   int stanzakind;
@@ -185,7 +184,6 @@ struct xmppStream {
 //  type = XMPP_STANZA_FAILURE, field = failure
 //  type = XMPP_STANZA_BINDJID, field = bindjid
 //  etc.
-// TODO: implement the above using a modified XML parser.
 struct xmppStanza {
   int type;
   struct xmppXmlSlice raw;
@@ -286,16 +284,22 @@ bool StrictStrEqual(const char *c, const char *u, size_t n);
 // Only call when XMPP_ITER_ACK
 #define xmppIsSynchronized(c) ((c)->stanza.type == XMPP_STANZA_ACKANSWER && (c)->stanza.ack == (c)->actualsent)
 
-#define xmppFormatStanza(c, fmt, ...) (xmppStartStanza(&(c)->builder), xmppAppendXml(&(c)->builder, fmt __VA_OPT__(,) __VA_ARGS__), xmppFlush((c), true))
+/**
+ * Utility macro for creating and flushing a new stanza
+ *
+ * @return 0 if successful or XMPP_EMEM if there is not enough capacity
+ * @see xmppFlush
+ */
+#define xmppFormatStanza(c, fmt, ...)                                  \
+  (xmppStartStanza(&(c)->builder),                                     \
+   xmppAppendXml(&(c)->builder, fmt __VA_OPT__(, ) __VA_ARGS__),       \
+   xmppFlush((c), true))
 
 /**
  * Appends a formatted XML string to the builder.
  *
- * If there is not enough capacity in the builder, all formatted XML
- * after the most recent xmppStartStanza will be removed.
- *
  * @param c is the builder which is already initialized
- * @param fmt is a printf-esque format string that only supports the
+ * @param fmt is a printf-like format string that only supports the
  * following specifiers:
  * - %s: pointer to nul-string which will be generously escaped (for
  *   attribute and content) TODO: make this %z
@@ -303,25 +307,27 @@ bool StrictStrEqual(const char *c, const char *u, size_t n);
  *   is the length and the second is a pointer to the data
  * - %d: integer (int)
  * - %n: length and pointer to string which will be escaped
- * @return 0 if successful or XMPP_EMEM if there is not enough capacity
  */
 void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...);
 
-static inline void xmppStartStanza(struct xmppBuilder *builder) {
-  builder->n = builder->i;
-}
+/**
+ * Setup builder for creating a new stanza
+ *
+ * Reverts back to last start if no flush was performed.
+ */
+void xmppStartStanza(struct xmppBuilder *builder);
 
-static inline int xmppFlush(struct xmppClient *c, bool isstanza) {
-  if (isstanza && (c->features & XMPP_STREAMFEATURE_SMACKS))
-    xmppAppendXml(&c->builder, "<r xmlns='urn:xmpp:sm:3'/>");
-  if (c->parser.n >= c->parser.c) {
-    return XMPP_EMEM;
-  }
-  c->builder.i = c->builder.n;
-  if (isstanza && (c->features & XMPP_STREAMFEATURE_SMACKS))
-    c->actualsent++;
-  return 0;
-}
+/**
+ * Flush all XML appended after the last start
+ *
+ * If there is not enough capacity to fit all the previously appended
+ * XML, XMPP_EMEM will be returned and the internal buffer will remove
+ * all XML after the last xmppStartStanza call.
+ *
+ * @param isstanza should always be true
+ * @return 0 if successful or XMPP_EMEM if there is not enough capacity
+ */
+int xmppFlush(struct xmppClient *c, bool isstanza);
 
 /**
  * Parse JID string into the xmppJid structure.
@@ -362,7 +368,7 @@ static inline void xmppInitClient(struct xmppClient *c, struct StaticData *d, co
 }
 
 // TODO: have these function take Parser and Builder respectively and
-// have a separate function for IsTls? Also maybe move these to xmpp.c
+// have a separate function for IsTls?
 
 /**
  * Get buffer and maximimum size for receiving data.
@@ -371,14 +377,8 @@ static inline void xmppInitClient(struct xmppClient *c, struct StaticData *d, co
  * @param maxsz (out) maximum amount of data that can be read in buf, may be NULL
  * @param istls (out) is true if data must be received over TLS, may be NULL
  */
-static inline void xmppGetReceiveBuffer(const struct xmppClient *client, char **buf, size_t *maxsz, bool *istls) {
-  if (buf)
-    *buf = client->parser.p + client->parser.n;
-  if (maxsz)
-    *maxsz = client->parser.c - client->parser.n;
-  if (istls)
-    *istls = !!(client->features & XMPP_STREAMFEATURE_STARTTLS);
-}
+void xmppGetReceiveBuffer(const struct xmppClient *client, char **buf,
+                          size_t *maxsz, bool *istls);
 
 /**
  * Notify the client that data has been received.
@@ -387,10 +387,7 @@ static inline void xmppGetReceiveBuffer(const struct xmppClient *client, char **
  * by xmppGetReceiveBuffer
  * @see xmppGetReceiveBuffer()
  */
-static inline void xmppAddAmountReceived(struct xmppClient *client, size_t amount) {
-  client->parser.n += amount;
-  assert(client->parser.n <= client->parser.c);
-}
+void xmppAddAmountReceived(struct xmppClient *client, size_t amount);
 
 /**
  * Get buffer and size for data that must be sent.
@@ -405,14 +402,7 @@ static inline void xmppAddAmountReceived(struct xmppClient *client, size_t amoun
  * @param istls (out) is true if data must be sent over TLS, may be NULL
  * @see xmppAddAmountSent()
  */
-static inline void xmppGetSendBuffer(const struct xmppClient *client, char **buf, size_t *sz, bool *istls) {
-  if (buf)
-    *buf = client->builder.p;
-  if (sz)
-    *sz = client->builder.n;
-  if (istls)
-    *istls = !!(client->features & XMPP_STREAMFEATURE_STARTTLS);
-}
+void xmppGetSendBuffer(const struct xmppClient *client, char **buf, size_t *sz, bool *istls);
 
 /**
  * Notify the client that data has been sent.
@@ -421,14 +411,7 @@ static inline void xmppGetSendBuffer(const struct xmppClient *client, char **buf
  * xmppGetSendBuffer
  * @see xmppGetSendBuffer()
  */
-static inline void xmppAddAmountSent(struct xmppClient *client, size_t amount) {
-  assert(amount <= client->builder.n);
-  client->builder.n -= amount;
-  client->builder.i = client->builder.n;
-  memmove(client->builder.p, client->builder.p + amount, client->builder.n);
-  // TODO: remove
-  memset(client->builder.p + client->builder.n, 0, client->builder.c - client->builder.n);
-}
+void xmppAddAmountSent(struct xmppClient *client, size_t amount);
 
 #define xmppIsInitialized(c) (!!(c)->state)
 

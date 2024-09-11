@@ -424,6 +424,9 @@ static char *SanitizeSaslUsername(char *d, char *e, const char *s) {
   return d;
 }
 
+#define XMPP_SASL_INITIALIZED 1
+#define XMPP_SASL_CALCULATED 2
+
 // ret
 //  = 0: success
 //  < 0: XMPP_EMEM
@@ -553,12 +556,24 @@ void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...) {
   va_end(ap);
   if (d < e)
     *d = 0;
-  // TODO: move this check to xmppFlush
-  //if (HasOverflowed(d, e)) {
-  //  c->n = c->i;
-  //  return XMPP_EMEM;
-  //}
   c->n = d - c->p;
+}
+
+void xmppStartStanza(struct xmppBuilder *builder) {
+  builder->n = builder->i;
+}
+
+int xmppFlush(struct xmppClient *c, bool isstanza) {
+  if (isstanza && (c->features & XMPP_STREAMFEATURE_SMACKS))
+    xmppAppendXml(&c->builder, "<r xmlns='urn:xmpp:sm:3'/>");
+  if (c->parser.n >= c->parser.c) {
+    c->builder.n = c->builder.i;
+    return XMPP_EMEM;
+  }
+  c->builder.i = c->builder.n;
+  if (isstanza && (c->features & XMPP_STREAMFEATURE_SMACKS))
+    c->actualsent++;
+  return 0;
 }
 
 // same as xmppFormatStanza but with xmppFlush isstanza = false instead of true
@@ -797,6 +812,42 @@ void xmppParseJid(struct xmppJid *jid, char *p, size_t n, const char *s) {
     }
   }
   jid->resourcep = p;
+}
+
+void xmppGetReceiveBuffer(const struct xmppClient *client, char **buf,
+                          size_t *maxsz, bool *istls) {
+  if (buf)
+    *buf = client->parser.p + client->parser.n;
+  if (maxsz)
+    *maxsz = client->parser.c - client->parser.n;
+  if (istls)
+    *istls = !!(client->features & XMPP_STREAMFEATURE_STARTTLS);
+}
+
+void xmppAddAmountReceived(struct xmppClient *client, size_t amount) {
+  client->parser.n += amount;
+  assert(client->parser.n <= client->parser.c);
+}
+
+void xmppGetSendBuffer(const struct xmppClient *client, char **buf,
+                       size_t *sz, bool *istls) {
+  if (buf)
+    *buf = client->builder.p;
+  if (sz)
+    *sz = client->builder.n;
+  if (istls)
+    *istls = !!(client->features & XMPP_STREAMFEATURE_STARTTLS);
+}
+
+void xmppAddAmountSent(struct xmppClient *client, size_t amount) {
+  assert(amount <= client->builder.n);
+  client->builder.n -= amount;
+  client->builder.i = client->builder.n;
+  memmove(client->builder.p, client->builder.p + amount,
+          client->builder.n);
+  // TODO: remove
+  memset(client->builder.p + client->builder.n, 0,
+         client->builder.c - client->builder.n);
 }
 
 // Called when error returned from Format* so that the error can be
