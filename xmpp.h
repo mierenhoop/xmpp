@@ -13,7 +13,9 @@
 // https://xmpp.org/rfcs/rfc6120.html#:~:text=xs%3AmaxLength%20value%3D%27-,3071,-%27/%3E%0A%20%20%20%20%3C/xs%3Arestriction%3E%0A%20%20%3C/xs
 #define XMPP_CONFIG_MAX_JID_SIZE 3071
 // https://xmpp.org/extensions/attic/xep-0198-1.6.1.html#:~:text=The%20SM%2DID%20SHOULD%20NOT%20be%20longer%20than%204000%20bytes.
-// TODO: note server-specific common sizes (4000 is overkill)
+// In the case of Prosody, this is always 12 bytes (9 bytes non
+// base64-encoded). Even setting this value to 34 would be very
+// generous.
 #define XMPP_CONFIG_MAX_SMACKID_SIZE 4000
 #define XMPP_CONFIG_MAX_SASLBUF_SIZE 2000
 #define XMPP_CONFIG_YXMLBUF_SIZE 2000

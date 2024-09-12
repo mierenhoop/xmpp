@@ -728,7 +728,6 @@ static int DecryptKeyImpl(struct omemoSession *session, const struct omemoStore 
       return OMEMO_ESTATE;
   }
   session->fsm = SESSION_READY;
-  // TODO: we could also call DecryptMessageImpl in this case.
   return DecryptMessageImpl(session, store, payload, msg, msgn);
 }
 

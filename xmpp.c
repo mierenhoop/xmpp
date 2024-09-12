@@ -142,7 +142,7 @@ bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
 
 void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   int r;
-  bool stop = false;
+  bool incontent = false;
   struct xmppXmlSlice attr;
   memset(slc, 0, sizeof(*slc));
   slc->type = XMPP_SLICE_CONT;
@@ -150,22 +150,23 @@ void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   while (p->i < p->n) {
     if (!slc->p) {
       if (p->p[p->i - 1] == '>')
-        slc->p = p->p + p->i;
+        incontent = true, slc->p = p->p + p->i;
     }
-    if (p->p[p->i] == '<') stop = true; // TODO: this is stupid
+    if (p->p[p->i] == '<')
+      incontent = false;
     switch ((r = yxml_parse(&p->x, p->p[p->i++]))) {
     case YXML_ELEMEND:
       return;
     case YXML_CONTENT:
-      if (!slc->p) // TODO: remove this...
-        slc->p = p->p + p->i - 1;
+      if (!slc->p)
+        longjmp(p->jb, XMPP_EXML);
       slc->n += strlen(p->x.data);
       break;
     default:
       if (r < 0)
         longjmp(p->jb, XMPP_EXML);
     }
-    if (slc->p && !stop)
+    if (incontent)
       slc->rawn++;
   }
   longjmp(p->jb, XMPP_EPARTIAL);
@@ -333,7 +334,7 @@ static int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool ins
   } else if (!strcmp(p->x.elem, "proceed")) {
     st->type = XMPP_STANZA_STARTTLSPROCEED;
     xmppParseUnknown(p);
-  } else if (!strcmp(p->x.elem, "failure")) { // TODO: happens for both SASL and TLS
+  } else if (!strcmp(p->x.elem, "failure")) {
     st->type = XMPP_STANZA_FAILURE;
     xmppParseUnknown(p);
   } else if (!strcmp(p->x.elem, "success")) {
@@ -577,14 +578,17 @@ int xmppFlush(struct xmppClient *c, bool isstanza) {
 }
 
 // same as xmppFormatStanza but with xmppFlush isstanza = false instead of true
-#define BuildComplete(client, fmt, ...) (xmppAppendXml(&(client)->builder, fmt __VA_OPT__(,) __VA_ARGS__), xmppFlush((c), false))
+#define BuildComplete(client, fmt, ...)                                \
+  (xmppAppendXml(&(client)->builder, fmt __VA_OPT__(, ) __VA_ARGS__),  \
+   xmppFlush((c), false))
 
-// TODO: better way to do this?
 // res: string or NULL if you want the server to generate it
-#define xmppFormatBindResource(c, res) \
-  BuildComplete(c, \
-      "<iq id='bind' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/>][><resource>%s</resource></bind>]</iq>", \
-      !res, !!res, res)
+#define xmppFormatBindResource(c, res)                                 \
+  BuildComplete(c,                                                     \
+                "<iq id='bind' type='set'><bind "                      \
+                "xmlns='urn:ietf:params:xml:ns:xmpp-bind'[/"           \
+                ">][><resource>%s</resource></bind>]</iq>",            \
+                !(res), !!(res), (res))
 
 // XEP-0198: Stream Management
 
@@ -592,8 +596,6 @@ int xmppFlush(struct xmppClient *c, bool isstanza) {
 #define xmppFormatAckResume(client, h, previd) BuildComplete(client, "<resume xmlns='urn:xmpp:sm:3' h='%d' previd='%s'/>", h, previd)
 #define xmppFormatAckRequest(client) BuildComplete(client, "<r xmlns='urn:xmpp:sm:3'/>")
 #define xmppFormatAckAnswer(client, h) BuildComplete(client, "<a xmlns='urn:xmpp:sm:3' h='%d'/>", h)
-
-#define xmppFormatMessage(client, to, id, body) xmppFormatComplete(client, "<message to='%s' id='message%d'><body>%s</body></message>", to, id, body)
 
 #define FormatSaslPlain(client, ctx)                                        \
   BuildComplete(client,                                                         \
