@@ -792,7 +792,8 @@ static int GetSerializedSessionSize(struct omemoSession *session) {
   return 0;
 }
 
-static void SerializeSession(uint8_t *d, struct omemoSession *session) {
+static void SerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) {
+  uint8_t *d = p;
   d = FormatKey(d, 1, session->remoteidentity);
   d = FormatPrivateKey(d, 2, session->state.dhs.prv);
   d = FormatKey(d, 3, session->state.dhs.pub);
@@ -807,6 +808,8 @@ static void SerializeSession(uint8_t *d, struct omemoSession *session) {
   d = FormatVarInt(d, 12, session->pendingpk_id);
   d = FormatVarInt(d, 13, session->pendingspk_id);
   d = FormatVarInt(d, 14, session->fsm);
+  if (n)
+    *n = d - p;
   // TODO: mkskipped
   //memcpy(d, &session->state, sizeof(struct State));
   //d += sizeof(struct State);
@@ -822,8 +825,10 @@ static void SerializeSession(uint8_t *d, struct omemoSession *session) {
 /**
  * @param nmk amount of messagekeys, if it's less than there are in the
  * buffer, only the most recent ones will be deserialized
+ * @return 0 or OMEMO_EPROTOBUF
  */
-static void DeserializeSession(struct omemoSession *session, struct omemoSkippedMessageKeys* mks, int nmk) {
+static int DeserializeSession(const char *p, size_t n, struct omemoSession *session, struct omemoSkippedMessageKeys* mks, int nmk) {
+  assert(p && n);
   struct ProtobufField fields[] = {
     [1] = {PB_REQUIRED | PB_LEN, 33},
     [2] = {PB_REQUIRED | PB_LEN, 32},
@@ -840,6 +845,8 @@ static void DeserializeSession(struct omemoSession *session, struct omemoSkipped
     [13] = {PB_REQUIRED | PB_UINT32},
     [14] = {PB_REQUIRED | PB_UINT32},
   };
+  if (ParseProtobuf(p, n, fields, 15))
+    return OMEMO_EPROTOBUF;
   memcpy(session->remoteidentity, fields[1].p+1, 32);
   memcpy(session->state.dhs.prv, fields[2].p, 32);
   memcpy(session->state.dhs.pub, fields[3].p+1, 32);
@@ -854,4 +861,5 @@ static void DeserializeSession(struct omemoSession *session, struct omemoSkipped
   session->pendingpk_id = fields[12].v;
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
+  return 0;
 }

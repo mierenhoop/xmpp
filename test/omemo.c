@@ -416,6 +416,16 @@ static void TestSerialization() {
   memset(&storeb, 0, sizeof(storeb));
   DeserializeStore(&storeb, buf);
   assert(!memcmp(&storea, &storeb, sizeof(struct omemoStore)));
+
+  struct omemoSession tmpsession;
+  uint8_t buf2[1024];
+  size_t n;
+  SerializeSession(buf2, &n, &sessiona);
+  DeserializeSession(buf2, n, &tmpsession, NULL, 0);
+  // TODO: remove this when we can (de)serialize mkskipped
+  memcpy(&tmpsession.mkskipped, &sessiona.mkskipped, sizeof(struct omemoSkippedMessageKeys));
+  assert(!memcmp(&tmpsession, &sessiona, sizeof(struct omemoSession)));
+
   // TODO: session
   free(buf);
   omemoFreeSession(&sessiona);
