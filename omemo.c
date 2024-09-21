@@ -6,7 +6,6 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #include <sys/random.h>
@@ -102,15 +101,21 @@ static int ParseProtobuf(const uint8_t *s, size_t n,
   return 0;
 }
 
-static uint8_t *FormatVarInt(uint8_t d[static 6], int id, uint32_t v) {
-  assert(id < 16);
-  *d++ = (id << 3) | PB_UINT32;
+static uint8_t *FormatVarIntImpl(uint8_t d[static 5], uint32_t v) {
   do {
     *d = v & 0x7f;
     v >>= 7;
     *d++ |= (!!v << 7);
   } while (v);
   return d;
+}
+
+// TODO: we can make this function take type param, then remerge
+// FormatVarIntImpl
+static uint8_t *FormatVarInt(uint8_t d[static 6], int id, uint32_t v) {
+  assert(id < 16);
+  *d++ = (id << 3) | PB_UINT32;
+  return FormatVarIntImpl(d, v);
 }
 
 void omemoSerializeKey(omemoSerializedKey k, const omemoKey pub) {
@@ -178,12 +183,6 @@ NormalizeSkipMessageKeysTrivial(struct omemoSkippedMessageKeys *s) {
     s->n--;
     s->removed = NULL;
   }
-}
-
-static void DumpHex(const uint8_t *p, int n, const char *msg) {
-  for (int i=0;i<n;i++)
-    printf("%02x", p[i]);
-  printf(" << %s\n", msg);
 }
 
 static void ConvertCurvePrvToEdPub(omemoKey ed, const omemoKey prv) {
@@ -605,7 +604,6 @@ static int SkipMessageKeys(struct omemoState *state, struct omemoSkippedMessageK
   int r;
   assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
-    printf("Skipping...\n");
     omemoKey mk;
     if ((r = GetBaseMaterials(state->ckr, mk, state->ckr)))
       return r;
@@ -659,7 +657,6 @@ static int DecryptMessageImpl(struct omemoSession *session,
     memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
   } else {
-    //printf("nr %d headern %d headerpn %d\n", session->state.nr, headern, headerpn);
     if (!shouldstep && headern < session->state.nr) return OMEMO_EKEYGONE;
     if (shouldstep && headerpn < session->state.nr) return OMEMO_EKEYGONE;
     uint64_t nskips = shouldstep ?
@@ -780,11 +777,11 @@ static int GetSerializedStoreSize(void) {
   return sizeof(struct omemoStore);
 }
 
-static void SerializeStore(uint8_t *d, const struct omemoStore *store) {
+void omemoSerializeStore(uint8_t *d, const struct omemoStore *store) {
   memcpy(d, store, sizeof(struct omemoStore));
 }
 
-static void DeserializeStore(struct omemoStore *store, const uint8_t s[static sizeof(struct omemoStore)]) {
+void omemoDeserializeStore(struct omemoStore *store, const uint8_t s[static sizeof(struct omemoStore)]) {
   memcpy(store, s, sizeof(struct omemoStore));
 }
 
@@ -792,7 +789,7 @@ static int GetSerializedSessionSize(struct omemoSession *session) {
   return 0;
 }
 
-static void SerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) {
+void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) {
   uint8_t *d = p;
   d = FormatKey(d, 1, session->remoteidentity);
   d = FormatPrivateKey(d, 2, session->state.dhs.prv);
@@ -808,16 +805,13 @@ static void SerializeSession(uint8_t *p, size_t *n, struct omemoSession *session
   d = FormatVarInt(d, 12, session->pendingpk_id);
   d = FormatVarInt(d, 13, session->pendingspk_id);
   d = FormatVarInt(d, 14, session->fsm);
+  size_t bn = session->mkskipped.n*sizeof(struct omemoMessageKey);
+  *d++ = (15 << 3) | PB_LEN;
+  d = FormatVarIntImpl(d, bn);
+  memcpy(d, session->mkskipped.p, bn);
+  d += bn;
   if (n)
     *n = d - p;
-  // TODO: mkskipped
-  //memcpy(d, &session->state, sizeof(struct State));
-  //d += sizeof(struct State);
-  //for (int i = 0; i < session->mkskipped.n; i++) {
-  //  memcpy(d, &session->mkskipped.p+i, sizeof(struct MessageKey));
-  //  d += sizeof(struct MessageKey);
-  //}
-  // TODO: message keys and crc?
 }
 
 
@@ -827,8 +821,9 @@ static void SerializeSession(uint8_t *p, size_t *n, struct omemoSession *session
  * buffer, only the most recent ones will be deserialized
  * @return 0 or OMEMO_EPROTOBUF
  */
-static int DeserializeSession(const char *p, size_t n, struct omemoSession *session, struct omemoSkippedMessageKeys* mks, int nmk) {
-  assert(p && n);
+int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session, struct omemoSkippedMessageKeys* mks, int nmk) {
+  assert(p && n && session);
+  memset(session, 0, sizeof(struct omemoSession));
   struct ProtobufField fields[] = {
     [1] = {PB_REQUIRED | PB_LEN, 33},
     [2] = {PB_REQUIRED | PB_LEN, 32},
@@ -844,8 +839,9 @@ static int DeserializeSession(const char *p, size_t n, struct omemoSession *sess
     [12] = {PB_REQUIRED | PB_UINT32},
     [13] = {PB_REQUIRED | PB_UINT32},
     [14] = {PB_REQUIRED | PB_UINT32},
+    [15] = {PB_REQUIRED | PB_LEN},
   };
-  if (ParseProtobuf(p, n, fields, 15))
+  if (ParseProtobuf(p, n, fields, 16))
     return OMEMO_EPROTOBUF;
   memcpy(session->remoteidentity, fields[1].p+1, 32);
   memcpy(session->state.dhs.prv, fields[2].p, 32);
@@ -861,5 +857,10 @@ static int DeserializeSession(const char *p, size_t n, struct omemoSession *sess
   session->pendingpk_id = fields[12].v;
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
+  session->mkskipped.c = session->mkskipped.n = fields[15].v / sizeof(struct omemoMessageKey);
+  if (!(session->mkskipped.p = malloc(fields[15].v))) {
+    memset(session, 0, sizeof(struct omemoSession));
+    return OMEMO_EALLOC;
+  }
   return 0;
 }
