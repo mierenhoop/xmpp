@@ -820,7 +820,7 @@ void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) 
  */
 int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session) {
   assert(p && n && session);
-  memset(session, 0, sizeof(struct omemoSession));
+  assert(session->mkskipped.p);
   struct ProtobufField fields[] = {
     [1] = {PB_REQUIRED | PB_LEN, 33},
     [2] = {PB_REQUIRED | PB_LEN, 32},
@@ -854,10 +854,8 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
   session->pendingpk_id = fields[12].v;
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
-  session->mkskipped.c = session->mkskipped.n = fields[15].v / sizeof(struct omemoMessageKey);
-  if (!(session->mkskipped.p = malloc(fields[15].v))) {
-    memset(session, 0, sizeof(struct omemoSession));
-    return OMEMO_EALLOC;
-  }
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
+  session->mkskipped.n = MIN(session->mkskipped.c, fields[15].v / sizeof(struct omemoMessageKey));
+  memcpy(session->mkskipped.p, fields[15].p, session->mkskipped.n*sizeof(struct omemoMessageKey));
   return 0;
 }

@@ -423,7 +423,11 @@ static void TestSerialization() {
   omemoDeserializeStore(&storeb, buf);
   assert(!memcmp(&storea, &storeb, sizeof(struct omemoStore)));
 
+  memset(sessiona.mkskipped.p, 0xff, 3*sizeof(struct omemoMessageKey));
+  sessiona.mkskipped.n = 3;
+
   struct omemoSession tmpsession;
+  omemoSetupSession(&tmpsession, 100);
   uint8_t *buf2 = malloc(omemoGetSerializedSessionMaxSizeEstimate(&sessiona));
   size_t n;
   omemoSerializeSession(buf2, &n, &sessiona);
@@ -437,22 +441,22 @@ static void TestSerialization() {
 #define RunTest(t)                                                     \
   do {                                                                 \
     puts("\e[34mRunning test " #t "\e[0m");                            \
-    Test##t();                                                         \
+    t();                                                               \
     puts("\e[32mFinished test " #t "\e[0m");                           \
   } while (0)
 
 int main() {
-  RunTest(ParseProtobuf);
-  RunTest(FormatProtobuf);
-  RunTest(Curve25519);
-  RunTest(Signature);
-  RunTest(Encryption);
-  RunTest(Session);
-  RunTest(Sign);
-  RunTest(Receive);
-  RunTest(DeriveChainKey);
-  RunTest(Hkdf);
-  RunTest(Ratchet);
-  RunTest(Serialization);
+  RunTest(TestParseProtobuf);
+  RunTest(TestFormatProtobuf);
+  RunTest(TestCurve25519);
+  RunTest(TestSignature);
+  RunTest(TestEncryption);
+  RunTest(TestSession);
+  RunTest(TestSign);
+  RunTest(TestReceive);
+  RunTest(TestDeriveChainKey);
+  RunTest(TestHkdf);
+  RunTest(TestRatchet);
+  RunTest(TestSerialization);
   puts("All tests succeeded");
 }

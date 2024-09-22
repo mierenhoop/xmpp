@@ -29,6 +29,7 @@
 #endif
 
 #define STORE_LOCATION "/tmp/store"
+#define SESSION_LOCATION "/tmp/session"
 
 #define PUBLISH_OPTIONS_OPEN                                           \
   "<publish-options><x xmlns='jabber:x:data' type='submit'><field "    \
@@ -40,6 +41,9 @@
   "publish-options>"
 
 typedef char Uuidv4[36+1];
+
+static void LoadSession();
+static void SaveSession();
 
 static const char *serverip;
 static char *logdata;
@@ -318,6 +322,7 @@ static void ParseBundle(struct xmppParser *parser) {
   }
   assert(found == 0xf);
   int r = omemoInitFromBundle(&omemosession, &omemostore, &bundle);
+  SaveSession();
   if (r < 0) {
     LogWarn("Bundle init fail: %d", r);
     return;
@@ -392,6 +397,7 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
     LogWarn("omemoKeyMessage decryption error: %d", r);
     goto free;
   }
+  SaveSession();
   r = omemoDecryptMessage(decryptedpayload, decryptedkey, OMEMO_PAYLOAD_SIZE, iv, payload, payloadsz);
   if (r < 0) {
     LogWarn("Message decryption error: %d", r);
@@ -602,7 +608,8 @@ static bool IterateClient() {
       if (!sent) {
         xmppFormatStanza(&client, "<presence/>");
         SubscribeDeviceList("admin@localhost", PENDING_OURDEVICELIST);
-        SubscribeDeviceList("user@localhost", PENDING_REMOTEDEVICELIST);
+        if (!omemoIsSessionInitialized(&omemosession))
+          SubscribeDeviceList("user@localhost", PENDING_REMOTEDEVICELIST);
         AnnounceOmemoBundle();
         sent = 1;
         continue;
@@ -672,6 +679,7 @@ static void SendNormalOmemo(const char *msg, const char *to, int rid) {
     LogWarn("Message encryption error: %d", r);
     return;
   }
+  SaveSession();
 
   xmppFormatStanza(
       &client,
@@ -715,7 +723,7 @@ static void HandleCommand() {
       if (omemoIsSessionInitialized(&omemosession)) {
         if (remoteid)
           SendNormalOmemo(cmd, "user@localhost", remoteid);
-        else
+        else // TODO: save remote id persistantly
           LogWarn("Remote id has not been found yet");
       } else {
         xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", RandomInt(), cmd);
@@ -748,7 +756,7 @@ void RunIm(const char *ip) {
   deviceid = 1024;
   if (!omemostore.isinitialized)
     omemoSetupStore(&omemostore);
-  assert(!omemoSetupSession(&omemosession, 100));
+  LoadSession();
   Loop();
   Die();
 }
@@ -791,10 +799,23 @@ static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
 static void SaveStore() {
   FILE *f = fopen(STORE_LOCATION, "w");
   if (f) {
-    // TODO: somehow get expected buffer size
-    uint8_t buf[sizeof(struct omemoStore)];
+    size_t n = omemoGetSerializedStoreSize();
+    uint8_t *buf = Malloc(n);
     omemoSerializeStore(buf, &omemostore);
-    fwrite(buf, sizeof(buf), 1, f);
+    fwrite(buf, n, 1, f);
+    free(buf);
+    fclose(f);
+  }
+}
+
+static void SaveSession() {
+  FILE *f = fopen(SESSION_LOCATION, "w");
+  if (f) {
+    size_t n = omemoGetSerializedSessionMaxSizeEstimate(&omemosession);
+    uint8_t *buf = Malloc(n);
+    omemoSerializeSession(buf, &n, &omemosession);
+    fwrite(buf, n, 1, f);
+    free(buf);
     fclose(f);
   }
 }
@@ -812,6 +833,18 @@ static void LoadStore() {
   }
   omemoSetupStore(&omemostore);
   SaveStore();
+}
+
+static void LoadSession() {
+  uint8_t *data;
+  size_t n;
+  assert(!omemoSetupSession(&omemosession, 100));
+  if (ReadWholeFile(SESSION_LOCATION, &data, &n)) {
+    assert(!omemoDeserializeSession(data, n, &omemosession));
+    free(data);
+  } else {
+    SaveSession();
+  }
 }
 
 int main() {
