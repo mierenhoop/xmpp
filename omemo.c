@@ -101,21 +101,15 @@ static int ParseProtobuf(const uint8_t *s, size_t n,
   return 0;
 }
 
-static uint8_t *FormatVarIntImpl(uint8_t d[static 5], uint32_t v) {
+static uint8_t *FormatVarInt(uint8_t d[static 6], int type, int id, uint32_t v) {
+  assert(id < 16);
+  *d++ = (id << 3) | type;
   do {
     *d = v & 0x7f;
     v >>= 7;
     *d++ |= (!!v << 7);
   } while (v);
   return d;
-}
-
-// TODO: we can make this function take type param, then remerge
-// FormatVarIntImpl
-static uint8_t *FormatVarInt(uint8_t d[static 6], int id, uint32_t v) {
-  assert(id < 16);
-  *d++ = (id << 3) | PB_UINT32;
-  return FormatVarIntImpl(d, v);
 }
 
 void omemoSerializeKey(omemoSerializedKey k, const omemoKey pub) {
@@ -148,13 +142,13 @@ static size_t FormatPreKeyMessage(uint8_t d[OMEMO_PREKEYHEADER_MAXSIZE],
   assert(msgsz < 128);
   uint8_t *p = d;
   *p++ = (3 << 4) | 3;
-  p = FormatVarInt(p, 5, 0xcc); // TODO: registration id
-  p = FormatVarInt(p, 1, pk_id);
-  p = FormatVarInt(p, 6, spk_id);
+  p = FormatVarInt(p, PB_UINT32, 5, 0xcc); // TODO: registration id
+  p = FormatVarInt(p, PB_UINT32, 1, pk_id);
+  p = FormatVarInt(p, PB_UINT32, 6, spk_id);
   p = FormatKey(p, 3, ik);
   p = FormatKey(p, 2, ek);
-  *p++ = (4 << 3) | PB_LEN;
-  *p++ = msgsz;
+  assert(msgsz <= 0x7f);
+  p = FormatVarInt(p, PB_LEN, 4, msgsz);
   return p - d;
 }
 
@@ -165,8 +159,8 @@ static size_t FormatMessageHeader(uint8_t d[OMEMO_HEADER_MAXSIZE], uint32_t n,
   uint8_t *p = d;
   *p++ = (3 << 4) | 3;
   p = FormatKey(p, 1, dhs);
-  p = FormatVarInt(p, 2, n);
-  return FormatVarInt(p, 3, pn) - d;
+  p = FormatVarInt(p, PB_UINT32, 2, n);
+  return FormatVarInt(p, PB_UINT32, 3, pn) - d;
 }
 
 // Remove the skipped message key that has just been used for
@@ -773,10 +767,11 @@ int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
   return r;
 }
 
-static int GetSerializedStoreSize(void) {
+size_t omemoGetSerializedStoreSize(void) {
   return sizeof(struct omemoStore);
 }
 
+// TODO: use protobuf for this too
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store) {
   memcpy(d, store, sizeof(struct omemoStore));
 }
@@ -785,8 +780,12 @@ void omemoDeserializeStore(struct omemoStore *store, const uint8_t s[static size
   memcpy(store, s, sizeof(struct omemoStore));
 }
 
-static int GetSerializedSessionSize(struct omemoSession *session) {
-  return 0;
+// TODO: we might want to make this exact by checking varint sizes
+size_t omemoGetSerializedSessionMaxSizeEstimate(struct omemoSession *session) {
+  return 35 * 4   // SerializedKey
+         + 34 * 4 // Key
+         + 6 * 6  // PB_UINT32
+         + 6 + session->mkskipped.n * sizeof(struct omemoMessageKey);
 }
 
 void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) {
@@ -798,18 +797,16 @@ void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) 
   d = FormatPrivateKey(d, 5, session->state.rk);
   d = FormatPrivateKey(d, 6, session->state.cks);
   d = FormatPrivateKey(d, 7, session->state.ckr);
-  d = FormatVarInt(d, 8, session->state.ns);
-  d = FormatVarInt(d, 9, session->state.nr);
-  d = FormatVarInt(d, 10, session->state.pn);
+  d = FormatVarInt(d, PB_UINT32, 8, session->state.ns);
+  d = FormatVarInt(d, PB_UINT32, 9, session->state.nr);
+  d = FormatVarInt(d, PB_UINT32, 10, session->state.pn);
   d = FormatKey(d, 11, session->pendingek);
-  d = FormatVarInt(d, 12, session->pendingpk_id);
-  d = FormatVarInt(d, 13, session->pendingspk_id);
-  d = FormatVarInt(d, 14, session->fsm);
+  d = FormatVarInt(d, PB_UINT32, 12, session->pendingpk_id);
+  d = FormatVarInt(d, PB_UINT32, 13, session->pendingspk_id);
+  d = FormatVarInt(d, PB_UINT32, 14, session->fsm);
   size_t bn = session->mkskipped.n*sizeof(struct omemoMessageKey);
-  *d++ = (15 << 3) | PB_LEN;
-  d = FormatVarIntImpl(d, bn);
-  memcpy(d, session->mkskipped.p, bn);
-  d += bn;
+  d = FormatVarInt(d, PB_LEN, 15, bn);
+  d = (memcpy(d, session->mkskipped.p, bn), d + bn);
   if (n)
     *n = d - p;
 }
@@ -821,7 +818,7 @@ void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) 
  * buffer, only the most recent ones will be deserialized
  * @return 0 or OMEMO_EPROTOBUF
  */
-int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session, struct omemoSkippedMessageKeys* mks, int nmk) {
+int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session) {
   assert(p && n && session);
   memset(session, 0, sizeof(struct omemoSession));
   struct ProtobufField fields[] = {

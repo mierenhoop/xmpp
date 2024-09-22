@@ -116,10 +116,13 @@ void omemoSetupStore(struct omemoStore *store);
 int omemoSetupSession(struct omemoSession *session, size_t cap);
 void omemoFreeSession(struct omemoSession *session);
 
+
+size_t omemoGetSerializedStoreSize(void);
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store);
 void omemoDeserializeStore(struct omemoStore *store, const uint8_t s[static sizeof(struct omemoStore)]);
+size_t omemoGetSerializedSessionMaxSizeEstimate(struct omemoSession *sesson);
 void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session);
-int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session, struct omemoSkippedMessageKeys* mks, int nmk);
+int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session);
 
 #define omemoIsSessionInitialized(session) (!!(session)->fsm)
 #define omemoIsStoreInitialized(store) ((store)->isinitialized)

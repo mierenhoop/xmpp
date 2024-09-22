@@ -59,10 +59,10 @@ static void TestParseProtobuf() {
 
 static void TestFormatProtobuf() {
   uint8_t varint[6];
-  assert(FormatVarInt(varint, 1, 0x00) == varint + 2 && !memcmp(varint, "\x08\x00", 2));
-  assert(FormatVarInt(varint, 1, 0x01) == varint + 2 && !memcmp(varint, "\x08\x01", 2));
-  assert(FormatVarInt(varint, 1, 0x80) == varint + 3 && !memcmp(varint, "\x08\x80\x01", 3));
-  assert(FormatVarInt(varint, 1, 0xffffffff) == varint + 6 && !memcmp(varint, "\x08\xff\xff\xff\xff\x0f", 6));
+  assert(FormatVarInt(varint, PB_UINT32, 1, 0x00) == varint + 2 && !memcmp(varint, "\x08\x00", 2));
+  assert(FormatVarInt(varint, PB_UINT32, 1, 0x01) == varint + 2 && !memcmp(varint, "\x08\x01", 2));
+  assert(FormatVarInt(varint, PB_UINT32, 1, 0x80) == varint + 3 && !memcmp(varint, "\x08\x80\x01", 3));
+  assert(FormatVarInt(varint, PB_UINT32, 1, 0xffffffff) == varint + 6 && !memcmp(varint, "\x08\xff\xff\xff\xff\x0f", 6));
 }
 
 static void CopyHex(uint8_t *d, const char *hex) {
@@ -416,7 +416,7 @@ static void TestSerialization() {
   assert(!omemoSetupSession(&sessionb, 1000));
   assert(omemoInitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
-  uint8_t *buf = malloc(GetSerializedStoreSize());
+  uint8_t *buf = malloc(omemoGetSerializedStoreSize());
   assert(buf);
   omemoSerializeStore(buf, &storea);
   memset(&storeb, 0, sizeof(storeb));
@@ -424,10 +424,10 @@ static void TestSerialization() {
   assert(!memcmp(&storea, &storeb, sizeof(struct omemoStore)));
 
   struct omemoSession tmpsession;
-  uint8_t buf2[1024];
+  uint8_t *buf2 = malloc(omemoGetSerializedSessionMaxSizeEstimate(&sessiona));
   size_t n;
   omemoSerializeSession(buf2, &n, &sessiona);
-  assert(!omemoDeserializeSession(buf2, n, &tmpsession, NULL, 0));
+  assert(!omemoDeserializeSession(buf2, n, &tmpsession));
   assert(tmpsession.mkskipped.n == sessiona.mkskipped.n);
   assert(!memcmp(tmpsession.mkskipped.p, sessiona.mkskipped.p, sessiona.mkskipped.n*sizeof(struct omemoMessageKey)));
   memcpy(&tmpsession.mkskipped, &sessiona.mkskipped, sizeof(struct omemoSkippedMessageKeys));
