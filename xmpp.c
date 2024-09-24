@@ -431,7 +431,7 @@ static char *SanitizeSaslUsername(char *d, char *e, const char *s) {
 // ret
 //  = 0: success
 //  < 0: XMPP_EMEM
-static int xmppInitSaslContext(struct xmppSaslContext *ctx, const char *user) {
+static int InitSaslContext(struct xmppSaslContext *ctx, const char *user) {
   assert(ctx->p && ctx->n);
   char *p = ctx->p;
   size_t n = ctx->n;
@@ -693,17 +693,18 @@ static int CalculateScramSha1(struct xmppSaslContext *ctx, char clientproof[stat
     && HMAC(ctx->srvsig, ctx->p+ctx->initialmsg, ctx->authmsgend-ctx->initialmsg, serverkey);
 }
 
-// We have to make sure this function can be called multiple times,
-// either because the format function called after this one might fail
-// OR the password is wrong.
-// TODO: error handling
-// expects xmppInitSaslContext to be successfully called with the same ctx
-// c = challenge base64
-// make sure pwd is all printable chars
-// return something if ctx->n is too small
-// return something else if corrupt data
-static int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, const char *pwd) {
+/**
+ * Solve SASL SCRAM challenge using a password.
+ *
+ * This function can be called multiple times without messing up the
+ * state in ctx.
+ *
+ * @param ctx must be initialized using InitSaslContext()
+ * @param c is the content of <challenge> in base64
+ */
+static int SolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, const char *pwd) {
   assert(ctx->state >= XMPP_SASL_INITIALIZED);
+  assert(c.p && pwd);
   size_t n;
   int itrs = 0;
   char *s, *i, *e = ctx->p+ctx->n - 1; // keep the nul
@@ -723,15 +724,21 @@ static int xmppSolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSli
   ctx->clientfinalmsg = r - ctx->p + 1;
   r = SafeStpCpy(r, e, ",c=biws,r=");
   size_t nb = saltb64 - servernonce - 3;
+  if (HasOverflowed(r+nb, e))
+    return XMPP_EMEM;
   memcpy(r, ctx->p+servernonce, nb);
   r += nb;
   ctx->authmsgend = r - ctx->p;
-  mbedtls_base64_decode(r, 9001, &n, s+3, i-s-3); // IDK random value
+  if (mbedtls_base64_decode(r, e-r, &n, s+3, i-s-3))
+    return XMPP_ESPEC;
   char clientproof[20];
   if (!CalculateScramSha1(ctx, clientproof, pwd, strlen(pwd), r, n, itrs))
     return XMPP_ECRYPTO;
-  r = stpcpy(r, ",p=");
-  mbedtls_base64_encode(r, 9001, &n, clientproof, 20); // IDK random value
+  r = SafeStpCpy(r, e, ",p=");
+  if (HasOverflowed(r, e))
+    return XMPP_EMEM;
+  if (mbedtls_base64_encode(r, e-r, &n, clientproof, 20))
+    return XMPP_ESPEC;
   ctx->end = (r-ctx->p)+n;
   if (HasOverflowed(r, e))
     return XMPP_EMEM;
@@ -770,7 +777,7 @@ enum {
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd) {
   int r;
   if (c->state == CLIENTSTATE_SASLPWD) {
-    xmppSolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
+    SolveSaslChallenge(&c->saslctx, c->stanza.saslchallenge, pwd);
     if ((r = xmppFormatSaslResponse(c, &c->saslctx)))
       return r;
     c->state = CLIENTSTATE_SASLCHECKRESULT;
@@ -968,7 +975,7 @@ int xmppIterate(struct xmppClient *c) {
     if (!(c->opts & XMPP_OPT_NOAUTH) && !(c->features & XMPP_STREAMFEATUREMASK_SASL)) {
       // TODO: -PLUS
       if (stream.features & XMPP_STREAMFEATURE_SCRAMSHA1 && !(c->opts & XMPP_OPT_FORCEPLAIN)) {
-        xmppInitSaslContext(&c->saslctx, c->jid.localp);
+        InitSaslContext(&c->saslctx, c->jid.localp);
         if ((r = xmppFormatSaslInitialMessage(c, &c->saslctx)))
           return ReturnRetry(c, r);
         c->state = CLIENTSTATE_SASLINIT;
