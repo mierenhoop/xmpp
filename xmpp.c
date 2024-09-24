@@ -47,37 +47,33 @@ bool StrictStrEqual(const char *c, const char *u, size_t n) {
 }
 
 void xmppReadXmlSlice(char *d, struct xmppXmlSlice *slc) {
-  if (slc->type == XMPP_SLICE_ATTR || slc->type == XMPP_SLICE_CONT) {
-    // TODO: we can skip the whole prefix initialization since that is
-    // static. just memcpy the internal state to the struct.
-    static const char attrprefix[] = "<x e=";
-    static const char contprefix[] = "<x>";
-    char buf[16];
-    int i, n;
-    yxml_t x;
-    yxml_init(&x, buf, sizeof(buf));
-    int target = slc->type == XMPP_SLICE_ATTR ? YXML_ATTRVAL : YXML_CONTENT;
-    const char *prefix = slc->type == XMPP_SLICE_ATTR ? attrprefix : contprefix;
-    n = slc->type == XMPP_SLICE_ATTR ? sizeof(attrprefix)-1 : sizeof(contprefix)-1;
-    for (i = 0; i < n; i++) {
-      yxml_parse(&x, prefix[i]);
-    }
-    i = 0;
-    n = slc->rawn;
-    if (slc->type == XMPP_SLICE_ATTR) { // Also parse the '/"
-      i--;
-      n++;
-    }
-    for (; i < n; i++) {
-      // with parsing input validation has already succeeded so there is
-      // no reason to check for errors again.
-      if (yxml_parse(&x, slc->p[i]) == target)
-        d = stpcpy(d, x.data);
-    }
-  } else if (slc->type == XMPP_SLICE_B64) {
-    DecodeBase64(d, d+slc->n, slc->p, slc->rawn); // TODO: check if b64 is valid.
-  } else {
-    memcpy(d, slc->p, slc->rawn);
+  if (!slc->p)
+    return;
+  // TODO: just have the p always start one earlier, [-1] might be unsafe.
+  char prev = slc->p[-1];
+  // For content, prev will be '>', for attribute either ' or "
+  assert(prev == '>' || prev == '\'' || prev == '"');
+  // TODO: we can skip the whole prefix initialization since that is
+  // static. just memcpy the internal state to the struct.
+  static const char attrprefix[] = "<x e=";
+  static const char contprefix[] = "<x>";
+  char buf[16];
+  yxml_t x;
+  yxml_init(&x, buf, sizeof(buf));
+  int target = prev == '>' ? YXML_CONTENT : YXML_ATTRVAL;
+  const char *prefix = prev == '>' ? contprefix : attrprefix;
+  while (*prefix) {
+    yxml_parse(&x, *prefix++);
+  }
+  int i = 0;
+  int n = slc->rawn;
+  if (prev != '>') // Also parse the '/"
+    i--, n++;
+  for (; i < n; i++) {
+    // with parsing input validation has already succeeded so there is
+    // no reason to check for errors again.
+    if (yxml_parse(&x, slc->p[i]) == target)
+      d = stpcpy(d, x.data);
   }
 }
 
@@ -116,7 +112,6 @@ void xmppParseUnknown(struct xmppParser *p) {
 bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
   int r;
   memset(slc, 0, sizeof(*slc));
-  slc->type = XMPP_SLICE_ATTR;
   while (1) { // hacky way to check end of attr list
     if (!slc->p && (p->p[p->i-1] == '>' || p->p[p->i-1] == '/'))
       return false;
@@ -145,7 +140,6 @@ void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   bool incontent = false;
   struct xmppXmlSlice attr;
   memset(slc, 0, sizeof(*slc));
-  slc->type = XMPP_SLICE_CONT;
   while (xmppParseAttribute(p, &attr)) {}
   while (p->i < p->n) {
     if (!slc->p) {

@@ -25,16 +25,8 @@ struct StaticData {
   char in[XMPP_CONFIG_INBUF_SIZE], out[XMPP_CONFIG_OUTBUF_SIZE], saslbuf[XMPP_CONFIG_MAX_SASLBUF_SIZE], xbuf[XMPP_CONFIG_YXMLBUF_SIZE], smackid[XMPP_CONFIG_MAX_SMACKID_SIZE], jid[XMPP_CONFIG_MAX_JID_SIZE+1];
 };
 
-#define XMPP_SLICE_XML  0
-#define XMPP_SLICE_ATTR 1
-#define XMPP_SLICE_CONT 2
-#define XMPP_SLICE_B64  3
-
-// TODO: we can remove the type field and each type to a separate struct
-// type = XMPP_SLICE_*
 // p can be null!
 struct xmppXmlSlice {
-  int type;
   char *p;
   size_t n, rawn; // TODO: n -> realn, rawn -> n
 };
