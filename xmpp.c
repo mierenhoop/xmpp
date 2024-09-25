@@ -33,43 +33,56 @@ static char *DecodeBase64(char *d, char *e, const char *s, size_t n) {
   return d+n;
 }
 
-// Check if some user provided string u with size n matches a constant
-// string c. This function is useful for when n is not constant. It is
-// reasonable to compare XML strings using this, however we expect that
-// there are no useless entities or CDATA.
-// Returns true if matches, be careful it's the opposite of strcmp.
-bool StrictStrEqual(const char *c, const char *u, size_t n) {
-  while (--n) {
-    if (!c || *c++ != *u++)
-      return false;
-  }
-  return !c[1] && !n;
-}
-
-void xmppReadXmlSlice(char *d, struct xmppXmlSlice *slc) {
-  if (!slc->p)
-    return;
-  // TODO: just have the p always start one earlier, [-1] might be unsafe.
-  char prev = slc->p[-1];
+/**
+ * Returns target
+ */
+static int InitXmlSliceParser(yxml_t *x, const struct xmppXmlSlice *slc) {
+  char prev = slc->p[0];
   // For content, prev will be '>', for attribute either ' or "
+  //printf("XML %.*s\n", slc->rawn, slc->p);
   assert(prev == '>' || prev == '\'' || prev == '"');
   // TODO: we can skip the whole prefix initialization since that is
   // static. just memcpy the internal state to the struct.
   static const char attrprefix[] = "<x e=";
-  static const char contprefix[] = "<x>";
+  static const char contprefix[] = "<x";
+  const char *prefix = prev == '>' ? contprefix : attrprefix;
+  while (*prefix) {
+    yxml_parse(x, *prefix++);
+  }
+  return prev == '>' ? YXML_CONTENT : YXML_ATTRVAL;
+}
+
+bool xmppCompareXmlSlice(const char *s, const struct xmppXmlSlice *slc) {
+  if (!slc->p || !s)
+    return false;
   char buf[16];
   yxml_t x;
   yxml_init(&x, buf, sizeof(buf));
-  int target = prev == '>' ? YXML_CONTENT : YXML_ATTRVAL;
-  const char *prefix = prev == '>' ? contprefix : attrprefix;
-  while (*prefix) {
-    yxml_parse(&x, *prefix++);
-  }
-  int i = 0;
+  int target = InitXmlSliceParser(&x, slc);
   int n = slc->rawn;
-  if (prev != '>') // Also parse the '/"
-    i--, n++;
-  for (; i < n; i++) {
+  for (int i = 0; i < n; i++) {
+    // with parsing input validation has already succeeded so there is
+    // no reason to check for errors again.
+    if (yxml_parse(&x, slc->p[i]) == target) {
+      const char *p = x.data;
+      while (*p) {
+        if (*p++ != *s++)
+          return false;
+      }
+    }
+  }
+  return *s == '\0';
+}
+
+void xmppReadXmlSlice(char *d, const struct xmppXmlSlice *slc) {
+  if (!slc->p)
+    return;
+  char buf[16];
+  yxml_t x;
+  yxml_init(&x, buf, sizeof(buf));
+  int target = InitXmlSliceParser(&x, slc);
+  int n = slc->rawn;
+  for (int i = 0; i < n; i++) {
     // with parsing input validation has already succeeded so there is
     // no reason to check for errors again.
     if (yxml_parse(&x, slc->p[i]) == target)
@@ -118,11 +131,13 @@ bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
     if (!(p->i < p->n))
       break;
     switch ((r = yxml_parse(&p->x, p->p[p->i++]))) {
+    case YXML_ATTRSTART:
+      // TODO: does this trigger at the right time?
+      slc->p = p->p + p->i;
+      break;
     case YXML_ATTREND:
       return true;
     case YXML_ATTRVAL:
-      if (!slc->p)
-        slc->p = p->p + p->i - 1;
       slc->n += strlen(p->x.data);
       break;
     default:
@@ -144,8 +159,10 @@ void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
   while (p->i < p->n) {
     if (!slc->p) {
       if (p->p[p->i - 1] == '>')
-        incontent = true, slc->p = p->p + p->i;
+        incontent = true, slc->rawn = 1, slc->p = p->p + p->i - 1;
     }
+    if (incontent)
+      slc->rawn++;
     if (p->p[p->i] == '<')
       incontent = false;
     switch ((r = yxml_parse(&p->x, p->p[p->i++]))) {
@@ -160,8 +177,6 @@ void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
       if (r < 0)
         longjmp(p->jb, XMPP_EXML);
     }
-    if (incontent)
-      slc->rawn++;
   }
   longjmp(p->jb, XMPP_EPARTIAL);
 }
@@ -249,17 +264,17 @@ static void xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
         if (strcmp(p->x.elem, "mechanism"))
           longjmp(p->jb, XMPP_ESPEC);
         xmppParseContent(p, &mech);
-        if (StrictStrEqual("SCRAM-SHA-1", mech.p, mech.rawn))
+        if (xmppCompareXmlSlice("SCRAM-SHA-1", &mech))
           s->features |= XMPP_STREAMFEATURE_SCRAMSHA1;
-        else if (StrictStrEqual("SCRAM-SHA-1-PLUS", mech.p, mech.rawn))
+        else if (xmppCompareXmlSlice("SCRAM-SHA-1-PLUS", &mech))
           s->features |= XMPP_STREAMFEATURE_SCRAMSHA1PLUS;
-        else if (StrictStrEqual("PLAIN", mech.p, mech.rawn))
+        else if (xmppCompareXmlSlice("PLAIN", &mech))
           s->features |= XMPP_STREAMFEATURE_PLAIN;
       }
     } else if (!strcmp(p->x.elem, "sm")) {
       if (!xmppParseAttribute(p, &attr) || strcmp(p->x.attr, "xmlns"))
         longjmp(p->jb, XMPP_ESPEC);
-      if (StrictStrEqual("urn:xmpp:sm:3", attr.p, attr.rawn))
+      if (xmppCompareXmlSlice("urn:xmpp:sm:3", &attr))
         ParseOptionalRequired(p, s, XMPP_STREAMFEATURE_SMACKS);
       else
         xmppParseUnknown(p);
@@ -320,8 +335,8 @@ static int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool ins
       if (!strcmp(p->x.attr, "id")) {
         memcpy(&st->smacksenabled.id, &attr, sizeof(attr));
       } else if (!strcmp(p->x.attr, "resume")) {
-        st->smacksenabled.resume = StrictStrEqual("true", attr.p, attr.rawn) ||
-                                   StrictStrEqual("1", attr.p, attr.rawn);
+        st->smacksenabled.resume = xmppCompareXmlSlice("true", &attr) ||
+                                   xmppCompareXmlSlice("1", &attr);
       }
     }
     xmppParseUnknown(p);
@@ -611,15 +626,15 @@ int xmppFlush(struct xmppClient *c, bool isstanza) {
 
 #define xmppFormatSaslResponse(client, ctx) BuildComplete(client, "<response xmlns='urn:ietf:params:xml:ns:xmpp-sasl'>%b</response>", (ctx)->end-(ctx)->clientfinalmsg, (ctx)->p+(ctx)->clientfinalmsg)
 
-// TODO: use a single buf? mbedtls decode base64 probably allows overlap
-// length of s not checked, it's expected that invalid input would
-// end with either an unsupported base64 charactor or nul.
-// s = success base64 content
+/**
+ * @param slc is base64 inside <success>
+ */
 static int VerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice *slc) {
   assert(ctx->state == XMPP_SASL_CALCULATED);
   char b1[30], b2[20];
   size_t n;
-  if (mbedtls_base64_decode(b1, 30, &n, slc->p, slc->rawn)
+  // TODO: don't haredcode slc->p+1 and slc->rawn-2, use xmppReadXmlSlice
+  if (mbedtls_base64_decode(b1, 30, &n, slc->p+1, slc->rawn-2)
    || mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
     return XMPP_ESPEC;
   return !!memcmp(ctx->srvsig, b2, 20);
@@ -703,7 +718,8 @@ static int SolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c
   int itrs = 0;
   char *s, *i, *e = ctx->p+ctx->n - 1; // keep the nul
   char *r = ctx->p+ctx->serverfirstmsg;
-  if (mbedtls_base64_decode(r, e-r, &n, c.p, c.rawn))
+  // TODO: don't haredcode c.p+1 and c.rawn-2, use xmppReadXmlSlice
+  if (mbedtls_base64_decode(r, e-r, &n, c.p+1, c.rawn-2))
     return XMPP_ESPEC;
   size_t servernonce = ctx->serverfirstmsg + 2;
   if (strncmp(r, "r=", 2)

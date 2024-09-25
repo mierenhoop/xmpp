@@ -143,6 +143,35 @@ stop:
   CleanupTls();
 }
 
+static void TestXmlSlice() {
+  char buf[12];
+  struct xmppXmlSlice slc = {0};
+  slc.p = "'test'",
+  slc.rawn = 6,
+  slc.n = 4,
+  assert(xmppCompareXmlSlice("test", &slc));
+  assert(!xmppCompareXmlSlice("atest", &slc));
+  assert(!xmppCompareXmlSlice("testa", &slc));
+  xmppReadXmlSlice(buf, &slc);
+  assert(!strcmp(buf, "test"));
+  slc.p = "\"&lt;test&gt;\"";
+  slc.rawn = 14;
+  slc.n = 6;
+  assert(xmppCompareXmlSlice("<test>", &slc));
+  assert(!xmppCompareXmlSlice("a<test>", &slc));
+  assert(!xmppCompareXmlSlice("<test>a", &slc));
+  xmppReadXmlSlice(buf, &slc);
+  assert(!strcmp(buf, "<test>"));
+  slc.p = ">test<";
+  slc.rawn = 6;
+  slc.n = 4;
+  assert(xmppCompareXmlSlice("test", &slc));
+  assert(!xmppCompareXmlSlice("atest", &slc));
+  assert(!xmppCompareXmlSlice("testa", &slc));
+  xmppReadXmlSlice(buf, &slc);
+  assert(!strcmp(buf, "test"));
+}
+
 static char in[50000], xbuf[2000];
 
 static struct xmppParser SetupXmppParser(const char *xml) {
@@ -174,11 +203,7 @@ static void TestXml() {
       "</stream:features>"
       );
   assert(xmppParseStanza(&p, &st, false) == 0);
-  assert(st.to.p && !strncmp(st.to.p, "juliet@im.example.com", st.to.rawn));
-  assert(st.to.rawn == st.to.n);
-  assert(!StrictStrEqual("SCRAM-SHA-1", "SCRAM-SHA-1-PLUS", sizeof("SCRAM-SHA-1-PLUS")-1));
-  assert(StrictStrEqual("SCRAM-SHA-1", "SCRAM-SHA-1", sizeof("SCRAM-SHA-1")-1));
-  assert(!StrictStrEqual("SCRAM-SHA-1", "PLAIN", sizeof("PLAIN")-1));
+  assert(xmppCompareXmlSlice("juliet@im.example.com", &st.to));
 }
 
 static void ExpectUntil(int goal, const char *exp) {
@@ -276,6 +301,7 @@ static void TestBuilder() {
 
 int main() {
   puts("Starting tests");
+  TestXmlSlice();
   TestClient();
   TestXml();
   TestSkipper();

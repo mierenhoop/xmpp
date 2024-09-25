@@ -46,7 +46,9 @@ struct xmppXmlSlice {
  * @param d is the destination buffer
  * @param s is the slice
  */
-void xmppReadXmlSlice(char *d, struct xmppXmlSlice *s);
+void xmppReadXmlSlice(char *d, const struct xmppXmlSlice *s);
+
+bool xmppCompareXmlSlice(const char *s, const struct xmppXmlSlice *slc);
 
 // The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.
 #define XMPP_EMEM -1
@@ -272,8 +274,6 @@ struct xmppClient {
   bool disablesmack;
   bool cansmackresume;
 };
-
-bool StrictStrEqual(const char *c, const char *u, size_t n);
 
 // Only call when XMPP_ITER_ACK
 #define xmppIsSynchronized(c) ((c)->stanza.type == XMPP_STANZA_ACKANSWER && (c)->stanza.ack == (c)->actualsent)

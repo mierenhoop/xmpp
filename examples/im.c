@@ -192,17 +192,15 @@ static void PrintSlice(struct xmppXmlSlice *slc, const char *alt) {
 static bool HasExactAttribute(struct xmppParser *parser, const char *k, const char *v) {
   struct xmppXmlSlice attr;
   while (xmppParseAttribute(parser, &attr)) {
-    if (!strcmp(k, parser->x.attr) && StrictStrEqual(v, attr.p, attr.rawn))
+    if (!strcmp(k, parser->x.attr) && xmppCompareXmlSlice(v, &attr))
       return true;
   }
   return false;
 }
 
 static int GetPendingFromId(struct xmppXmlSlice *id) {
-  if (id->rawn != 36) // sizeof(Uuidv4)-1
-    return -1;
   for (int i = 0; i < (sizeof(pending)/sizeof(*pending)); i++) {
-    if ((curpending & (1 << i)) && !memcmp(id->p, pending[i], 36)) {
+    if ((curpending & (1 << i)) && xmppCompareXmlSlice(pending[i], id)) {
       curpending &= ~(1 << i);
       memset(pending[i], 0, 36);
       return i;
@@ -251,7 +249,8 @@ static void *Malloc(size_t n) {
 
 static void DecodeBase64(uint8_t **p, size_t *n, struct xmppXmlSlice *slc) {
   *p = Malloc(slc->n);
-  assert(!mbedtls_base64_decode(*p, slc->n, n, slc->p, slc->rawn));
+  // TODO: don't hardcode +1 and -2
+  assert(!mbedtls_base64_decode(*p, slc->n, n, slc->p+1, slc->rawn-2));
 }
 
 // d = dest buffer of size n
@@ -259,7 +258,8 @@ static void ParseBase64Content(struct xmppParser *parser, uint8_t *d, int n) {
   struct xmppXmlSlice slc;
   size_t olen;
   xmppParseContent(parser, &slc);
-  assert(!mbedtls_base64_decode(d, n, &olen, slc.p, slc.rawn));
+  // TODO: don't hardcode +1, -2
+  assert(!mbedtls_base64_decode(d, n, &olen, slc.p+1, slc.rawn-2));
   assert(olen == n);
 }
 
@@ -273,7 +273,8 @@ static int ParseNumberAttribute(struct xmppParser *parser, const char *name) {
   struct xmppXmlSlice attr;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, name)) {
-      return strtol(attr.p, NULL, 10);
+      // TODO: don't hardcode +1
+      return strtol(attr.p+1, NULL, 10);
     }
   }
   longjmp(parser->jb, XMPP_ESPEC);
@@ -334,7 +335,8 @@ static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, boo
   bool found = false;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "rid")) {
-      found = strtol(attr.p, NULL, 10) == deviceid; // TODO: put deviceid in store.
+      // TODO: don't hardcode +1
+      found = strtol(attr.p+1, NULL, 10) == deviceid; // TODO: put deviceid in store.
     } else if (!strcmp(parser->x.attr, "prekey")) {
       *isprekey = true;
     }
@@ -349,7 +351,8 @@ static bool GetRemoteId(struct xmppParser *parser) {
   struct xmppXmlSlice attr;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "sid")) {
-      remoteid = strtol(attr.p, NULL, 10);
+      // TODO: don't hardcode +1
+      remoteid = strtol(attr.p+1, NULL, 10);
       return true;
     }
   }
@@ -470,7 +473,8 @@ static int ParseDeviceId(struct xmppParser *parser) {
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "id")) {
       char *e;
-      id = strtol(attr.p, &e, 10);
+      // TODO: don't hardcode +1
+      id = strtol(attr.p+1, &e, 10);
       //if e < p+n
       //  id = -1;
     }
@@ -754,8 +758,9 @@ void RunIm(const char *ip) {
   assert(log);
   serverip = ip;
   deviceid = 1024;
-  if (!omemostore.isinitialized)
-    omemoSetupStore(&omemostore);
+  assert(omemostore.isinitialized);
+  //if (!omemostore.isinitialized)
+  //  omemoSetupStore(&omemostore);
   LoadSession();
   Loop();
   Die();
