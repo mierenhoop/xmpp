@@ -27,12 +27,6 @@ static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
   return d+n;
 }
 
-static char *DecodeBase64(char *d, char *e, const char *s, size_t n) {
-  if (mbedtls_base64_decode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
-    return e;
-  return d+n;
-}
-
 /**
  * Returns target
  */
@@ -88,6 +82,18 @@ void xmppReadXmlSlice(char *d, const struct xmppXmlSlice *slc) {
     if (yxml_parse(&x, slc->p[i]) == target)
       d = stpcpy(d, x.data);
   }
+}
+
+int xmppDecodeBase64XmlSlice(char *d, size_t *n, const struct xmppXmlSlice *slc) {
+  assert(d && n && slc && slc->p);
+  // TODO: don't hardcode +1, -2
+  int r = mbedtls_base64_decode(d, *n, n, slc->p+1, slc->rawn-2);
+  if (r == MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL)
+    return XMPP_EMEM;
+  if (r == MBEDTLS_ERR_BASE64_INVALID_CHARACTER)
+    return XMPP_ESPEC;
+  assert(r == 0);
+  return 0;
 }
 
 const char *xmppErrToStr(int e) {
@@ -632,9 +638,9 @@ int xmppFlush(struct xmppClient *c, bool isstanza) {
 static int VerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice *slc) {
   assert(ctx->state == XMPP_SASL_CALCULATED);
   char b1[30], b2[20];
-  size_t n;
+  size_t n = 30;
   // TODO: don't haredcode slc->p+1 and slc->rawn-2, use xmppReadXmlSlice
-  if (mbedtls_base64_decode(b1, 30, &n, slc->p+1, slc->rawn-2)
+  if (xmppDecodeBase64XmlSlice(b1, &n, slc)
    || mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
     return XMPP_ESPEC;
   return !!memcmp(ctx->srvsig, b2, 20);
@@ -714,12 +720,12 @@ static int CalculateScramSha1(struct xmppSaslContext *ctx, char clientproof[stat
 static int SolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c, const char *pwd) {
   assert(ctx->state >= XMPP_SASL_INITIALIZED);
   assert(c.p && pwd);
-  size_t n;
   int itrs = 0;
   char *s, *i, *e = ctx->p+ctx->n - 1; // keep the nul
   char *r = ctx->p+ctx->serverfirstmsg;
   // TODO: don't haredcode c.p+1 and c.rawn-2, use xmppReadXmlSlice
-  if (mbedtls_base64_decode(r, e-r, &n, c.p+1, c.rawn-2))
+  size_t n = e-r;
+  if (xmppDecodeBase64XmlSlice(r, &n, &c))
     return XMPP_ESPEC;
   size_t servernonce = ctx->serverfirstmsg + 2;
   if (strncmp(r, "r=", 2)

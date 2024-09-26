@@ -249,17 +249,17 @@ static void *Malloc(size_t n) {
 
 static void DecodeBase64(uint8_t **p, size_t *n, struct xmppXmlSlice *slc) {
   *p = Malloc(slc->n);
-  // TODO: don't hardcode +1 and -2
-  assert(!mbedtls_base64_decode(*p, slc->n, n, slc->p+1, slc->rawn-2));
+  // TODO: ???
+  *n = slc->n;
+  assert(!xmppDecodeBase64XmlSlice(*p, n, slc));
 }
 
 // d = dest buffer of size n
 static void ParseBase64Content(struct xmppParser *parser, uint8_t *d, int n) {
   struct xmppXmlSlice slc;
-  size_t olen;
   xmppParseContent(parser, &slc);
-  // TODO: don't hardcode +1, -2
-  assert(!mbedtls_base64_decode(d, n, &olen, slc.p+1, slc.rawn-2));
+  size_t olen = n;
+  assert(!xmppDecodeBase64XmlSlice(d, &olen, &slc));
   assert(olen == n);
 }
 

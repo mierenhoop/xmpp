@@ -48,6 +48,8 @@ struct xmppXmlSlice {
  */
 void xmppReadXmlSlice(char *d, const struct xmppXmlSlice *s);
 
+int xmppDecodeBase64XmlSlice(char *d, size_t *n, const struct xmppXmlSlice *slc);
+
 bool xmppCompareXmlSlice(const char *s, const struct xmppXmlSlice *slc);
 
 // The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.
