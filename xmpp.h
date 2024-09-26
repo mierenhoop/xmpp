@@ -48,8 +48,34 @@ struct xmppXmlSlice {
  */
 void xmppReadXmlSlice(char *d, const struct xmppXmlSlice *s);
 
+/**
+ * Decode base-64 inside of any XML slice into binary.
+ *
+ * @param d is the destination buffer
+ * @param n points to the maximum size of the destination buffer, after
+ * this function successfully returns, n will contain the actual amount
+ * of bytes written.
+ * @returns 0 if successful or XMPP_E*
+ */
 int xmppDecodeBase64XmlSlice(char *d, size_t *n, const struct xmppXmlSlice *slc);
 
+/**
+ * Decode integer from any XML slice.
+ *
+ * @param i points to the location where the integer will be written
+ * @returns true if reading the integer was put into i
+ */
+bool xmppDecodeIntXmlSlice(int32_t *i, const struct xmppXmlSlice *slc);
+
+/**
+ * Compare a string with an XML slice.
+ *
+ * The comparison is done against the unescaped string from the XML
+ * slice.
+ *
+ * @param s is a nul-terminated string
+ * @returns true if the string and the slice are the same
+ */
 bool xmppCompareXmlSlice(const char *s, const struct xmppXmlSlice *slc);
 
 // The buffer used is too small. For Format functions this will be the size of the output buffer. For SASL related functions this will be the buffer given to xmppInitSaslContext.

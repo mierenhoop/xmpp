@@ -96,6 +96,21 @@ int xmppDecodeBase64XmlSlice(char *d, size_t *n, const struct xmppXmlSlice *slc)
   return 0;
 }
 
+bool xmppDecodeIntXmlSlice(int32_t *i, const struct xmppXmlSlice *slc) {
+  char buf[12], *endptr;
+  if (slc->n < 12) {
+    xmppReadXmlSlice(buf, slc);
+    buf[slc->n] = '\0';
+    long d = strtol(buf, &endptr, 10);
+    if (endptr > buf && INT32_MIN <= d && d <= INT32_MAX) {
+      if (i)
+        *i = d;
+      return true;
+    }
+  }
+  return false;
+}
+
 const char *xmppErrToStr(int e) {
   switch (e) {
   case XMPP_EMEM: return "XMPP_EMEM";
@@ -205,24 +220,15 @@ bool xmppParseElement(struct xmppParser *p) {
   longjmp(p->jb, XMPP_EPARTIAL);
 }
 
-static int SliceToI(struct xmppXmlSlice s) {
-  int v = 0;
-  bool neg = s.rawn > 0 && s.p[0] == '-';
-  for (int i = 0; i < s.rawn; i++) {
-    if (s.p[i] < '0' || s.p[i] > '9')
-      return 0;
-    v = v * 10 + (s.p[i] - '0');
-  }
-  return neg ? -v : v;
-}
-
 static void ReadAckAnswer(struct xmppParser *p, struct xmppStanza *st) {
   struct xmppXmlSlice attr;
   int r;
   st->type = XMPP_STANZA_ACKANSWER;
   while (xmppParseAttribute(p, &attr)) {
-    if (!strcmp(p->x.attr, "h"))
-      st->ack = SliceToI(attr);
+    if (!strcmp(p->x.attr, "h")) {
+      if (!xmppDecodeIntXmlSlice(&st->ack, &attr))
+        longjmp(p->jb, XMPP_ESPEC);
+    }
   }
   xmppParseUnknown(p);
 }

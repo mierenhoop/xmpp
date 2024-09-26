@@ -188,12 +188,11 @@ class OmemoEchoClient(ClientXMPP):
             self.plain_reply(mto, mtype, f"Error {type(e).__name__}: {e}")
             return
 
-        for i in range(0, random.randint(0, 3)):
-            try:
-                await self.encrypted_reply(mto, mtype, message)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                print("Exception", traceback.format_exc())
-                self.plain_reply(mto, mtype, f"Error {type(e).__name__}: {e}")
+        try:
+            await self.encrypted_reply(mto, mtype, message)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            print("Exception", traceback.format_exc())
+            self.plain_reply(mto, mtype, f"Error {type(e).__name__}: {e}")
 
     def plain_reply(self, mto: JID, mtype: Literal["chat", "normal"], reply: str) -> None:
         """

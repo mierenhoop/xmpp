@@ -271,10 +271,12 @@ static void ParseBase64PubKey(struct xmppParser *parser, omemoKey d) {
 
 static int ParseNumberAttribute(struct xmppParser *parser, const char *name) {
   struct xmppXmlSlice attr;
+  int32_t ret;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, name)) {
-      // TODO: don't hardcode +1
-      return strtol(attr.p+1, NULL, 10);
+      if (xmppDecodeIntXmlSlice(&ret, &attr))
+        return ret;
+      break;
     }
   }
   longjmp(parser->jb, XMPP_ESPEC);
@@ -335,8 +337,10 @@ static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, boo
   bool found = false;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "rid")) {
-      // TODO: don't hardcode +1
-      found = strtol(attr.p+1, NULL, 10) == deviceid; // TODO: put deviceid in store.
+      int32_t rid;
+      if (xmppDecodeIntXmlSlice(&rid, &attr) && rid == deviceid)
+        found = true;
+      // TODO: put deviceid in store.
     } else if (!strcmp(parser->x.attr, "prekey")) {
       *isprekey = true;
     }
@@ -351,9 +355,7 @@ static bool GetRemoteId(struct xmppParser *parser) {
   struct xmppXmlSlice attr;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "sid")) {
-      // TODO: don't hardcode +1
-      remoteid = strtol(attr.p+1, NULL, 10);
-      return true;
+      return xmppDecodeIntXmlSlice(&remoteid, &attr);
     }
   }
   return false;
@@ -472,11 +474,7 @@ static int ParseDeviceId(struct xmppParser *parser) {
   int id = -1;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "id")) {
-      char *e;
-      // TODO: don't hardcode +1
-      id = strtol(attr.p+1, &e, 10);
-      //if e < p+n
-      //  id = -1;
+      xmppDecodeIntXmlSlice(&id, &attr);
     }
   }
   xmppParseUnknown(parser);

@@ -170,6 +170,19 @@ static void TestXmlSlice() {
   assert(!xmppCompareXmlSlice("testa", &slc));
   xmppReadXmlSlice(buf, &slc);
   assert(!strcmp(buf, "test"));
+  int32_t i = 0xcc;
+  slc.p = "'1000'";
+  slc.rawn = 6;
+  slc.n = 4;
+  assert(xmppDecodeIntXmlSlice(&i, &slc) && i == 1000);
+  slc.p = "'-10'";
+  slc.rawn = 5;
+  slc.n = 3;
+  assert(xmppDecodeIntXmlSlice(&i, &slc) && i == -10);
+  slc.p = "''";
+  slc.rawn = 2;
+  slc.n = 0;
+  assert(!xmppDecodeIntXmlSlice(&i, &slc));
 }
 
 static char in[50000], xbuf[2000];
