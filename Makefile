@@ -12,11 +12,11 @@ o/xmpp.o: xmpp.c xmpp.h | o
 o/test: o/xmpp.o test/cacert.inc test/xmpp.c
 	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
 
-o/test-omemo: test/omemo.c omemo.c c25519.c | o curve25519.c
-	$(CC) -o o/test-omemo curve25519.c c25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
+o/test-omemo: test/omemo.c omemo.c c25519.c | o
+	$(CC) -o o/test-omemo c25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
 
 o/im: o/xmpp.o examples/im.c test/cacert.inc omemo.c c25519.c
-	$(CC) -o o/im examples/im.c yxml.c omemo.c c25519.c curve25519.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
+	$(CC) -o o/im examples/im.c yxml.c omemo.c c25519.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
 
 test/localhost.crt:
 	openssl req -new -x509 -key test/localhost.key -out $@ -days 3650 -config test/localhost.cnf
@@ -93,4 +93,4 @@ clean:
 
 .PHONY: full-clean
 full-clean: clean
-	rm -rf test/cacert.inc test/localhost.crt curve25519.c test/bot-venv
+	rm -rf test/cacert.inc test/localhost.crt test/bot-venv

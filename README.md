@@ -1,3 +1,9 @@
+## Notice
+
+ Do not use the code in this repository for anything serious; there
+ might be unidentified security vulnerabilities present. You are
+ encouraged to report such issues when found.
+
 ## About
 
 This repository contains two libraries:
@@ -35,20 +41,6 @@ This repository contains two libraries:
 - Have an extension/plugin system, for additional features you must
   patch the library.
 
-## XMPP Compliance
-
-- RFC-6120 (Core): Partial.
-
-- RFC-7590 (TLS): Partial, full planned.
-
-- XEP-0198 (Stream Management): Mostly.
-
-  * Location and (C-\>S) max attributes not supported.
-
-- XEP-0199 (XMPP Ping): Partial. TODO: remove this.
-
-  * Received ping's are returned unless disabled.
-
 ## OMEMO
 
  `omemo.c` contains implementations of X3DH, Double Ratchet and
@@ -59,7 +51,10 @@ This repository contains two libraries:
  which is included as amalgamation in `/c25519.c` and `/c25519.h`. Some
  changes have been made there which can be inspected with `$ git diff
  2eef25dc -- c25519.*`. This Curve25519 implementation is noticably
- slower than curve25519\_donna.
+ slower than curve25519\_donna. For this reason [cosmopolitan's
+ overhaul](https://github.com/jart/cosmopolitan/blob/master/third_party/mbedtls/everest.c)
+ of the [Everest](https://project-everest.github.io/) Curve25519
+ implementation is enabled on x86 64-bit systems.
 
  The version of OMEMO implemented is 0.3.0, updating this library to a
  newer version of OMEMO should be trivial, but supporting multiple
@@ -127,9 +122,11 @@ EOF
 
 ## License
 
- The new code in the library is licensed under ISC.
+ The new code in the library is licensed under ISC, everything else is
+ also permissively licensed:
 
- yxml is licensed under MIT and c25519 is in the public domain.
+ yxml is licensed under MIT, c25519 is in the public domain and
+ Everest Curve25519 is licensed under Apache-2.0.
 
  While not directly included, MbedTLS is dual-licensed under Apache-2.0
  or GPL-2.0-or-later.
