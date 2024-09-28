@@ -153,7 +153,6 @@ bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
       break;
     switch ((r = yxml_parse(&p->x, p->p[p->i++]))) {
     case YXML_ATTRSTART:
-      // TODO: does this trigger at the right time?
       slc->p = p->p + p->i;
       break;
     case YXML_ATTREND:
@@ -419,7 +418,7 @@ static char *FillRandomHex(char *p, char *e, size_t n) {
   size_t nn = n*2;
   if (e - p < nn)
     return e;
-  if (getrandom(p, n, 0) != n)
+  if (xmppRandom(p, n))
     return e;
   for (int i = nn-1; i >= 0; i--) {
     int nibble = (p[i/2] >> (!(i&1)*4)) & 0xf;

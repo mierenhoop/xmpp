@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <setjmp.h>
 
 #include <sys/random.h>
 
@@ -14,9 +15,21 @@
 
 #include "omemo.h"
 
-#define SESSION_UNINIT 0
-#define SESSION_INIT 1
-#define SESSION_READY 2
+enum {
+  SESSION_UNINIT = 0,
+  SESSION_INIT,
+  SESSION_READY,
+};
+
+// TODO: make this thread local?
+static jmp_buf g_jb;
+
+#define Recover(r) (r = setjmp(g_jb))
+
+static void GetRandom(void *p, size_t n) {
+  if (omemoRandom(p, n))
+    longjmp(g_jb, OMEMO_ECRYPTO);
+}
 
 // Protobuf: https://protobuf.dev/programming-guides/encoding/
 
@@ -31,8 +44,18 @@ struct ProtobufField {
 #define PB_UINT32 0
 #define PB_LEN 2
 
-// Parse Protobuf varint. Only supports uint32, higher bits are skipped
-// so it will neither overflow nor clamp to UINT32_MAX.
+/**
+ * Parse Protobuf varint.
+ *
+ * Only supports uint32, higher bits are skipped so it will neither overflow nor clamp to UINT32_MAX.
+ *
+ * @param s points to the location of the varint in the protobuf data
+ * @param e points to the end of the protobuf data
+ * @param v (out) points to the location where the parsed varint will be
+ * written
+ * @returns pointer to first byte after the varint or NULL if parsing is
+ * not finished before reaching e
+ */
 static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *v) {
   int i = 0;
   *v = 0;
@@ -194,7 +217,7 @@ static void c25519_sign(omemoCurveSignature sig, const omemoKey prv, const uint8
   uint8_t msgbuf[33+64];
   int sign = 0;
   memcpy(msgbuf, msg, msgn);
-  SystemRandom(msgbuf+msgn, 64);
+  GetRandom(msgbuf+msgn, 64);
   ConvertCurvePrvToEdPub(ed, prv);
   sign = ed[31] & 0x80;
   edsign_sign_modified(sig, ed, prv, msgbuf, msgn);
@@ -215,7 +238,7 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
 
 static void GenerateKeyPair(struct omemoKeyPair *kp) {
   memset(kp, 0, sizeof(*kp));
-  SystemRandom(kp->prv, sizeof(kp->prv));
+  GetRandom(kp->prv, sizeof(kp->prv));
   c25519_prepare(kp->prv);
   curve25519(kp->pub, kp->prv, c25519_base_x);
 }
@@ -230,15 +253,16 @@ static void GenerateIdentityKeyPair(struct omemoKeyPair *kp) {
 }
 
 static void GenerateRegistrationId(uint32_t *id) {
-  SystemRandom(id, sizeof(*id));
+  GetRandom(id, sizeof(*id));
   *id = (*id % 16380) + 1;
 }
 
 static void CalculateCurveSignature(omemoCurveSignature sig, omemoKey signprv,
                                     uint8_t *msg, size_t n) {
+  int r;
   assert(n <= 33);
   uint8_t rnd[sizeof(omemoCurveSignature)], buf[33 + 128];
-  SystemRandom(rnd, sizeof(rnd));
+  GetRandom(rnd, sizeof(rnd));
   c25519_sign(sig, signprv, msg, n);
 }
 
@@ -249,7 +273,8 @@ static void CalculateCurveAgreement(uint8_t d[static 32], const omemoKey prv,
   curve25519(d, prv, pub);
 }
 
-static void GenerateSignedPreKey(struct omemoSignedPreKey *spk, uint32_t id,
+static void GenerateSignedPreKey(struct omemoSignedPreKey *spk,
+                                 uint32_t id,
                                  struct omemoKeyPair *idkp) {
   omemoSerializedKey ser;
   spk->id = id;
@@ -295,12 +320,18 @@ static void RefillPreKeys(struct omemoStore *store) {
 #endif
 }
 
-void omemoSetupStore(struct omemoStore *store) {
+int omemoSetupStore(struct omemoStore *store) {
+  int r;
+  if (Recover(r)) {
+    memset(store, 0, sizeof(struct omemoStore));
+    return r;
+  }
   memset(store, 0, sizeof(struct omemoStore));
   GenerateIdentityKeyPair(&store->identity);
   GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity);
   RefillPreKeys(store);
   store->isinitialized = true;
+  return 0;
 }
 
 int omemoSetupSession(struct omemoSession *session, size_t cap) {
@@ -443,7 +474,9 @@ int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store
   struct omemoState backup;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   memset(msg, 0, sizeof(struct omemoKeyMessage));
-  if ((r = EncryptKeyImpl(session, store, msg, payload))) {
+  // TODO: if we settle on using longjmp in impl, the impl function will
+  // return void
+  if (Recover(r) || (r = EncryptKeyImpl(session, store, msg, payload))) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(msg, 0, sizeof(struct omemoKeyMessage));
   }
@@ -508,6 +541,8 @@ static int RatchetInitAlice(struct omemoState *state, const omemoKey sk, const o
 // We can remove the bundle struct all together by inlining the fields as arguments.
 int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *store, const struct omemoBundle *bundle) {
   int r;
+  if (Recover(r))
+    return r;
   omemoSerializedKey serspk;
   omemoSerializeKey(serspk, bundle->spk);
   if (!VerifySignature(bundle->spks, bundle->ik, serspk,
@@ -730,7 +765,8 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
   uint32_t mkskippednbackup = session->mkskipped.n;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   int r;
-  if ((r = DecryptKeyImpl(session, store, payload, isprekey, msg, msgn))) {
+  // TODO: see omemoEncryptKey()
+  if (Recover(r) || (r = DecryptKeyImpl(session, store, payload, isprekey, msg, msgn))) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(payload, 0, OMEMO_PAYLOAD_SIZE);
     session->mkskipped.n = mkskippednbackup;
@@ -754,11 +790,11 @@ int omemoDecryptMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uin
 }
 
 int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
-                               uint8_t iv[12], const uint8_t *s,
-                               size_t n) {
+                        uint8_t iv[12], const uint8_t *s, size_t n) {
   int r = 0;
-  SystemRandom(payload, 16);
-  SystemRandom(iv, 12);
+  if ((r = omemoRandom(payload, 16))
+   || (r = omemoRandom(iv, 12)))
+   return r;
   mbedtls_gcm_context ctx;
   mbedtls_gcm_init(&ctx);
   if (!(r = mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, payload, 128)))

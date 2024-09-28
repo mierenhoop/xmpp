@@ -98,10 +98,16 @@ struct omemoSession {
   uint32_t pendingpk_id, pendingspk_id;
 };
 
-// Random function that must not fail, if the system is not guaranteed
-// to always have a random generator available, it should read from a
-// pre-filled buffer.
-void SystemRandom(void *d, size_t n);
+/**
+ * Unimplemented random function.
+ *
+ * This function should be externally implemented.
+ *
+ * @param p points to the to-be-filled array
+ * @param n is the amount of random bytes which should be generated in p
+ * @returns 0 if successful, anything else otherwise
+ */
+int omemoRandom(void *p, size_t n);
 
 void omemoSerializeKey(omemoSerializedKey k, const omemoKey pub);
 
@@ -112,7 +118,7 @@ struct omemoBundle {
   uint32_t pk_id, spk_id;
 };
 
-void omemoSetupStore(struct omemoStore *store);
+int omemoSetupStore(struct omemoStore *store);
 int omemoSetupSession(struct omemoSession *session, size_t cap);
 void omemoFreeSession(struct omemoSession *session);
 

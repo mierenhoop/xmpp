@@ -21,6 +21,17 @@
 #define XMPP_CONFIG_YXMLBUF_SIZE 2000
 #define XMPP_CONFIG_MAX_SASLSCRAM1_ITERS 10000
 
+/**
+ * Unimplemented random function.
+ *
+ * This function should be externally implemented.
+ *
+ * @param p points to the to-be-filled array
+ * @param n is the amount of random bytes which should be generated in p
+ * @returns 0 if successful, anything else otherwise
+ */
+int xmppRandom(void *p, size_t n);
+
 struct StaticData {
   char in[XMPP_CONFIG_INBUF_SIZE], out[XMPP_CONFIG_OUTBUF_SIZE], saslbuf[XMPP_CONFIG_MAX_SASLBUF_SIZE], xbuf[XMPP_CONFIG_YXMLBUF_SIZE], smackid[XMPP_CONFIG_MAX_SMACKID_SIZE], jid[XMPP_CONFIG_MAX_JID_SIZE+1];
 };

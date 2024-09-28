@@ -65,7 +65,7 @@ static Uuidv4 pending[10];
 
 static int RandomInt() {
   uint16_t n;
-  SystemRandom(&n, 2);
+  assert(getrandom(&n, 2, 0) == 2);
   return n;
 }
 
@@ -76,7 +76,7 @@ static void GenerateUuidv4(Uuidv4 dst) {
   uint8_t rnd[16];
   const char *p;
   int i, n;
-  SystemRandom(rnd, 16);
+  assert(getrandom(rnd, 16, 0) == 16);
   p = template;
   i = 0;
   while (*p) {
@@ -781,9 +781,8 @@ bool SystemPoll() {
 
 #ifdef IM_NATIVE
 
-void SystemRandom(void *d, size_t n) {
-  assert(getrandom(d, n, 0) == n);
-}
+int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
+int xmppRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 
 static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
   FILE *f = fopen(path, "r");
@@ -834,7 +833,7 @@ static void LoadStore() {
     }
     free(data);
   }
-  omemoSetupStore(&omemostore);
+  assert(!omemoSetupStore(&omemostore));
   SaveStore();
 }
 

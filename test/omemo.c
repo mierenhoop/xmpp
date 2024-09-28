@@ -3,9 +3,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-void SystemRandom(void *d, size_t n) {
-  assert(getrandom(d, n, 0) == n);
-}
+// TODO: for all exposed functions, test all error paths
+
+int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 
 static void DumpHex(const uint8_t *p, int n, const char *msg) {
   for (int i=0;i<n;i++)
@@ -92,6 +92,8 @@ static void TestKeyPair(struct omemoKeyPair *kp, const char *rnd, const char *pr
 static void TestCurve25519() {
   struct omemoKeyPair kpa, kpb, exp;
   uint8_t shared[32], expshared[32], rnd[32];
+  int r;
+  assert(!Recover(r));
   TestKeyPair(&kpa, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "70076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c6a", "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
   TestKeyPair(&kpb, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
   CopyHex(expshared, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
@@ -102,6 +104,8 @@ static void TestCurve25519() {
 }
 
 static void TestSignature() {
+  int r;
+  assert(!Recover(r));
   omemoKey prv, pub;
   omemoCurveSignature sig, sig2, expsig;
   uint8_t msg[12], buf[33+128], rnd[64];
@@ -143,7 +147,7 @@ static void TestEncryption() {
 
 // user is either a or b
 #define Send(user, id) do { \
-    SystemRandom(messages[id].payload, OMEMO_PAYLOAD_SIZE); \
+    assert(!omemoRandom(messages[id].payload, OMEMO_PAYLOAD_SIZE)); \
     omemoEncryptKey(&session##user, &store##user, &messages[id].msg, messages[id].payload); \
   } while (0)
 
@@ -160,8 +164,8 @@ static void TestSession() {
   } messages[100];
 
   struct omemoStore storea, storeb;
-  omemoSetupStore(&storea);
-  omemoSetupStore(&storeb);
+  assert(!omemoSetupStore(&storea));
+  assert(!omemoSetupStore(&storeb));
 
   struct omemoBundle bundleb;
   ParseBundle(&bundleb, &storeb);
@@ -218,6 +222,8 @@ static void TestReceive() {
 }
 
 static void TestDeriveChainKey() {
+  int r;
+  assert(!Recover(r));
   static uint8_t seed[] = {
       0x8a, 0xb7, 0x2d, 0x6f, 0x4c, 0xc5, 0xac, 0x0d, 0x38, 0x7e, 0xaf,
       0x46, 0x33, 0x78, 0xdd, 0xb2, 0x8e, 0xdd, 0x07, 0x38, 0x5b, 0x1c,
@@ -293,6 +299,8 @@ static int GetSharedSecretWithoutPreKey(omemoKey rk, omemoKey ck, bool isbob, om
 }
 
 static void TestRatchet() {
+  int r;
+  assert(!Recover(r));
   static uint8_t bobPublic[] = {
       0x05, 0x2c, 0xb4, 0x97, 0x76, 0xb8, 0x77, 0x02, 0x05, 0x74, 0x5a,
       0x3a, 0x6e, 0x24, 0xf5, 0x79, 0xcd, 0xb4, 0xba, 0x7a, 0x89, 0x04,
@@ -358,8 +366,8 @@ static void TestRatchet() {
 
 static void TestSerialization() {
   struct omemoStore storea, storeb;
-  omemoSetupStore(&storea);
-  omemoSetupStore(&storeb);
+  assert(!omemoSetupStore(&storea));
+  assert(!omemoSetupStore(&storeb));
 
   struct omemoBundle bundleb;
   ParseBundle(&bundleb, &storeb);
