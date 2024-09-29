@@ -21,7 +21,7 @@ typedef struct Ctx {
 
 #define SetupCtx(ctx)               \
   struct Ctx _setupctx_##ctx = {0}; \
-  CTX ctx = &_setupctx_ctx;
+  CTX ctx = &_setupctx_##ctx;
 
 #define Recover(ctx, r) (r = setjmp((ctx)->jb))
 #define Throw(ctx, r) longjmp((ctx)->jb, r)
@@ -93,9 +93,11 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
  *
  * @param s is protobuf data
  * @param n is the length of said data
+ * @returns false if successful, true if error
  */
-static int ParseProtobuf(const uint8_t *s, size_t n,
+static bool ParseProtobuf(const uint8_t *s, size_t n,
                          struct ProtobufField *fields, int nfields) {
+  // possible return values.
   int type, id;
   uint32_t v;
   const uint8_t *e = s + n;
@@ -109,12 +111,12 @@ static int ParseProtobuf(const uint8_t *s, size_t n,
     id = *s >> 3;
     s++;
     if (id >= nfields || type != (fields[id].type & 7))
-      return OMEMO_EPROTOBUF;
+      return true;
     found |= 1 << id;
     if (!(s = ParseVarInt(s, e, &v)))
-      return OMEMO_EPROTOBUF;
+      return true;
     if (fields[id].v && v != fields[id].v)
-      return OMEMO_EPROTOBUF;
+      return true;
     fields[id].v = v;
     if (type == PB_LEN) {
       fields[id].p = s;
@@ -122,12 +124,12 @@ static int ParseProtobuf(const uint8_t *s, size_t n,
     }
   }
   if (s > e)
-    return OMEMO_EPROTOBUF;
+    return true;
   for (int i = 0; i < nfields; i++) {
     if ((fields[i].type & PB_REQUIRED) && !(found & (1 << i)))
-      return OMEMO_EPROTOBUF;
+      return true;
   }
-  return 0;
+  return false;
 }
 
 static uint8_t *FormatVarInt(uint8_t d[static 6], int type, int id, uint32_t v) {
@@ -265,7 +267,6 @@ static void GenerateRegistrationId(CTX ctx, uint32_t *id) {
 
 static void CalculateCurveSignature(CTX ctx, omemoCurveSignature sig, omemoKey signprv,
                                     uint8_t *msg, size_t n) {
-  int r;
   assert(n <= 33);
   uint8_t rnd[sizeof(omemoCurveSignature)], buf[33 + 128];
   GetRandom(ctx, rnd, sizeof(rnd));
@@ -433,10 +434,9 @@ static void GetBaseMaterials(CTX ctx, omemoKey d, omemoKey mk, const omemoKey ck
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
 // msg->p                          [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
-static int EncryptKeyImpl(CTX ctx, struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
+static void EncryptKeyImpl(CTX ctx, struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
-    return OMEMO_ESTATE;
-  int r;
+    Throw(ctx, OMEMO_ESTATE);
   omemoKey mk;
   struct DeriveChainKeyOutput kdfout;
   GetBaseMaterials(ctx, session->state.cks, mk, session->state.cks);
@@ -464,7 +464,6 @@ static int EncryptKeyImpl(CTX ctx, struct omemoSession *session, const struct om
     memmove(msg->p + headersz, msg->p + OMEMO_PREKEYHEADER_MAXSIZE, msg->n);
     msg->n += headersz;
   }
-  return 0;
 }
 
 int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
@@ -472,13 +471,12 @@ int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store
   struct omemoState backup;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   memset(msg, 0, sizeof(struct omemoKeyMessage));
-  // TODO: if we settle on using longjmp in impl, the impl function will
-  // return void
   SetupCtx(ctx);
-  if (Recover(ctx, r) || (r = EncryptKeyImpl(ctx, session, store, msg, payload))) {
+  if (Recover(ctx, r)) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(msg, 0, sizeof(struct omemoKeyMessage));
   }
+  EncryptKeyImpl(ctx, session, store, msg, payload);
   return r;
 }
 
@@ -596,7 +594,6 @@ static void RotateSignedPreKey(CTX ctx, struct omemoStore *store) {
 //  DHs = GENERATE_DH()
 //  RK, CKs = KDF_RK(RK, DH(DHs, DHr))
 static void DHRatchet(CTX ctx, struct omemoState *state, const omemoKey dh) {
-  int r;
   state->pn = state->ns;
   state->ns = 0;
   state->nr = 0;
@@ -621,7 +618,6 @@ static struct omemoMessageKey *FindMessageKey(struct omemoSkippedMessageKeys *ke
 }
 
 static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkippedMessageKeys *keys, uint32_t n) {
-  int r;
   assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
     omemoKey mk;
@@ -635,13 +631,12 @@ static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkipp
   assert(state->nr == n);
 }
 
-static int DecryptMessageImpl(CTX ctx, struct omemoSession *session,
+static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
                               const struct omemoStore *store,
                               omemoKeyPayload decrypted, const uint8_t *msg,
                               size_t msgn) {
-  int r;
   if (msgn < 9 || msg[0] != ((3 << 4) | 3))
-    return OMEMO_ECORRUPT;
+    Throw(ctx, OMEMO_ECORRUPT);
   struct ProtobufField fields[5] = {
     [1] = {PB_REQUIRED | PB_LEN, 33}, // ek
     [2] = {PB_REQUIRED | PB_UINT32}, // n
@@ -649,8 +644,8 @@ static int DecryptMessageImpl(CTX ctx, struct omemoSession *session,
     [4] = {PB_REQUIRED | PB_LEN}, // ciphertext
   };
 
-  if ((r = ParseProtobuf(msg+1, msgn-9, fields, 5)))
-    Throw(ctx, r);
+  if (ParseProtobuf(msg+1, msgn-9, fields, 5))
+    Throw(ctx, OMEMO_EPROTOBUF);
   // these checks should already be handled by ParseProtobuf, just to make sure...
   if (fields[4].v > 48 || fields[4].v < 32)
     Throw(ctx, OMEMO_ECORRUPT);
@@ -675,13 +670,13 @@ static int DecryptMessageImpl(CTX ctx, struct omemoSession *session,
     memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
   } else {
-    if (!shouldstep && headern < session->state.nr) return OMEMO_EKEYGONE;
-    if (shouldstep && headerpn < session->state.nr) return OMEMO_EKEYGONE;
+    if (!shouldstep && headern < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
+    if (shouldstep && headerpn < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
     uint64_t nskips = shouldstep ?
       headerpn - session->state.nr + headern :
       headern - session->state.nr;
-    if (nskips > session->mkskipped.maxskip) return OMEMO_EMAXSKIP;
-    if (nskips > session->mkskipped.c - session->mkskipped.n) return OMEMO_ESKIPBUF;
+    if (nskips > session->mkskipped.maxskip) Throw(ctx, OMEMO_EMAXSKIP);
+    if (nskips > session->mkskipped.c - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
     if (shouldstep) {
       SkipMessageKeys(ctx, &session->state, &session->mkskipped, headerpn);
       DHRatchet(ctx, &session->state, headerdh);
@@ -695,19 +690,17 @@ static int DecryptMessageImpl(CTX ctx, struct omemoSession *session,
   uint8_t mac[8];
   GetMac(ctx, mac, session->remoteidentity, store->identity.pub, kdfout.mac, msg, msgn-8);
   if (memcmp(mac, msg+msgn-8, 8))
-    return OMEMO_ECORRUPT;
+    Throw(ctx, OMEMO_ECORRUPT);
   uint8_t tmp[48];
   Decrypt(ctx, tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv);
   memcpy(decrypted, tmp, 32);
   session->fsm = SESSION_READY;
-  return 0;
 }
 
-static int DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
-  int r;
+static void DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   if (isprekey) {
     if (msgn == 0 || msg[0] != ((3 << 4) | 3))
-      return OMEMO_ECORRUPT;
+      Throw(ctx, OMEMO_ECORRUPT);
     // PreKeyWhisperMessage
     struct ProtobufField fields[7] = {
       [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
@@ -717,13 +710,13 @@ static int DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct om
       [3] = {PB_REQUIRED | PB_LEN, 33}, // identitykey/ik
       [4] = {PB_REQUIRED | PB_LEN}, // message
     };
-    if ((r = ParseProtobuf(msg+1, msgn-1, fields, 7)))
-      Throw(ctx, r);
+    if (ParseProtobuf(msg+1, msgn-1, fields, 7))
+      Throw(ctx, OMEMO_EPROTOBUF);
     // later remove this prekey
     const struct omemoPreKey *pk = FindPreKey(store, fields[1].v);
     const struct omemoSignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
     if (!pk || !spk)
-      return OMEMO_ECORRUPT;
+      Throw(ctx, OMEMO_ECORRUPT);
     memcpy(session->remoteidentity, fields[3].p+1, 32);
     omemoKey sk;
     GetSharedSecret(ctx, sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1);
@@ -732,10 +725,10 @@ static int DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct om
     msgn = fields[4].v;
   } else {
     if (!session->fsm) // TODO: specify which states are allowed here
-      return OMEMO_ESTATE;
+      Throw(ctx, OMEMO_ESTATE);
   }
   session->fsm = SESSION_READY;
-  return DecryptMessageImpl(ctx, session, store, payload, msg, msgn);
+  DecryptMessageImpl(ctx, session, store, payload, msg, msgn);
 }
 
 int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
@@ -747,13 +740,14 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   int r;
   SetupCtx(ctx);
-  if (Recover(ctx, r) || (r = DecryptKeyImpl(ctx, session, store, payload, isprekey, msg, msgn))) {
+  if (Recover(ctx, r)) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(payload, 0, OMEMO_PAYLOAD_SIZE);
     session->mkskipped.n = mkskippednbackup;
     session->mkskipped.removed = NULL;
     return r;
   }
+  DecryptKeyImpl(ctx, session, store, payload, isprekey, msg, msgn);
   if (session->mkskipped.removed)
     NormalizeSkipMessageKeysTrivial(&session->mkskipped);
   return 0;

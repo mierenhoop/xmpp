@@ -98,6 +98,13 @@ struct omemoSession {
   uint32_t pendingpk_id, pendingspk_id;
 };
 
+struct omemoBundle {
+  omemoCurveSignature spks;
+  omemoKey spk, ik; // TODO: use omemoSerializedKey for these?
+  omemoKey pk; // Randomly selected prekey
+  uint32_t pk_id, spk_id;
+};
+
 /**
  * Unimplemented random function.
  *
@@ -109,19 +116,14 @@ struct omemoSession {
  */
 int omemoRandom(void *p, size_t n);
 
+/**
+ * Serialize a raw public key into the OMEMO public key format.
+ */
 void omemoSerializeKey(omemoSerializedKey k, const omemoKey pub);
-
-struct omemoBundle {
-  omemoCurveSignature spks;
-  omemoKey spk, ik;
-  omemoKey pk; // Randomly selected prekey
-  uint32_t pk_id, spk_id;
-};
 
 int omemoSetupStore(struct omemoStore *store);
 int omemoSetupSession(struct omemoSession *session, size_t cap);
 void omemoFreeSession(struct omemoSession *session);
-
 
 size_t omemoGetSerializedStoreSize(void);
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store);
@@ -130,9 +132,20 @@ size_t omemoGetSerializedSessionMaxSizeEstimate(struct omemoSession *sesson);
 void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session);
 int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session);
 
-#define omemoIsSessionInitialized(session) (!!(session)->fsm)
-#define omemoIsStoreInitialized(store) ((store)->isinitialized)
+static inline bool omemoIsSessionInitialized(const struct omemoSession *session) {
+  return !!session->fsm;
+}
 
+static inline bool omemoIsStoreInitialized(const struct omemoStore *store) {
+  return store->isinitialized;
+}
+
+/**
+ * Initialize OMEMO session from retrieved bundle.
+ *
+ * The bundle structure must be manually filled with relevant data of a recently retrieved bundle.
+ * TODO: @see omemoDeserializeKey()
+ */
 int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *store, const struct omemoBundle *bundle);
 
 /**
