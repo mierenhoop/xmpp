@@ -1,6 +1,8 @@
 #ifndef OMEMO_H_
 #define OMEMO_H_
 
+#define OMEMO_NUMPREKEYS 100
+
 #define OMEMO_EPROTOBUF (-1)
 #define OMEMO_ECRYPTO (-2)
 #define OMEMO_ECORRUPT (-3)
@@ -11,14 +13,12 @@
 #define OMEMO_EKEYGONE (-8)
 #define OMEMO_EALLOC (-9)
 
-#define OMEMO_PAYLOAD_SIZE 32
-#define OMEMO_PAYLOAD_MAXPADDEDSIZE 48
-#define OMEMO_HEADER_MAXSIZE (2+33+2*6)
-#define OMEMO_FULLMSG_MAXSIZE (1+OMEMO_HEADER_MAXSIZE+2+OMEMO_PAYLOAD_MAXPADDEDSIZE)
-#define OMEMO_ENCRYPTED_MAXSIZE (OMEMO_FULLMSG_MAXSIZE+8)
-#define OMEMO_PREKEYHEADER_MAXSIZE (1+18+35*2+2)
-
-#define OMEMO_NUMPREKEYS 100
+#define OMEMO_INTERNAL_PAYLOAD_SIZE 32
+#define OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE 48
+#define OMEMO_INTERNAL_HEADER_MAXSIZE (2+33+2*6+2)
+#define OMEMO_INTERNAL_FULLMSG_MAXSIZE (1+OMEMO_INTERNAL_HEADER_MAXSIZE+OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE)
+#define OMEMO_INTERNAL_ENCRYPTED_MAXSIZE (OMEMO_INTERNAL_FULLMSG_MAXSIZE+8)
+#define OMEMO_INTERNAL_PREKEYHEADER_MAXSIZE (1+18+35*2+2)
 
 typedef uint8_t omemoKey[32];
 typedef uint8_t omemoSerializedKey[1+32];
@@ -70,10 +70,10 @@ struct omemoState {
 
 // [        16        |   16  ]
 //  GCM encryption key GCM tag
-typedef uint8_t omemoKeyPayload[OMEMO_PAYLOAD_SIZE];
+typedef uint8_t omemoKeyPayload[OMEMO_INTERNAL_PAYLOAD_SIZE];
 
 struct omemoKeyMessage {
-  uint8_t p[OMEMO_PREKEYHEADER_MAXSIZE+OMEMO_ENCRYPTED_MAXSIZE];
+  uint8_t p[OMEMO_INTERNAL_PREKEYHEADER_MAXSIZE+OMEMO_INTERNAL_ENCRYPTED_MAXSIZE];
   size_t n;
   bool isprekey;
 };
@@ -121,7 +121,18 @@ int omemoRandom(void *p, size_t n);
  */
 void omemoSerializeKey(omemoSerializedKey k, const omemoKey pub);
 
+/**
+ * Generate a new store for an OMEMO device.
+ */
 int omemoSetupStore(struct omemoStore *store);
+
+/**
+ * Allocate and initialize a session.
+ *
+ * @param cap is the amount of message keys that will be reserved in
+ * memory
+ * @see omemoFreeSession()
+ */
 int omemoSetupSession(struct omemoSession *session, size_t cap);
 void omemoFreeSession(struct omemoSession *session);
 

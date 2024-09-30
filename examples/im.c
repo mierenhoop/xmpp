@@ -403,7 +403,7 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
     goto free;
   }
   SaveSession();
-  r = omemoDecryptMessage(decryptedpayload, decryptedkey, OMEMO_PAYLOAD_SIZE, iv, payload, payloadsz);
+  r = omemoDecryptMessage(decryptedpayload, decryptedkey, sizeof(omemoKeyPayload), iv, payload, payloadsz);
   if (r < 0) {
     LogWarn("Message decryption error: %d", r);
     goto free;

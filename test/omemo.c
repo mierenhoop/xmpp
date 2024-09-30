@@ -143,20 +143,20 @@ static void TestEncryption() {
   uint8_t encrypted[100], decrypted[100], iv[12];
   omemoKeyPayload payload;
   assert(!omemoEncryptMessage(encrypted, payload, iv, msg, n));
-  assert(!omemoDecryptMessage(decrypted, payload, OMEMO_PAYLOAD_SIZE, iv, encrypted, n));
+  assert(!omemoDecryptMessage(decrypted, payload, sizeof(omemoKeyPayload), iv, encrypted, n));
   assert(!memcmp(msg, decrypted, n));
 }
 
 // user is either a or b
 #define Send(user, id) do { \
-    assert(!omemoRandom(messages[id].payload, OMEMO_PAYLOAD_SIZE)); \
+    assert(!omemoRandom(messages[id].payload, sizeof(omemoKeyPayload))); \
     omemoEncryptKey(&session##user, &store##user, &messages[id].msg, messages[id].payload); \
   } while (0)
 
 #define Recv(user, id, isprekey) do { \
     omemoKeyPayload dec; \
     omemoDecryptKey(&session##user, &store##user, dec, isprekey, messages[id].msg.p, messages[id].msg.n); \
-    assert(!memcmp(messages[id].payload, dec, OMEMO_PAYLOAD_SIZE)); \
+    assert(!memcmp(messages[id].payload, dec, sizeof(omemoKeyPayload))); \
   } while (0);
 
 static void TestSession() {

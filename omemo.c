@@ -166,7 +166,7 @@ static uint8_t *FormatPrivateKey(uint8_t d[34], int id, const omemoKey k) {
 
 // Format Protobuf PreKeyWhisperMessage without message (it should be
 // appended right after this call).
-static size_t FormatPreKeyMessage(uint8_t d[OMEMO_PREKEYHEADER_MAXSIZE],
+static size_t FormatPreKeyMessage(uint8_t d[OMEMO_INTERNAL_PREKEYHEADER_MAXSIZE],
                                   uint32_t pk_id, uint32_t spk_id,
                                   const omemoKey ik, const omemoKey ek,
                                   uint32_t msgsz) {
@@ -185,18 +185,24 @@ static size_t FormatPreKeyMessage(uint8_t d[OMEMO_PREKEYHEADER_MAXSIZE],
 
 // Format Protobuf WhisperMessage without ciphertext.
 //  HEADER(dh_pair, pn, n)
-static size_t FormatMessageHeader(uint8_t d[OMEMO_HEADER_MAXSIZE], uint32_t n,
+static size_t FormatMessageHeader(uint8_t d[OMEMO_INTERNAL_HEADER_MAXSIZE], uint32_t n,
                                   uint32_t pn, const omemoKey dhs) {
   uint8_t *p = d;
   *p++ = (3 << 4) | 3;
   p = FormatKey(p, 1, dhs);
   p = FormatVarInt(p, PB_UINT32, 2, n);
-  return FormatVarInt(p, PB_UINT32, 3, pn) - d;
+  p = FormatVarInt(p, PB_UINT32, 3, pn);
+  *p++ = (4 << 3) | PB_LEN;
+  *p++ = OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE;
+  return p - d;
 }
 
-// Remove the skipped message key that has just been used for
-// decrypting.
-//  del state.MKSKIPPED[header.dh, header.n]
+/**
+ * Remove the skipped message key that has just been used for
+ * decrypting.
+ *
+ *  del state.MKSKIPPED[header.dh, header.n]
+ */
 static void
 NormalizeSkipMessageKeysTrivial(struct omemoSkippedMessageKeys *s) {
   assert(s->p && s->n <= s->c);
@@ -368,8 +374,8 @@ static void GetAd(uint8_t ad[66], const omemoKey ika, const omemoKey ikb) {
 
 static void GetMac(CTX ctx, uint8_t d[static 8], const omemoKey ika, const omemoKey ikb,
                   const omemoKey mk, const uint8_t *msg, size_t msgn) {
-  assert(msgn <= OMEMO_FULLMSG_MAXSIZE);
-  uint8_t macinput[66 + OMEMO_FULLMSG_MAXSIZE], mac[32];
+  assert(msgn <= OMEMO_INTERNAL_FULLMSG_MAXSIZE);
+  uint8_t macinput[66 + OMEMO_INTERNAL_FULLMSG_MAXSIZE], mac[32];
   GetAd(macinput, ika, ikb);
   memcpy(macinput + 66, msg, msgn);
   if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), mk,
@@ -378,9 +384,9 @@ static void GetMac(CTX ctx, uint8_t d[static 8], const omemoKey ika, const omemo
   memcpy(d, mac, 8);
 }
 
-static void Encrypt(CTX ctx, uint8_t out[OMEMO_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
+static void Encrypt(CTX ctx, uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
                     uint8_t iv[static 16]) {
-  _Static_assert(OMEMO_PAYLOAD_MAXPADDEDSIZE == 48);
+  _Static_assert(OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE == 48);
   uint8_t tmp[48];
   memcpy(tmp, in, 32);
   memset(tmp+32, 0x10, 0x10);
@@ -433,35 +439,28 @@ static void GetBaseMaterials(CTX ctx, omemoKey d, omemoKey mk, const omemoKey ck
 // header = HEADER(DHs, PN, Ns)
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
-// msg->p                          [^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|   8   ]
 static void EncryptKeyImpl(CTX ctx, struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
     Throw(ctx, OMEMO_ESTATE);
   omemoKey mk;
-  struct DeriveChainKeyOutput kdfout;
   GetBaseMaterials(ctx, session->state.cks, mk, session->state.cks);
+  struct DeriveChainKeyOutput kdfout;
   DeriveChainKey(ctx, &kdfout, mk);
-
   msg->n = FormatMessageHeader(msg->p, session->state.ns, session->state.pn, session->state.dhs.pub);
-  msg->p[msg->n++] = (4 << 3) | PB_LEN;
-  msg->p[msg->n++] = OMEMO_PAYLOAD_MAXPADDEDSIZE;
   Encrypt(ctx, msg->p+msg->n, payload, kdfout.cipher, kdfout.iv);
-  msg->n += OMEMO_PAYLOAD_MAXPADDEDSIZE;
-
+  msg->n += OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE;
   GetMac(ctx, msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mac, msg->p, msg->n);
   msg->n += 8;
-
   session->state.ns++;
-
   if (session->fsm == SESSION_INIT) {
     msg->isprekey = true;
     // [message 00...] -> [00... message] -> [header 00... message] ->
     // [header message]
-    memmove(msg->p + OMEMO_PREKEYHEADER_MAXSIZE, msg->p, msg->n);
+    memmove(msg->p + OMEMO_INTERNAL_PREKEYHEADER_MAXSIZE, msg->p, msg->n);
     int headersz =
         FormatPreKeyMessage(msg->p, session->pendingpk_id, session->pendingspk_id,
                             store->identity.pub, session->pendingek, msg->n);
-    memmove(msg->p + headersz, msg->p + OMEMO_PREKEYHEADER_MAXSIZE, msg->n);
+    memmove(msg->p + headersz, msg->p + OMEMO_INTERNAL_PREKEYHEADER_MAXSIZE, msg->n);
     msg->n += headersz;
   }
 }
@@ -742,7 +741,7 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
   SetupCtx(ctx);
   if (Recover(ctx, r)) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
-    memset(payload, 0, OMEMO_PAYLOAD_SIZE);
+    memset(payload, 0, OMEMO_INTERNAL_PAYLOAD_SIZE);
     session->mkskipped.n = mkskippednbackup;
     session->mkskipped.removed = NULL;
     return r;
