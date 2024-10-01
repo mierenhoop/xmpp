@@ -308,9 +308,12 @@ static inline uint32_t IncrementWrapSkipZero(uint32_t n) {
   return n + !n;
 }
 
-static void RefillPreKeys(CTX ctx, struct omemoStore *store) {
-  int i;
-#if 1
+int omemoRefillPreKeys(struct omemoStore *store) {
+  int i, r;
+  SetupCtx(ctx);
+  if (Recover(ctx, r))
+    return r;
+#if 0
   for (i = 0; i < 1; i++) {
     if (!store->prekeys[i].id) {
       store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
@@ -326,11 +329,15 @@ static void RefillPreKeys(CTX ctx, struct omemoStore *store) {
 #else
   for (i = 0; i < OMEMO_NUMPREKEYS; i++) {
     if (!store->prekeys[i].id) {
-      store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
-      GeneratePreKey(store->prekeys+i, store->pkcounter);
+      struct omemoPreKey pk;
+      uint32_t n = IncrementWrapSkipZero(store->pkcounter);
+      GeneratePreKey(ctx, &pk, n);
+      memcpy(store->prekeys+i, &pk, sizeof(struct omemoPreKey));
+      store->pkcounter = n;
     }
   }
 #endif
+  return 0;
 }
 
 int omemoSetupStore(struct omemoStore *store) {
@@ -343,7 +350,8 @@ int omemoSetupStore(struct omemoStore *store) {
   memset(store, 0, sizeof(struct omemoStore));
   GenerateIdentityKeyPair(ctx, &store->identity);
   GenerateSignedPreKey(ctx, &store->cursignedprekey, 1, &store->identity);
-  RefillPreKeys(ctx, store);
+  if ((r = omemoRefillPreKeys(store)))
+    Throw(ctx, r);
   store->isinitialized = true;
   return 0;
 }

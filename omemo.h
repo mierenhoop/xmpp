@@ -127,6 +127,13 @@ void omemoSerializeKey(omemoSerializedKey k, const omemoKey pub);
 int omemoSetupStore(struct omemoStore *store);
 
 /**
+ * Refill prekeys in store.
+ *
+ * @returns 0 or OMEMO_ECRYPTO
+ */
+int omemoRefillPreKeys(struct omemoStore *store);
+
+/**
  * Allocate and initialize a session.
  *
  * @param cap is the amount of message keys that will be reserved in
