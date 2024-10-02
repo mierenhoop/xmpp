@@ -41,9 +41,11 @@ static void GetRandom(CTX ctx, void *p, size_t n) {
 
 // Only supports uint32 and len prefixed (by int32).
 struct ProtobufField {
-  int type;
-  uint32_t v;
-  const uint8_t *p;
+  int type; // PB_*
+  uint32_t v; // destination varint or LEN
+  const uint8_t *p; // LEN element data pointer or NULL
+  // pointer to begin of field, pointer to previously found field with same id
+  const uint8_t *start, *prevstart;
 };
 
 #define PB_REQUIRED (1 << 3)
@@ -81,18 +83,18 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
  * - Make sure the field number can be stored in `fields` and that the
  *   type corresponds with the one specified in the associated field.
  * - Mark the field number as found which later will be used to check
- * whether all required fields are found.
+ *   whether all required fields are found.
  * - Parse the value.
  * - If there already is a non-zero value specified in the field, it is
  *   used to check whether the parsed value is the same.
- * `nfields` is the amount of fields in the `fields` array. It should
- * have the value of the highest possible field number + 1. `nfields`
- * must be less than or equal to 16 because we only support a single
- * byte field number, the number is stored like this in the byte:
- * 0nnnnttt where n is the field number and t is the type.
+ * `nfields` should have the value of the highest possible field number
+ * + 1. `nfields` must be less than or equal to 16 because we only
+ * support a single byte field number, the number is stored like this in
+ * the byte: 0nnnnttt where n is the field number and t is the type.
  *
  * @param s is protobuf data
  * @param n is the length of said data
+ * @param nfields is the amount of fields in the `fields` array
  * @returns false if successful, true if error
  */
 static bool ParseProtobuf(const uint8_t *s, size_t n,
@@ -101,6 +103,7 @@ static bool ParseProtobuf(const uint8_t *s, size_t n,
   int type, id;
   uint32_t v;
   const uint8_t *e = s + n;
+  const uint8_t *start;
   uint32_t found = 0;
   assert(nfields <= 16);
   while (s < e) {
@@ -109,6 +112,7 @@ static bool ParseProtobuf(const uint8_t *s, size_t n,
     // tags.
     type = *s & 7;
     id = *s >> 3;
+    start = s;
     s++;
     if (id >= nfields || type != (fields[id].type & 7))
       return true;
@@ -117,6 +121,8 @@ static bool ParseProtobuf(const uint8_t *s, size_t n,
       return true;
     if (fields[id].v && v != fields[id].v)
       return true;
+    fields[id].prevstart = fields[id].start;
+    fields[id].start = start;
     fields[id].v = v;
     if (type == PB_LEN) {
       fields[id].p = s;
@@ -130,6 +136,14 @@ static bool ParseProtobuf(const uint8_t *s, size_t n,
       return true;
   }
   return false;
+}
+
+/**
+ * Get the size of a properly formatted varint in bytes.
+ */
+static inline int GetVarIntSize(uint32_t v) {
+  return 1 + (v > 0x7f) + (v > 0x3fff) + (v > 0x1fffff) +
+         (v > 0xfffffff);
 }
 
 static uint8_t *FormatVarInt(uint8_t d[static 6], int type, int id, uint32_t v) {
@@ -313,20 +327,6 @@ int omemoRefillPreKeys(struct omemoStore *store) {
   SetupCtx(ctx);
   if (Recover(ctx, r))
     return r;
-#if 0
-  for (i = 0; i < 1; i++) {
-    if (!store->prekeys[i].id) {
-      store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
-      GeneratePreKey(ctx, store->prekeys+i, store->pkcounter);
-    }
-  }
-  // HACK: for debugging keep it fast
-  for (; i < OMEMO_NUMPREKEYS; i++) {
-    store->pkcounter = IncrementWrapSkipZero(store->pkcounter);
-    store->prekeys[i].id = store->pkcounter;
-    memcpy(&store->prekeys[i].kp, &store->prekeys[0].kp, sizeof(struct omemoKeyPair));
-  }
-#else
   for (i = 0; i < OMEMO_NUMPREKEYS; i++) {
     if (!store->prekeys[i].id) {
       struct omemoPreKey pk;
@@ -336,7 +336,6 @@ int omemoRefillPreKeys(struct omemoStore *store) {
       store->pkcounter = n;
     }
   }
-#endif
   return 0;
 }
 
@@ -798,12 +797,32 @@ void omemoDeserializeStore(struct omemoStore *store, const uint8_t s[static size
   memcpy(store, s, sizeof(struct omemoStore));
 }
 
+static inline uint32_t GetMessageKeySize(const struct omemoMessageKey *mk) {
+  return 34 * 2 + 1 + GetVarIntSize(mk->nr); // TODO: Serialized?
+}
+
+static uint8_t *SerializeSkippedMessageKeys(uint8_t *d, const struct omemoSkippedMessageKeys *mkskipped) {
+  for (int i = 0; i < mkskipped->n; i++) {
+    assert(GetMessageKeySize(mkskipped->p+i) < 128);
+    d = FormatVarInt(d, PB_LEN, 15, GetMessageKeySize(mkskipped->p+i));
+    d = FormatVarInt(d, PB_UINT32, 1, mkskipped->p[i].nr);
+    d = FormatVarInt(d, PB_LEN, 2, 32);
+    d = (memcpy(d, mkskipped->p[i].dh, 32), d + 32);
+    d = FormatVarInt(d, PB_LEN, 3, 32);
+    d = (memcpy(d, mkskipped->p[i].mk, 32), d + 32);
+  }
+  return d;
+}
+
 // TODO: we might want to make this exact by checking varint sizes
 size_t omemoGetSerializedSessionMaxSizeEstimate(struct omemoSession *session) {
-  return 35 * 4   // SerializedKey
-         + 34 * 4 // Key
-         + 6 * 6  // PB_UINT32
-         + 6 + session->mkskipped.n * sizeof(struct omemoMessageKey);
+  //uint32_t sum = 35 * 4   // SerializedKey
+  //               + 34 * 4 // Key
+  //               + 6 * 6; // PB_UINT32
+  //for (int i = 0; i < session->mkskipped.n; i++)
+  //  sum += 2 + GetMessageKeySize(session->mkskipped.p + i);
+  //return sum;
+  return 10000;
 }
 
 void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) {
@@ -822,9 +841,7 @@ void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) 
   d = FormatVarInt(d, PB_UINT32, 12, session->pendingpk_id);
   d = FormatVarInt(d, PB_UINT32, 13, session->pendingspk_id);
   d = FormatVarInt(d, PB_UINT32, 14, session->fsm);
-  size_t bn = session->mkskipped.n*sizeof(struct omemoMessageKey);
-  d = FormatVarInt(d, PB_LEN, 15, bn);
-  d = (memcpy(d, session->mkskipped.p, bn), d + bn);
+  d = SerializeSkippedMessageKeys(d, &session->mkskipped);
   if (n)
     *n = d - p;
 }
@@ -854,7 +871,7 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
     [12] = {PB_REQUIRED | PB_UINT32},
     [13] = {PB_REQUIRED | PB_UINT32},
     [14] = {PB_REQUIRED | PB_UINT32},
-    [15] = {PB_REQUIRED | PB_LEN},
+    //[15] = {PB_REQUIRED | PB_LEN},
   };
   if (ParseProtobuf(p, n, fields, 16))
     return OMEMO_EPROTOBUF;
@@ -872,8 +889,8 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
   session->pendingpk_id = fields[12].v;
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
-#define MIN(x, y) (((x) < (y)) ? (x) : (y))
-  session->mkskipped.n = MIN(session->mkskipped.c, fields[15].v / sizeof(struct omemoMessageKey));
-  memcpy(session->mkskipped.p, fields[15].p, session->mkskipped.n*sizeof(struct omemoMessageKey));
+  //while (fields[15].p) {
+  //  ParseProtobuf(fields[15].prevstart, );
+  //}
   return 0;
 }
