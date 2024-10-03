@@ -146,8 +146,13 @@ void omemoFreeSession(struct omemoSession *session);
 size_t omemoGetSerializedStoreSize(void);
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store);
 void omemoDeserializeStore(struct omemoStore *store, const uint8_t s[static sizeof(struct omemoStore)]);
-size_t omemoGetSerializedSessionMaxSizeEstimate(struct omemoSession *sesson);
-void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session);
+size_t omemoGetSerializedSessionSize(const struct omemoSession *sesson);
+void omemoSerializeSession(uint8_t *p, const struct omemoSession *session);
+
+/**
+ * @param session must be initialized with omemoSetupSession
+ * @return 0 or OMEMO_EPROTOBUF
+ */
 int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session);
 
 static inline bool omemoIsSessionInitialized(const struct omemoSession *session) {

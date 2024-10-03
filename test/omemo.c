@@ -397,9 +397,9 @@ static void TestSerialization() {
 
   struct omemoSession tmpsession;
   omemoSetupSession(&tmpsession, 100);
-  uint8_t *buf2 = malloc(omemoGetSerializedSessionMaxSizeEstimate(&sessiona));
-  size_t n;
-  omemoSerializeSession(buf2, &n, &sessiona);
+  size_t n = omemoGetSerializedSessionSize(&sessiona);
+  uint8_t *buf2 = malloc(n);
+  omemoSerializeSession(buf2, &sessiona);
   assert(!omemoDeserializeSession(buf2, n, &tmpsession));
   assert(tmpsession.mkskipped.n == sessiona.mkskipped.n);
   assert(!memcmp(tmpsession.mkskipped.p, sessiona.mkskipped.p, sessiona.mkskipped.n*sizeof(struct omemoMessageKey)));

@@ -813,9 +813,9 @@ static void SaveStore() {
 static void SaveSession() {
   FILE *f = fopen(SESSION_LOCATION, "w");
   if (f) {
-    size_t n = omemoGetSerializedSessionMaxSizeEstimate(&omemosession);
+    size_t n = omemoGetSerializedSessionSize(&omemosession);
     uint8_t *buf = Malloc(n);
-    omemoSerializeSession(buf, &n, &omemosession);
+    omemoSerializeSession(buf, &omemosession);
     fwrite(buf, n, 1, f);
     free(buf);
     fclose(f);

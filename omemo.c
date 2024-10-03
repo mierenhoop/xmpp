@@ -837,18 +837,22 @@ static uint8_t *SerializeSkippedMessageKeys(uint8_t *d, const struct omemoSkippe
   return d;
 }
 
-// TODO: we might want to make this exact by checking varint sizes
-size_t omemoGetSerializedSessionMaxSizeEstimate(struct omemoSession *session) {
-  //uint32_t sum = 35 * 4   // SerializedKey
-  //               + 34 * 4 // Key
-  //               + 6 * 6; // PB_UINT32
-  //for (int i = 0; i < session->mkskipped.n; i++)
-  //  sum += 2 + GetMessageKeySize(session->mkskipped.p + i);
-  //return sum;
-  return 10000;
+size_t omemoGetSerializedSessionSize(
+    const struct omemoSession *session) {
+  uint32_t sum = 35 * 4   // SerializedKey
+                 + 34 * 4 // Key
+                 + 1 * 6 + GetVarIntSize(session->state.ns) +
+                 GetVarIntSize(session->state.nr) +
+                 GetVarIntSize(session->state.pn) +
+                 GetVarIntSize(session->pendingpk_id) +
+                 GetVarIntSize(session->pendingspk_id) +
+                 GetVarIntSize(session->fsm);
+  for (int i = 0; i < session->mkskipped.n; i++)
+    sum += 2 + GetMessageKeySize(session->mkskipped.p + i);
+  return sum;
 }
 
-void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) {
+void omemoSerializeSession(uint8_t *p, const struct omemoSession *session) {
   uint8_t *d = p;
   d = FormatKey(d, 1, session->remoteidentity);
   d = FormatPrivateKey(d, 2, session->state.dhs.prv);
@@ -865,14 +869,9 @@ void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) 
   d = FormatVarInt(d, PB_UINT32, 13, session->pendingspk_id);
   d = FormatVarInt(d, PB_UINT32, 14, session->fsm);
   d = SerializeSkippedMessageKeys(d, &session->mkskipped);
-  if (n)
-    *n = d - p;
+  assert(d-p == omemoGetSerializedSessionSize(session));
 }
 
-/**
- * @param session must be initialized with omemoSetupSession
- * @return 0 or OMEMO_EPROTOBUF
- */
 int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session) {
   assert(p && n && session);
   assert(session->mkskipped.p);
