@@ -44,8 +44,6 @@ struct ProtobufField {
   int type; // PB_*
   uint32_t v; // destination varint or LEN
   const uint8_t *p; // LEN element data pointer or NULL
-  // pointer to begin of field, pointer to previously found field with same id
-  const uint8_t *start, *prevstart;
 };
 
 #define PB_REQUIRED (1 << 3)
@@ -99,11 +97,9 @@ static const uint8_t *ParseVarInt(const uint8_t *s, const uint8_t *e, uint32_t *
  */
 static bool ParseProtobuf(const uint8_t *s, size_t n,
                          struct ProtobufField *fields, int nfields) {
-  // possible return values.
   int type, id;
   uint32_t v;
   const uint8_t *e = s + n;
-  const uint8_t *start;
   uint32_t found = 0;
   assert(nfields <= 16);
   while (s < e) {
@@ -112,7 +108,6 @@ static bool ParseProtobuf(const uint8_t *s, size_t n,
     // tags.
     type = *s & 7;
     id = *s >> 3;
-    start = s;
     s++;
     if (id >= nfields || type != (fields[id].type & 7))
       return true;
@@ -121,8 +116,6 @@ static bool ParseProtobuf(const uint8_t *s, size_t n,
       return true;
     if (fields[id].v && v != fields[id].v)
       return true;
-    fields[id].prevstart = fields[id].start;
-    fields[id].start = start;
     fields[id].v = v;
     if (type == PB_LEN) {
       fields[id].p = s;
@@ -784,6 +777,36 @@ int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
   return r;
 }
 
+// TODO: can we incorporate this in ParseProtobuf?
+static bool ParseRepeatingField(const uint8_t *s, size_t n,
+                         struct ProtobufField *field, int fieldid) {
+  int type, id;
+  uint32_t v;
+  const uint8_t *e = s + n;
+  assert(fieldid <= 16);
+  while (s < e) {
+    type = *s & 7;
+    id = *s >> 3;
+    s++;
+    if (id >= 16 || (id == fieldid && type != (field->type & 7)))
+      return (assert(0), true);
+    if (!(s = ParseVarInt(s, e, &v)))
+      return (assert(0), true);
+    if (id == fieldid)
+      field->v = v;
+    if (type == PB_LEN) {
+      if (id == fieldid)
+        field->p = s;
+      s += v;
+    }
+    if (id == fieldid)
+      break;
+  }
+  if (s > e)
+    return (assert(0), true);
+  return false;
+}
+
 size_t omemoGetSerializedStoreSize(void) {
   return sizeof(struct omemoStore);
 }
@@ -846,11 +869,8 @@ void omemoSerializeSession(uint8_t *p, size_t *n, struct omemoSession *session) 
     *n = d - p;
 }
 
-
-
 /**
- * @param nmk amount of messagekeys, if it's less than there are in the
- * buffer, only the most recent ones will be deserialized
+ * @param session must be initialized with omemoSetupSession
  * @return 0 or OMEMO_EPROTOBUF
  */
 int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session) {
@@ -871,7 +891,7 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
     [12] = {PB_REQUIRED | PB_UINT32},
     [13] = {PB_REQUIRED | PB_UINT32},
     [14] = {PB_REQUIRED | PB_UINT32},
-    //[15] = {PB_REQUIRED | PB_LEN},
+    [15] = {/*PB_REQUIRED |*/ PB_LEN},
   };
   if (ParseProtobuf(p, n, fields, 16))
     return OMEMO_EPROTOBUF;
@@ -889,8 +909,22 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
   session->pendingpk_id = fields[12].v;
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
-  //while (fields[15].p) {
-  //  ParseProtobuf(fields[15].prevstart, );
-  //}
+  const char *e = p + n;
+  while (!ParseRepeatingField(p, e-p, &fields[15], 15) && fields[15].p) {
+    struct ProtobufField innerfields[] = {
+      [1] = {PB_REQUIRED | PB_UINT32},
+      [2] = {PB_REQUIRED | PB_LEN, 32},
+      [3] = {PB_REQUIRED | PB_LEN, 32},
+    };
+    if (ParseProtobuf(fields[15].p, fields[15].v, innerfields, 4))
+      return OMEMO_EPROTOBUF;
+    // TODO: check if mkskipped n <= c
+    session->mkskipped.p[session->mkskipped.n].nr = innerfields[1].v;
+    memcpy(session->mkskipped.p[session->mkskipped.n].dh, innerfields[2].p, 32);
+    memcpy(session->mkskipped.p[session->mkskipped.n].mk, innerfields[3].p, 32);
+    session->mkskipped.n++;
+    p = fields[15].p + fields[15].v;
+    fields[15].v = 0, fields[15].p = NULL;
+  }
   return 0;
 }

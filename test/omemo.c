@@ -388,7 +388,6 @@ static void TestSerialization() {
   uint8_t *buf = malloc(omemoGetSerializedStoreSize());
   assert(buf);
   omemoSerializeStore(buf, &storea);
-  //DumpHex(buf, omemoGetSerializedStoreSize(), "store");
   memset(&storeb, 0, sizeof(storeb));
   omemoDeserializeStore(&storeb, buf);
   assert(!memcmp(&storea, &storeb, sizeof(struct omemoStore)));
@@ -401,7 +400,6 @@ static void TestSerialization() {
   uint8_t *buf2 = malloc(omemoGetSerializedSessionMaxSizeEstimate(&sessiona));
   size_t n;
   omemoSerializeSession(buf2, &n, &sessiona);
-  DumpHex(buf2, n, "session");
   assert(!omemoDeserializeSession(buf2, n, &tmpsession));
   assert(tmpsession.mkskipped.n == sessiona.mkskipped.n);
   assert(!memcmp(tmpsession.mkskipped.p, sessiona.mkskipped.p, sessiona.mkskipped.n*sizeof(struct omemoMessageKey)));
