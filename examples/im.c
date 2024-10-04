@@ -16,8 +16,10 @@
 #include <stdbool.h>
 
 #include "xmpp.h"
-#include "test/cacert.inc"
 #include "omemo.h"
+
+#include "test/cacert.inc"
+#include "test/store.inc"
 
 #include "system.h"
 
@@ -28,7 +30,6 @@
 #define LogWarn(fmt, ...) fprintf(stdout, "\e[33m" fmt "\e[0m\n" __VA_OPT__(,) __VA_ARGS__)
 #endif
 
-#define STORE_LOCATION "/tmp/store"
 #define SESSION_LOCATION "/tmp/session"
 
 #define PUBLISH_OPTIONS_OPEN                                           \
@@ -751,14 +752,17 @@ static void Loop() {
   free(line);
 }
 
+static void LoadStore() {
+  assert(!omemoDeserializeStore(store, store_len, &omemostore));
+}
+
 void RunIm(const char *ip) {
   log = open_memstream(&logdata, &logdatan);
   assert(log);
   serverip = ip;
   deviceid = 1024;
+  LoadStore();
   assert(omemostore.isinitialized);
-  //if (!omemostore.isinitialized)
-  //  omemoSetupStore(&omemostore);
   LoadSession();
   Loop();
   Die();
@@ -798,18 +802,6 @@ static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
   return *data != NULL;
 }
 
-static void SaveStore() {
-  FILE *f = fopen(STORE_LOCATION, "w");
-  if (f) {
-    size_t n = omemoGetSerializedStoreSize(&omemostore);
-    uint8_t *buf = Malloc(n);
-    omemoSerializeStore(buf, &omemostore);
-    fwrite(buf, n, 1, f);
-    free(buf);
-    fclose(f);
-  }
-}
-
 static void SaveSession() {
   FILE *f = fopen(SESSION_LOCATION, "w");
   if (f) {
@@ -820,18 +812,6 @@ static void SaveSession() {
     free(buf);
     fclose(f);
   }
-}
-
-static void LoadStore() {
-  uint8_t *data;
-  size_t n;
-  if (ReadWholeFile(STORE_LOCATION, &data, &n)) {
-    assert(!omemoDeserializeStore(data, n, &omemostore));
-    free(data);
-    return;
-  }
-  assert(!omemoSetupStore(&omemostore));
-  SaveStore();
 }
 
 static void LoadSession() {
@@ -847,7 +827,6 @@ static void LoadSession() {
 }
 
 int main() {
-  LoadStore();
   RunIm(NULL);
 }
 

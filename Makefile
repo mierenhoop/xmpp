@@ -10,19 +10,25 @@ o/xmpp.o: xmpp.c xmpp.h | o
 	$(CC) -c -o $@ $(CFLAGS) xmpp.c
 
 o/test: o/xmpp.o test/cacert.inc test/xmpp.c
-	$(CC) -o o/test yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
+	$(CC) -o $@ yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
 
 o/test-omemo: test/omemo.c omemo.c c25519.c omemo.h | o
-	$(CC) -o o/test-omemo c25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
+	$(CC) -o $@ c25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
 
 o/im: o/xmpp.o examples/im.c test/cacert.inc omemo.c c25519.c omemo.h
-	$(CC) -o o/im examples/im.c yxml.c omemo.c c25519.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
+	$(CC) -o $@ examples/im.c yxml.c omemo.c c25519.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509
+
+o/generatestore: test/generatestore.c omemo.c c25519.c omemo.h | o
+	$(CC) -o $@ c25519.c omemo.c test/generatestore.c $(CFLAGS) -lmbedcrypto
 
 test/localhost.crt:
 	openssl req -new -x509 -key test/localhost.key -out $@ -days 3650 -config test/localhost.cnf
 
 test/cacert.inc: test/localhost.crt
 	(cat test/localhost.crt; printf "\0") | xxd -i -name cacert_pem > $@
+
+test/store.inc: o/generatestore
+	o/generatestore | xxd -i -name store > $@
 
 ESP_DEV?=/dev/ttyUSB0
 
@@ -93,4 +99,4 @@ clean:
 
 .PHONY: full-clean
 full-clean: clean
-	rm -rf test/cacert.inc test/localhost.crt test/bot-venv
+	rm -rf test/cacert.inc test/store.inc test/localhost.crt test/bot-venv

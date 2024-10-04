@@ -1,6 +1,9 @@
 #ifndef OMEMO_H_
 #define OMEMO_H_
 
+#include <stdint.h>
+#include <stdbool.h>
+
 #define OMEMO_NUMPREKEYS 100
 
 #define OMEMO_EPROTOBUF (-1)
