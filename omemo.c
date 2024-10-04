@@ -807,17 +807,95 @@ static bool ParseRepeatingField(const uint8_t *s, size_t n,
   return false;
 }
 
-size_t omemoGetSerializedStoreSize(void) {
-  return sizeof(struct omemoStore);
+size_t omemoGetSerializedStoreSize(const struct omemoStore *store) {
+  size_t sum = 34 * 3 + 35 * 3 + (2 + 64) * 2 + 1 * 4 +
+               GetVarIntSize(store->isinitialized) +
+               GetVarIntSize(store->cursignedprekey.id) +
+               GetVarIntSize(store->prevsignedprekey.id) +
+               GetVarIntSize(store->pkcounter);
+  for (int i = 0; i < OMEMO_NUMPREKEYS; i++)
+    sum += 2 + 1 + GetVarIntSize(store->prekeys[i].id) + 34 + 35;
+  return sum;
 }
 
 // TODO: use protobuf for this too
-void omemoSerializeStore(uint8_t *d, const struct omemoStore *store) {
-  memcpy(d, store, sizeof(struct omemoStore));
+void omemoSerializeStore(uint8_t *p, const struct omemoStore *store) {
+  uint8_t *d = p;
+  d = FormatVarInt(d, PB_UINT32, 1, store->isinitialized);
+  d = FormatPrivateKey(d, 2, store->identity.prv);
+  d = FormatKey(d, 3, store->identity.pub);
+  d = FormatVarInt(d, PB_UINT32, 4, store->cursignedprekey.id);
+  d = FormatPrivateKey(d, 5, store->cursignedprekey.kp.prv);
+  d = FormatKey(d, 6, store->cursignedprekey.kp.pub);
+  d = FormatVarInt(d, PB_LEN, 7, 64);
+  d = (memcpy(d, store->cursignedprekey.sig, 64), d + 64);
+  // TODO: when id = 0 we don't have to include it here
+  d = FormatVarInt(d, PB_UINT32, 8, store->prevsignedprekey.id);
+  d = FormatPrivateKey(d, 9, store->prevsignedprekey.kp.prv);
+  d = FormatKey(d, 10, store->prevsignedprekey.kp.pub);
+  d = FormatVarInt(d, PB_LEN, 11, 64);
+  d = (memcpy(d, store->prevsignedprekey.sig, 64), d + 64);
+  d = FormatVarInt(d, PB_UINT32, 12, store->pkcounter);
+  for (int i = 0; i < OMEMO_NUMPREKEYS; i++) {
+    const struct omemoPreKey *pk = store->prekeys+i;
+    // TODO: only add when prekey.id != 0
+    d = FormatVarInt(d, PB_LEN, 13, 1+GetVarIntSize(pk->id)+34+35);
+    d = FormatVarInt(d, PB_UINT32, 1, pk->id);
+    d = FormatPrivateKey(d, 2, pk->kp.prv);
+    d = FormatKey(d, 3, pk->kp.pub);
+  }
+  assert(d-p == omemoGetSerializedStoreSize(store));
 }
 
-void omemoDeserializeStore(struct omemoStore *store, const uint8_t s[static sizeof(struct omemoStore)]) {
-  memcpy(store, s, sizeof(struct omemoStore));
+int omemoDeserializeStore(const char *p, size_t n, struct omemoStore *store) {
+  assert(p && store);
+  struct ProtobufField fields[] = {
+    [1] = {PB_REQUIRED | PB_UINT32},
+    [2] = {PB_REQUIRED | PB_LEN, 32},
+    [3] = {PB_REQUIRED | PB_LEN, 33},
+    [4] = {PB_REQUIRED | PB_UINT32},
+    [5] = {PB_REQUIRED | PB_LEN, 32},
+    [6] = {PB_REQUIRED | PB_LEN, 33},
+    [7] = {PB_REQUIRED | PB_LEN, 64},
+    [8] = {PB_REQUIRED | PB_UINT32},
+    [9] = {PB_REQUIRED | PB_LEN, 32},
+    [10] = {PB_REQUIRED | PB_LEN, 33},
+    [11] = {PB_REQUIRED | PB_LEN, 64},
+    [12] = {PB_REQUIRED | PB_UINT32},
+    [13] = {/*PB_REQUIRED |*/ PB_LEN},
+  };
+  if (ParseProtobuf(p, n, fields, 14))
+    return OMEMO_EPROTOBUF;
+  store->isinitialized = fields[1].v;
+  memcpy(store->identity.prv, fields[2].p, 32);
+  memcpy(store->identity.pub, fields[3].p+1, 32);
+  store->cursignedprekey.id = fields[4].v;
+  memcpy(store->cursignedprekey.kp.prv, fields[5].p, 32);
+  memcpy(store->cursignedprekey.kp.pub, fields[6].p+1, 32);
+  memcpy(store->cursignedprekey.sig, fields[7].p, 64);
+  store->prevsignedprekey.id = fields[8].v;
+  memcpy(store->prevsignedprekey.kp.prv, fields[9].p, 32);
+  memcpy(store->prevsignedprekey.kp.pub, fields[10].p+1, 32);
+  memcpy(store->prevsignedprekey.sig, fields[11].p, 64);
+  store->pkcounter = fields[12].v;
+  const char *e = p + n;
+  int i = 0;
+  while (i < OMEMO_NUMPREKEYS && !ParseRepeatingField(p, e-p, &fields[13], 13) && fields[13].p) {
+    struct ProtobufField innerfields[] = {
+      [1] = {PB_REQUIRED | PB_UINT32},
+      [2] = {PB_REQUIRED | PB_LEN, 32},
+      [3] = {PB_REQUIRED | PB_LEN, 33},
+    };
+    if (ParseProtobuf(fields[13].p, fields[13].v, innerfields, 4))
+      return OMEMO_EPROTOBUF;
+    store->prekeys[i].id = innerfields[1].v;
+    memcpy(store->prekeys[i].kp.prv, innerfields[2].p, 32);
+    memcpy(store->prekeys[i].kp.pub, innerfields[3].p+1, 32);
+    i++;
+    p = fields[13].p + fields[13].v;
+    fields[13].v = 0, fields[13].p = NULL;
+  }
+  return 0;
 }
 
 static inline uint32_t GetMessageKeySize(const struct omemoMessageKey *mk) {
@@ -909,7 +987,9 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
   const char *e = p + n;
-  while (!ParseRepeatingField(p, e-p, &fields[15], 15) && fields[15].p) {
+  while (session->mkskipped.n < session->mkskipped.c &&
+         !ParseRepeatingField(p, e - p, &fields[15], 15) &&
+         fields[15].p) {
     struct ProtobufField innerfields[] = {
       [1] = {PB_REQUIRED | PB_UINT32},
       [2] = {PB_REQUIRED | PB_LEN, 32},
@@ -917,7 +997,6 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
     };
     if (ParseProtobuf(fields[15].p, fields[15].v, innerfields, 4))
       return OMEMO_EPROTOBUF;
-    // TODO: check if mkskipped n <= c
     session->mkskipped.p[session->mkskipped.n].nr = innerfields[1].v;
     memcpy(session->mkskipped.p[session->mkskipped.n].dh, innerfields[2].p, 32);
     memcpy(session->mkskipped.p[session->mkskipped.n].mk, innerfields[3].p, 32);

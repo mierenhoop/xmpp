@@ -385,11 +385,12 @@ static void TestSerialization() {
   assert(!omemoSetupSession(&sessionb, 1000));
   assert(omemoInitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
-  uint8_t *buf = malloc(omemoGetSerializedStoreSize());
+  size_t n = omemoGetSerializedStoreSize(&storea);
+  uint8_t *buf = malloc(n);
   assert(buf);
   omemoSerializeStore(buf, &storea);
   memset(&storeb, 0, sizeof(storeb));
-  omemoDeserializeStore(&storeb, buf);
+  assert(!omemoDeserializeStore(buf, n, &storeb));
   assert(!memcmp(&storea, &storeb, sizeof(struct omemoStore)));
 
   memset(sessiona.mkskipped.p, 0xff, 3*sizeof(struct omemoMessageKey));
@@ -397,8 +398,9 @@ static void TestSerialization() {
 
   struct omemoSession tmpsession;
   omemoSetupSession(&tmpsession, 100);
-  size_t n = omemoGetSerializedSessionSize(&sessiona);
+  n = omemoGetSerializedSessionSize(&sessiona);
   uint8_t *buf2 = malloc(n);
+  assert(buf2);
   omemoSerializeSession(buf2, &sessiona);
   assert(!omemoDeserializeSession(buf2, n, &tmpsession));
   assert(tmpsession.mkskipped.n == sessiona.mkskipped.n);

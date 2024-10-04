@@ -143,9 +143,9 @@ int omemoRefillPreKeys(struct omemoStore *store);
 int omemoSetupSession(struct omemoSession *session, size_t cap);
 void omemoFreeSession(struct omemoSession *session);
 
-size_t omemoGetSerializedStoreSize(void);
+size_t omemoGetSerializedStoreSize(const struct omemoStore *store);
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store);
-void omemoDeserializeStore(struct omemoStore *store, const uint8_t s[static sizeof(struct omemoStore)]);
+int omemoDeserializeStore(const char *p, size_t n, struct omemoStore *store);
 size_t omemoGetSerializedSessionSize(const struct omemoSession *sesson);
 void omemoSerializeSession(uint8_t *p, const struct omemoSession *session);
 

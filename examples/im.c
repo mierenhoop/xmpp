@@ -801,7 +801,7 @@ static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
 static void SaveStore() {
   FILE *f = fopen(STORE_LOCATION, "w");
   if (f) {
-    size_t n = omemoGetSerializedStoreSize();
+    size_t n = omemoGetSerializedStoreSize(&omemostore);
     uint8_t *buf = Malloc(n);
     omemoSerializeStore(buf, &omemostore);
     fwrite(buf, n, 1, f);
@@ -826,12 +826,9 @@ static void LoadStore() {
   uint8_t *data;
   size_t n;
   if (ReadWholeFile(STORE_LOCATION, &data, &n)) {
-    if (n == sizeof(struct omemoStore)) {
-      omemoDeserializeStore(&omemostore, data);
-      free(data);
-      return;
-    }
+    assert(!omemoDeserializeStore(data, n, &omemostore));
     free(data);
+    return;
   }
   assert(!omemoSetupStore(&omemostore));
   SaveStore();
