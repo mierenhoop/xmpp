@@ -593,7 +593,8 @@ static void RotateSignedPreKey(CTX ctx, struct omemoStore *store) {
 //  DHs = GENERATE_DH()
 //  RK, CKs = KDF_RK(RK, DH(DHs, DHr))
 static void DHRatchet(CTX ctx, struct omemoState *state, const omemoKey dh) {
-  state->pn = state->ns;
+  // TODO: this is not right...
+  state->pn = state->ns - 1;
   state->ns = 0;
   state->nr = 0;
   memcpy(state->dhr, dh, 32);
@@ -619,6 +620,8 @@ static struct omemoMessageKey *FindMessageKey(struct omemoSkippedMessageKeys *ke
 static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkippedMessageKeys *keys, uint32_t n) {
   assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
+    // TODO: just for debugging :)
+    puts("Skipping key...");
     omemoKey mk;
     GetBaseMaterials(ctx, state->ckr, mk, state->ckr);
     keys->p[keys->n].nr = state->nr;
@@ -669,15 +672,17 @@ static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
     memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
   } else {
-    if (!shouldstep && headern < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
-    if (shouldstep && headerpn < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
-    uint64_t nskips = shouldstep ?
-      headerpn - session->state.nr + headern :
-      headern - session->state.nr;
-    if (nskips > session->mkskipped.maxskip) Throw(ctx, OMEMO_EMAXSKIP);
-    if (nskips > session->mkskipped.c - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
+    // TODO: add back in
+    //if (!shouldstep && headern < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
+    //if (shouldstep && headerpn < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
+    //uint64_t nskips = shouldstep ?
+    //  headerpn - session->state.nr + headern :
+    //  headern - session->state.nr;
+    //if (nskips > session->mkskipped.maxskip) Throw(ctx, OMEMO_EMAXSKIP);
+    //if (nskips > session->mkskipped.c - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
     if (shouldstep) {
-      SkipMessageKeys(ctx, &session->state, &session->mkskipped, headerpn);
+      // TODO: this can't be right
+      SkipMessageKeys(ctx, &session->state, &session->mkskipped, headerpn+1);
       DHRatchet(ctx, &session->state, headerdh);
     }
     SkipMessageKeys(ctx, &session->state, &session->mkskipped, headern);
@@ -711,15 +716,19 @@ static void DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct o
     };
     if (ParseProtobuf(msg+1, msgn-1, fields, 7))
       Throw(ctx, OMEMO_EPROTOBUF);
-    // later remove this prekey
-    const struct omemoPreKey *pk = FindPreKey(store, fields[1].v);
-    const struct omemoSignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
-    if (!pk || !spk)
-      Throw(ctx, OMEMO_ECORRUPT);
-    memcpy(session->remoteidentity, fields[3].p+1, 32);
-    omemoKey sk;
-    GetSharedSecret(ctx, sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1);
-    RatchetInitBob(&session->state, sk, &spk->kp);
+    // nr will only ever be 0 with the first prekey message
+    // we could put this in session->fsm...
+    if (session->state.nr == 0) {
+      // TODO: later remove this prekey
+      const struct omemoPreKey *pk = FindPreKey(store, fields[1].v);
+      const struct omemoSignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
+      if (!pk || !spk)
+        Throw(ctx, OMEMO_ECORRUPT);
+      memcpy(session->remoteidentity, fields[3].p+1, 32);
+      omemoKey sk;
+      GetSharedSecret(ctx, sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1);
+      RatchetInitBob(&session->state, sk, &spk->kp);
+    }
     msg = fields[4].p;
     msgn = fields[4].v;
   } else {

@@ -333,6 +333,7 @@ static void ParseBundle(struct xmppParser *parser) {
 static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, bool *isprekey) {
   struct xmppXmlSlice attr;
   bool found = false;
+  *isprekey = false;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "rid")) {
       int rid;
@@ -362,7 +363,7 @@ static bool GetRemoteId(struct xmppParser *parser) {
 static void ParseEncryptedMessage(struct xmppParser *parser) {
   struct xmppXmlSlice keyslc = {0}, ivslc = {0}, payloadslc = {0};
   bool isprekey = false;
-  uint8_t *key, *iv, *payload;
+  uint8_t *key = NULL, *iv = NULL, *payload = NULL, *decryptedpayload = NULL;
   size_t keysz, ivsz, payloadsz;
   while (xmppParseElement(parser)) {
     if (!strcmp(parser->x.elem, "header")) {
@@ -372,7 +373,8 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
       }
       while (xmppParseElement(parser)) {
         if (!strcmp(parser->x.elem, "key")) {
-          ParseKey(parser, &keyslc, &isprekey);
+          if (!keyslc.n)
+            ParseKey(parser, &keyslc, &isprekey);
         } else if (!strcmp(parser->x.elem, "iv")) {
           xmppParseContent(parser, &ivslc);
         } else {
@@ -385,15 +387,11 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
       xmppParseUnknown(parser);
     }
   }
-  if (!(keyslc.n && ivslc.n && payloadslc.n)) {
+  if (!(keyslc.n)) {
     LogWarn("The OMEMO message is either not complete or not addressed to us.");
     return;
   }
   DecodeBase64(&key, &keysz, &keyslc);
-  DecodeBase64(&iv, &ivsz, &ivslc);
-  DecodeBase64(&payload, &payloadsz, &payloadslc);
-  char *decryptedpayload = Malloc(payloadsz+1);
-  decryptedpayload[payloadsz] = 0;
   omemoKeyPayload decryptedkey;
   int r = omemoDecryptKey(&omemosession, &omemostore, decryptedkey, isprekey, key, keysz);
   if (r < 0) {
@@ -401,16 +399,23 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
     goto free;
   }
   SaveSession();
-  r = omemoDecryptMessage(decryptedpayload, decryptedkey, sizeof(omemoKeyPayload), iv, payload, payloadsz);
-  if (r < 0) {
-    LogWarn("Message decryption error: %d", r);
-    goto free;
+  if (ivslc.n && payloadslc.n) {
+    DecodeBase64(&iv, &ivsz, &ivslc);
+    DecodeBase64(&payload, &payloadsz, &payloadslc);
+    decryptedpayload = Malloc(payloadsz+1);
+    decryptedpayload[payloadsz] = 0;
+    r = omemoDecryptMessage(decryptedpayload, decryptedkey, sizeof(omemoKeyPayload), iv, payload, payloadsz);
+    if (r < 0) {
+      LogWarn("Message decryption error: %d", r);
+      goto free;
+    }
+    Log("Got OMEMO msg: %s", decryptedpayload);
   }
-  Log("Got OMEMO msg: %s", decryptedpayload);
 free:
   free(key);
   free(iv);
   free(payload);
+  free(decryptedpayload);
 }
 
 #define SetupParser(parser, ret, p_, n_) \

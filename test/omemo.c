@@ -13,6 +13,15 @@ static void DumpHex(const uint8_t *p, int n, const char *msg) {
   printf(" << %s\n", msg);
 }
 
+static void CopyHex(uint8_t *d, const char *hex) {
+  int n = strlen(hex);
+  assert(n % 2 == 0);
+  n /= 2;
+  for (int i = 0; i < n; i++) {
+    sscanf(hex+(i*2), "%02hhx", d+i);
+  }
+}
+
 static void ClearFieldValues(struct ProtobufField *fields, int nfields) {
   for (int i = 0; i < nfields; i++) {
     fields[i].v = 0;
@@ -55,6 +64,21 @@ static void TestParseProtobuf() {
   assert(ParseProtobuf(FatStrArgs("\x10\x01\x0a\x03\xcc\xcc\xcc"), fields, 6));
 }
 
+static void TestProtobufPrekey() {
+  uint8_t msg[184];
+  size_t msgn = 184;
+  CopyHex(msg, "08041221054fb4dacf2d54cea8bd3be51dc90e1f5af444886facaf84b83d0f3031eff961791a210516260835a3c627dbbc17e3a0c32d6fbee27bed265977ae3eff1cc56f31deea212262330a21054751b36ba17d6a3a158c87660063c1cdede4a99be91e301066b3d9adb82e9f08100418002230060bd96226d3b5ef5bc642316e41e3a7f16ecfcc2f718d66655ab84e08fba1818e238e2917e025c997329395f885e98bfe98138e7f64edf528adc2debf0430cd8baf9c05");
+  struct ProtobufField fields[7] = {
+      [5] = {PB_REQUIRED | PB_UINT32},  // registrationid
+      [1] = {PB_REQUIRED | PB_UINT32},  // prekeyid
+      [6] = {PB_REQUIRED | PB_UINT32},  // signedprekeyid
+      [2] = {PB_REQUIRED | PB_LEN, 33}, // basekey/ek
+      [3] = {PB_REQUIRED | PB_LEN, 33}, // identitykey/ik
+      [4] = {PB_REQUIRED | PB_LEN},     // message
+  };
+  assert(!ParseProtobuf(msg + 1, msgn - 1, fields, 7));
+}
+
 static void TestFormatProtobuf() {
   uint8_t varint[6];
   assert(FormatVarInt(varint, PB_UINT32, 1, 0x00) == varint + 2 && !memcmp(varint, "\x08\x00", 2));
@@ -65,15 +89,6 @@ static void TestFormatProtobuf() {
   assert(GetVarIntSize(10) == 1);
   assert(GetVarIntSize(0x80) == 2);
   assert(GetVarIntSize(UINT32_MAX) == 5);
-}
-
-static void CopyHex(uint8_t *d, const char *hex) {
-  int n = strlen(hex);
-  assert(n % 2 == 0);
-  n /= 2;
-  for (int i = 0; i < n; i++) {
-    sscanf(hex+(i*2), "%02hhx", d+i);
-  }
 }
 
 static omemoKey base = {9};
