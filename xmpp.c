@@ -96,13 +96,13 @@ int xmppDecodeBase64XmlSlice(char *d, size_t *n, const struct xmppXmlSlice *slc)
   return 0;
 }
 
-bool xmppDecodeIntXmlSlice(int32_t *i, const struct xmppXmlSlice *slc) {
+bool xmppDecodeIntXmlSlice(int *i, const struct xmppXmlSlice *slc) {
   char buf[12], *endptr;
   if (slc->n < 12) {
     xmppReadXmlSlice(buf, slc);
     buf[slc->n] = '\0';
     long d = strtol(buf, &endptr, 10);
-    if (endptr > buf && INT32_MIN <= d && d <= INT32_MAX) {
+    if (endptr > buf && INT_MIN <= d && d <= INT_MAX) {
       if (i)
         *i = d;
       return true;
@@ -410,10 +410,15 @@ static char *SafeMempCpy(char *d, char *e, char *s, size_t n) {
   return d + n;
 }
 
-// n = number of random bytes
-// e - p >= n*2
-// doesn't add nul byte
-// TODO: use mbedtls random for compat? esp-idf does support getrandom...
+/**
+ * Fill a buffer with random hexadecimal characters.
+ *
+ * Doesn't add nul byte.
+ *
+ * @param n number of random bytes
+ * @param e - p >= n*2
+ * @returns pointer to end of written bytes or e if something failed
+ */
 static char *FillRandomHex(char *p, char *e, size_t n) {
   size_t nn = n*2;
   if (e - p < nn)
@@ -644,7 +649,6 @@ static int VerifySaslSuccess(struct xmppSaslContext *ctx, struct xmppXmlSlice *s
   assert(ctx->state == XMPP_SASL_CALCULATED);
   char b1[30], b2[20];
   size_t n = 30;
-  // TODO: don't haredcode slc->p+1 and slc->rawn-2, use xmppReadXmlSlice
   if (xmppDecodeBase64XmlSlice(b1, &n, slc)
    || mbedtls_base64_decode(b2, 20, &n, b1+2, 28))
     return XMPP_ESPEC;
@@ -728,7 +732,6 @@ static int SolveSaslChallenge(struct xmppSaslContext *ctx, struct xmppXmlSlice c
   int itrs = 0;
   char *s, *i, *e = ctx->p+ctx->n - 1; // keep the nul
   char *r = ctx->p+ctx->serverfirstmsg;
-  // TODO: don't haredcode c.p+1 and c.rawn-2, use xmppReadXmlSlice
   size_t n = e-r;
   if (xmppDecodeBase64XmlSlice(r, &n, &c))
     return XMPP_ESPEC;
@@ -875,7 +878,7 @@ void xmppAddAmountSent(struct xmppClient *client, size_t amount) {
   client->builder.i = client->builder.n;
   memmove(client->builder.p, client->builder.p + amount,
           client->builder.n);
-  // TODO: remove
+  // TODO: remove this, it's not needed
   memset(client->builder.p + client->builder.n, 0,
          client->builder.c - client->builder.n);
 }

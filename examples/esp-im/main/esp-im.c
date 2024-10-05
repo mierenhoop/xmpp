@@ -23,9 +23,11 @@
 
 void ConnectWifi(void);
 
-void SystemRandom(void *p, size_t n) {
-  esp_fill_random(p, n);
-}
+int omemoRandom(void *p, size_t n) { esp_fill_random(p, n); return 0; }
+int xmppRandom(void *p, size_t n) { esp_fill_random(p, n); return 0; }
+
+void LoadSession() {}
+void SaveSession() {}
 
 static void SetupStdio(void) {
   setvbuf(stdin, NULL, _IONBF, 0);

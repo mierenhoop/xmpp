@@ -76,7 +76,7 @@ int xmppDecodeBase64XmlSlice(char *d, size_t *n, const struct xmppXmlSlice *slc)
  * @param i points to the location where the integer will be written
  * @returns true if reading the integer was put into i
  */
-bool xmppDecodeIntXmlSlice(int32_t *i, const struct xmppXmlSlice *slc);
+bool xmppDecodeIntXmlSlice(int *i, const struct xmppXmlSlice *slc);
 
 /**
  * Compare a string with an XML slice.

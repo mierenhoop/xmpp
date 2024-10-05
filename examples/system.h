@@ -3,7 +3,8 @@
 
 #include <stdbool.h>
 
-bool SystemPoll();
+void LoadSession();
+void SaveSession();
 
 void RunIm(const char *);
 

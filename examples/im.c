@@ -43,9 +43,6 @@
 
 typedef char Uuidv4[36+1];
 
-static void LoadSession();
-static void SaveSession();
-
 static const char *serverip;
 static char *logdata;
 static size_t logdatan;
@@ -56,7 +53,7 @@ static char linebuf[1000];
 static char *line;
 static struct omemoStore omemostore;
 static struct omemoSession omemosession;
-static int32_t deviceid, remoteid;
+static int deviceid, remoteid;
 static uint32_t curpending;
 static Uuidv4 pending[10];
 
@@ -66,7 +63,7 @@ static Uuidv4 pending[10];
 
 static int RandomInt() {
   uint16_t n;
-  assert(getrandom(&n, 2, 0) == 2);
+  assert(!xmppRandom(&n, 2));
   return n;
 }
 
@@ -272,7 +269,7 @@ static void ParseBase64PubKey(struct xmppParser *parser, omemoKey d) {
 
 static int ParseNumberAttribute(struct xmppParser *parser, const char *name) {
   struct xmppXmlSlice attr;
-  int32_t ret;
+  int ret;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, name)) {
       if (xmppDecodeIntXmlSlice(&ret, &attr))
@@ -338,7 +335,7 @@ static void ParseKey(struct xmppParser *parser, struct xmppXmlSlice *keyslc, boo
   bool found = false;
   while (xmppParseAttribute(parser, &attr)) {
     if (!strcmp(parser->x.attr, "rid")) {
-      int32_t rid;
+      int rid;
       if (xmppDecodeIntXmlSlice(&rid, &attr) && rid == deviceid)
         found = true;
       // TODO: put deviceid in store.
@@ -596,6 +593,21 @@ static void Receive() {
   xmppAddAmountReceived(&client, r);
 }
 
+bool SystemPoll() {
+  struct pollfd fds[2] = {0};
+  fds[0].fd = STDIN_FILENO;
+  fds[0].events = POLLIN;
+  fds[1].fd = conn.server_fd.fd;
+  fds[1].events = POLLIN;
+  int r = poll(fds, 2, -1);
+  assert(r >= 0);
+  if (fds[0].revents & POLLIN)
+    return false;
+  if (fds[1].revents & POLLIN)
+    return true;
+  assert(false);
+}
+
 // returns true if stream is done for
 static bool IterateClient() {
   int r;
@@ -763,24 +775,10 @@ void RunIm(const char *ip) {
   deviceid = 1024;
   LoadStore();
   assert(omemostore.isinitialized);
+  assert(!omemoSetupSession(&omemosession, 100));
   LoadSession();
   Loop();
   Die();
-}
-
-bool SystemPoll() {
-  struct pollfd fds[2] = {0};
-  fds[0].fd = STDIN_FILENO;
-  fds[0].events = POLLIN;
-  fds[1].fd = conn.server_fd.fd;
-  fds[1].events = POLLIN;
-  int r = poll(fds, 2, -1);
-  assert(r >= 0);
-  if (fds[0].revents & POLLIN)
-    return false;
-  if (fds[1].revents & POLLIN)
-    return true;
-  assert(false);
 }
 
 #ifdef IM_NATIVE
@@ -802,7 +800,7 @@ static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
   return *data != NULL;
 }
 
-static void SaveSession() {
+void SaveSession() {
   FILE *f = fopen(SESSION_LOCATION, "w");
   if (f) {
     size_t n = omemoGetSerializedSessionSize(&omemosession);
@@ -814,10 +812,9 @@ static void SaveSession() {
   }
 }
 
-static void LoadSession() {
+void LoadSession() {
   uint8_t *data;
   size_t n;
-  assert(!omemoSetupSession(&omemosession, 100));
   if (ReadWholeFile(SESSION_LOCATION, &data, &n)) {
     assert(!omemoDeserializeSession(data, n, &omemosession));
     free(data);
