@@ -30,8 +30,6 @@
 #define LogWarn(fmt, ...) fprintf(stdout, "\e[33m" fmt "\e[0m\n" __VA_OPT__(,) __VA_ARGS__)
 #endif
 
-#define SESSION_LOCATION "/tmp/session"
-
 #define PUBLISH_OPTIONS_OPEN                                           \
   "<publish-options><x xmlns='jabber:x:data' type='submit'><field "    \
   "var='FORM_TYPE' "                                                   \
@@ -56,6 +54,8 @@ static struct omemoSession omemosession;
 static int deviceid, remoteid;
 static uint32_t curpending;
 static Uuidv4 pending[10];
+static char remotejidp[XMPP_CONFIG_MAX_JID_SIZE];
+static struct xmppJid remotejid;
 
 #define PENDING_REMOTEDEVICELIST 0
 #define PENDING_OURDEVICELIST 1
@@ -235,7 +235,7 @@ static bool ParseMultiple(struct xmppParser *parser, const char *elems) {
 
 static void FetchBundle() {
   GenerateUuidv4(pending[PENDING_BUNDLE]);
-  xmppFormatStanza(&client, "<iq type='get' to='%s' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.bundles:%d'/></pubsub></iq>", "user@localhost", pending[PENDING_BUNDLE], remoteid);
+  xmppFormatStanza(&client, "<iq type='get' to='%s@%s' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.bundles:%d'/></pubsub></iq>", remotejid.localp, remotejid.domainp, pending[PENDING_BUNDLE], remoteid);
   curpending |= (1 << PENDING_BUNDLE);
 }
 
@@ -533,9 +533,9 @@ static void ParseRemoteDeviceList(struct xmppStanza *st) {
   Log("REMOTE ID NOT FOUND");
 }
 
-static void SubscribeDeviceList(const char *jid, int pendid) {
+static void SubscribeDeviceList(const struct xmppJid *jid, int pendid) {
   GenerateUuidv4(pending[pendid]);
-  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='%s' type='get' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1'/></pubsub></iq>", jid, pending[pendid]);
+  xmppFormatStanza(&client, "<iq xmlns='jabber:client' to='%s@%s' type='get' id='%s'><pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='eu.siacs.conversations.axolotl.devicelist' max_items='1'/></pubsub></iq>", jid->localp, jid->domainp, pending[pendid]);
   // only pending if format succeeded
   curpending |= (1 << pendid);
 }
@@ -627,9 +627,7 @@ static bool IterateClient() {
       Log("Polling...");
       if (!sent) {
         xmppFormatStanza(&client, "<presence/>");
-        SubscribeDeviceList("admin@localhost", PENDING_OURDEVICELIST);
-        if (!omemoIsSessionInitialized(&omemosession))
-          SubscribeDeviceList("user@localhost", PENDING_REMOTEDEVICELIST);
+        SubscribeDeviceList(&client.jid, PENDING_OURDEVICELIST);
         AnnounceOmemoBundle();
         sent = 1;
         continue;
@@ -682,7 +680,7 @@ static bool IterateClient() {
   return true;
 }
 
-static void SendNormalOmemo(const char *msg, const char *to, int rid) {
+static void SendNormalOmemo(const char *msg, int rid) {
   size_t msgn = strlen(msg);
   char *payload = Malloc(msgn);
   char iv[12];
@@ -703,14 +701,14 @@ static void SendNormalOmemo(const char *msg, const char *to, int rid) {
 
   xmppFormatStanza(
       &client,
-      "<message to='%s' id='%d' type='chat'><encrypted "
+      "<message to='%s@%s' id='%d' type='chat'><encrypted "
       "xmlns='eu.siacs.conversations.axolotl'><header sid='%d'><key "
       "[prekey='true' ]rid='%d'>%b</key><iv>%b</iv></header><payload>%b</payload></"
       "encrypted>"
 "<encryption xmlns='urn:xmpp:eme:0' name='OMEMO' namespace='eu.siacs.conversations.axolotl'/><body>You received a message encrypted with OMEMO but your client doesn't support OMEMO.</body>"
 "<request xmlns='urn:xmpp:receipts'/><markable xmlns='urn:xmpp:chat-markers:0'/>"
       "<store xmlns='urn:xmpp:hints'/></message>",
-      to, RandomInt(), deviceid, encrypted.isprekey, rid, encrypted.n, encrypted.p, 12, iv, msgn,
+      remotejid.localp, remotejid.domainp, RandomInt(), deviceid, encrypted.isprekey, rid, encrypted.n, encrypted.p, 12, iv, msgn,
       payload);
 }
 
@@ -734,6 +732,9 @@ static void HandleCommand() {
   } else if (!strncmp("/ping ", cmd, 6)) {
     strcpy(jid, cmd+6);
     xmppFormatStanza(&client, "<iq to='%s' id='%s' type='set'><ping xmlns='urn:xmpp:ping'/></iq>", jid, "ping1");
+  } else if (!strcmp("/omemo", cmd)) {
+    if (!omemoIsSessionInitialized(&omemosession))
+      SubscribeDeviceList(&remotejid, PENDING_REMOTEDEVICELIST);
   } else if (!strcmp("/", cmd)) {
     puts("Try: /login jid password");
   } else if (strlen(cmd)) {
@@ -742,11 +743,11 @@ static void HandleCommand() {
     } else {
       if (omemoIsSessionInitialized(&omemosession)) {
         if (remoteid)
-          SendNormalOmemo(cmd, "user@localhost", remoteid);
+          SendNormalOmemo(cmd, remoteid);
         else // TODO: save remote id persistantly
           LogWarn("Remote id has not been found yet");
       } else {
-        xmppFormatStanza(&client, "<message type='chat' to='%s' id='message%d'><body>%s</body></message>", "user@localhost", RandomInt(), cmd);
+        xmppFormatStanza(&client, "<message type='chat' to='%s@%s' id='message%d'><body>%s</body></message>", remotejid.localp, remotejid.domainp, RandomInt(), cmd);
       }
     }
   }
@@ -778,6 +779,7 @@ void RunIm(const char *ip) {
   assert(log);
   serverip = ip;
   deviceid = 1024;
+  xmppParseJid(&remotejid, remotejidp, sizeof(remotejidp), "user@localhost");
   LoadStore();
   assert(omemostore.isinitialized);
   assert(!omemoSetupSession(&omemosession, 100));
@@ -787,6 +789,8 @@ void RunIm(const char *ip) {
 }
 
 #ifdef IM_NATIVE
+
+#define SESSION_LOCATION "/tmp/session"
 
 int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 int xmppRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
