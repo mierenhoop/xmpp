@@ -27,8 +27,8 @@
 #define Log(fmt, ...) fprintf(log, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
 #else
 #define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
-#define LogWarn(fmt, ...) fprintf(stdout, "\e[33m" fmt "\e[0m\n" __VA_OPT__(,) __VA_ARGS__)
 #endif
+#define LogWarn(fmt, ...) fprintf(stdout, "\e[33m" fmt "\e[0m\n" __VA_OPT__(,) __VA_ARGS__)
 
 #define PUBLISH_OPTIONS_OPEN                                           \
   "<publish-options><x xmlns='jabber:x:data' type='submit'><field "    \
@@ -65,6 +65,31 @@ static int RandomInt() {
   uint16_t n;
   assert(!xmppRandom(&n, 2));
   return n;
+}
+
+static bool HasRemoteJid() {
+  if (remotejid.localp) {
+    return true;
+  } else {
+    puts("Please choose who to talk to.\nTry: /talk jid");
+    return false;
+  }
+}
+
+static bool HasConnection() {
+  if (xmppIsInitialized(&client)) {
+    return true;
+  } else {
+    puts("Please login first.\nTry: /login jid password");
+    return false;
+  }
+}
+
+static void CloseOmemo() {
+  if (omemoIsSessionInitialized(&omemosession)) {
+    omemoFreeSession(&omemosession);
+    memset(&omemosession, 0, sizeof(omemosession));
+  }
 }
 
 // https://github.com/rxi/uuid4/blob/master/src/uuid4.c
@@ -175,7 +200,12 @@ static void GivePassword() {
   explicit_bzero(pwd, strlen(pwd));
 }
 
-static void PrintSlice(struct xmppXmlSlice *slc, const char *alt) {
+static void PrintPrompt() {
+  printf(omemoIsSessionInitialized(&omemosession) && remoteid ? "🔒>" : ">");
+  fflush(stdout);
+}
+
+static void PrintSlice(const struct xmppXmlSlice *slc, const char *alt) {
   char *p;
   if (slc->p && (p = calloc(slc->n+1, 1))) {
     xmppReadXmlSlice(p, slc);
@@ -304,19 +334,15 @@ static void ParseBundle(struct xmppParser *parser) {
       bundle.spk_id = ParseNumberAttribute(parser, "signedPreKeyId");
       ParseBase64PubKey(parser, bundle.spk);
       found |= 1 << 0;
-      Log("spk");
     } else if (!strcmp(parser->x.elem, "signedPreKeySignature")) {
       ParseBase64Content(parser, bundle.spks, 64);
       found |= 1 << 1;
-      Log("spks");
     } else if (!strcmp(parser->x.elem, "identityKey")) {
       ParseBase64PubKey(parser, bundle.ik);
       found |= 1 << 2;
-      Log("ik");
     } else if (!strcmp(parser->x.elem, "prekeys")) {
       if (ParseRandomPreKey(parser, &bundle))
         found |= 1 << 3;
-      Log("pk");
     } else {
       xmppParseUnknown(parser);
     }
@@ -360,7 +386,7 @@ static bool GetRemoteId(struct xmppParser *parser) {
   return false;
 }
 
-static void ParseEncryptedMessage(struct xmppParser *parser) {
+static void ParseEncryptedMessage(struct xmppParser *parser, const struct xmppXmlSlice *from) {
   struct xmppXmlSlice keyslc = {0}, ivslc = {0}, payloadslc = {0};
   bool isprekey = false;
   uint8_t *key = NULL, *iv = NULL, *payload = NULL, *decryptedpayload = NULL;
@@ -409,7 +435,9 @@ static void ParseEncryptedMessage(struct xmppParser *parser) {
       LogWarn("Message decryption error: %d", r);
       goto free;
     }
-    Log("Got OMEMO msg: %s", decryptedpayload);
+    PrintSlice(from, "[unknown]");
+    printf("🔒> %s\n", decryptedpayload);
+    fflush(stdout);
   }
 free:
   free(key);
@@ -451,6 +479,7 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
 
 static void ParseMessage(struct xmppStanza *st) {
   struct xmppXmlSlice body = {0};
+  bool isencrypted = false;
   SetupParser(parser, r, st->raw.p, st->raw.n) {
     LogWarn("Parsing the message stanza failed with error %d", r);
     return;
@@ -458,18 +487,21 @@ static void ParseMessage(struct xmppStanza *st) {
   assert(xmppParseElement(parser));
   while (xmppParseElement(parser)) {
     if (!strcmp(parser->x.elem, "encrypted")) {
-      ParseEncryptedMessage(parser);
+      ParseEncryptedMessage(parser, &st->from);
+      isencrypted = true;
     } else if (!strcmp(parser->x.elem, "body")) {
       xmppParseContent(parser, &body);
     } else {
       xmppParseUnknown(parser);
     }
   }
-  PrintSlice(&st->from, "[unknown]");
-  printf("> ");
-  PrintSlice(&body, "[empty]");
-  puts("");
-  fflush(stdout);
+  if (body.p && !isencrypted) {
+    PrintSlice(&st->from, "[unknown]");
+    printf("> ");
+    PrintSlice(&body, "[empty]");
+    puts("");
+    fflush(stdout);
+  }
 }
 
 static int ParseDeviceId(struct xmppParser *parser) {
@@ -523,14 +555,13 @@ static void ParseRemoteDeviceList(struct xmppStanza *st) {
       int id = ParseDeviceId(parser);
       if (id > 0) {
         remoteid = id;
-        Log("REMOTE ID FOUND");
         FetchBundle();
-      } else
+      } else {
         LogWarn("Id attr corrupt");
+      }
       return;
     }
   }
-  Log("REMOTE ID NOT FOUND");
 }
 
 static void SubscribeDeviceList(const struct xmppJid *jid, int pendid) {
@@ -632,8 +663,7 @@ static bool IterateClient() {
         sent = 1;
         continue;
       }
-      printf("> ");
-      fflush(stdout);
+      PrintPrompt();
       if (!SystemPoll())
         return false;
       // fallthrough
@@ -653,13 +683,11 @@ static bool IterateClient() {
       GivePassword();
       break;
     case XMPP_ITER_STANZA:
-      Log("Stanza type %d", client.stanza.type);
       if (client.stanza.type == XMPP_STANZA_MESSAGE) {
         ParseMessage(&client.stanza);
       } else {
         switch (GetPendingFromId(&client.stanza.id)) {
         break; case PENDING_OURDEVICELIST:
-          puts("DEVICE LIST");
           ParseOurDeviceList(&client.stanza);
         break; case PENDING_REMOTEDEVICELIST:
           ParseRemoteDeviceList(&client.stanza);
@@ -721,26 +749,24 @@ static void HandleCommand() {
       strcat(jid, "/resource");
       Initialize(jid);
       puts("Logging in...");
-    } else {
-      puts("Log out first.");
     }
-  } else if (!strcmp("/logout", cmd)) {
-    xmppEndStream(&client);
   } else if (!strcmp("/log", cmd)) {
     fflush(log);
     printf("Printing log:\n%d %s\n", (int)logdatan, logdata);
   } else if (!strncmp("/ping ", cmd, 6)) {
-    strcpy(jid, cmd+6);
-    xmppFormatStanza(&client, "<iq to='%s' id='%s' type='set'><ping xmlns='urn:xmpp:ping'/></iq>", jid, "ping1");
+    if (HasConnection()) {
+      strcpy(jid, cmd+6);
+      xmppFormatStanza(&client, "<iq to='%s' id='%s' type='set'><ping xmlns='urn:xmpp:ping'/></iq>", jid, "ping1");
+    }
   } else if (!strcmp("/omemo", cmd)) {
     if (!omemoIsSessionInitialized(&omemosession))
       SubscribeDeviceList(&remotejid, PENDING_REMOTEDEVICELIST);
-  } else if (!strcmp("/", cmd)) {
-    puts("Try: /login jid password");
+  } else if (!strcmp("/plain", cmd)) {
+    CloseOmemo();
+  } else if (!strncmp("/", cmd, 1)) {
+    puts("Command not found");
   } else if (strlen(cmd)) {
-    if (!xmppIsInitialized(&client)) {
-      puts("Can not send messages yet.\nTry: /login jid password");
-    } else {
+    if (HasConnection()) {
       if (omemoIsSessionInitialized(&omemosession)) {
         if (remoteid)
           SendNormalOmemo(cmd, remoteid);
@@ -762,8 +788,7 @@ static void Loop() {
         continue;
       }
     } else {
-      printf("> ");
-      fflush(stdout);
+      PrintPrompt();
     }
     HandleCommand();
   }
