@@ -201,7 +201,7 @@ static void GivePassword() {
 }
 
 static void PrintPrompt() {
-  printf(omemoIsSessionInitialized(&omemosession) && remoteid ? "🔒>" : ">");
+  printf(omemoIsSessionInitialized(&omemosession) && remoteid ? "🔒> " : "> ");
   fflush(stdout);
 }
 
@@ -446,6 +446,11 @@ free:
   free(decryptedpayload);
 }
 
+/**
+ * NOTE: ideally you should create some better abstractions for parsing
+ * the XML, this is just awful...
+ */
+
 #define SetupParser(parser, ret, p_, n_) \
   int ret; \
   uint8_t xbuf[200]; \
@@ -478,12 +483,12 @@ static void ParseSpecificStanza(struct xmppStanza *st) {
 }
 
 static void ParseMessage(struct xmppStanza *st) {
-  struct xmppXmlSlice body = {0};
-  bool isencrypted = false;
   SetupParser(parser, r, st->raw.p, st->raw.n) {
     LogWarn("Parsing the message stanza failed with error %d", r);
     return;
   }
+  struct xmppXmlSlice body = {0};
+  bool isencrypted = false;
   assert(xmppParseElement(parser));
   while (xmppParseElement(parser)) {
     if (!strcmp(parser->x.elem, "encrypted")) {
@@ -655,7 +660,7 @@ static bool IterateClient() {
       Send();
       break;
     case XMPP_ITER_READY:
-      Log("Polling...");
+      //Log("Polling...");
       if (!sent) {
         xmppFormatStanza(&client, "<presence/>");
         SubscribeDeviceList(&client.jid, PENDING_OURDEVICELIST);
@@ -668,7 +673,7 @@ static bool IterateClient() {
         return false;
       // fallthrough
     case XMPP_ITER_RECV:
-      Log("Waiting for recv...");
+      //Log("Waiting for recv...");
       Receive();
       Log("In:  \e[34m%.*s\e[0m", (int)client.parser.n, client.parser.p);
       break;
@@ -708,7 +713,7 @@ static bool IterateClient() {
   return true;
 }
 
-static void SendNormalOmemo(const char *msg, int rid) {
+static void SendNormalOmemo(const char *msg) {
   size_t msgn = strlen(msg);
   char *payload = Malloc(msgn);
   char iv[12];
@@ -736,7 +741,7 @@ static void SendNormalOmemo(const char *msg, int rid) {
 "<encryption xmlns='urn:xmpp:eme:0' name='OMEMO' namespace='eu.siacs.conversations.axolotl'/><body>You received a message encrypted with OMEMO but your client doesn't support OMEMO.</body>"
 "<request xmlns='urn:xmpp:receipts'/><markable xmlns='urn:xmpp:chat-markers:0'/>"
       "<store xmlns='urn:xmpp:hints'/></message>",
-      remotejid.localp, remotejid.domainp, RandomInt(), deviceid, encrypted.isprekey, rid, encrypted.n, encrypted.p, 12, iv, msgn,
+      remotejid.localp, remotejid.domainp, RandomInt(), deviceid, encrypted.isprekey, remoteid, encrypted.n, encrypted.p, 12, iv, msgn,
       payload);
 }
 
@@ -769,7 +774,7 @@ static void HandleCommand() {
     if (HasConnection()) {
       if (omemoIsSessionInitialized(&omemosession)) {
         if (remoteid)
-          SendNormalOmemo(cmd, remoteid);
+          SendNormalOmemo(cmd);
         else // TODO: save remote id persistantly
           LogWarn("Remote id has not been found yet");
       } else {

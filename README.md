@@ -23,8 +23,8 @@ This repository contains two libraries:
 
 ### Goals
 
-- Run on embedded (support for ESP-IDF (ESP32) & (hopefully) pico-sdk (Raspberry Pi
-  Pico [W])).
+- Run on embedded: support for ESP32 on ESP-IDF & Raspberry Pi Pico
+  \[W\] on pico-sdk (untested).
 
 - Be portable to any OS; empower any system to connect to XMPP networks.
 
@@ -32,14 +32,14 @@ This repository contains two libraries:
 
 - Low amount of code while still being readable.
 
-- Control of memory usage (when possible).
+- Control of memory management (when possible).
 
 ### Non-goals
 
 - Implement the XMPP spec word-for-word.
 
-- Have an extension/plugin system, for additional features you must
-  patch the library.
+- Have an extension/plugin system or support multiple versions of a
+  protocol, for additional features you must patch the library.
 
 ## OMEMO
 
@@ -47,11 +47,12 @@ This repository contains two libraries:
  Protobuf with an API that is specifically tailored to OMEMO. We do not
  have dependencies on (any) libsignal or libolm code.
 
- Curve25519 and Ed25519 functions are handled by the c25519 library,
- which is included as amalgamation in `/c25519.c` and `/c25519.h`. Some
- changes have been made there which can be inspected with `$ git diff
- 2eef25dc -- c25519.*`. This Curve25519 implementation is noticably
- slower than curve25519\_donna. For this reason [cosmopolitan's
+ Curve25519 and Ed25519 functions are handled by the
+ [c25519](https://www.dlbeer.co.nz/oss/c25519.html) library, which is
+ included as amalgamation in `/c25519.c` and `/c25519.h`. Some changes
+ have been made there which can be inspected with `$ git diff 2eef25dc
+ -- c25519.*`. This Curve25519 implementation is noticably slower than
+ curve25519\_donna. For this reason [cosmopolitan's
  overhaul](https://github.com/jart/cosmopolitan/blob/master/third_party/mbedtls/everest.c)
  of the [Everest](https://project-everest.github.io/) Curve25519
  implementation is enabled on x86 64-bit systems.
@@ -64,7 +65,7 @@ This repository contains two libraries:
 
 - MbedTLS 3.0+
 
-- C99 compiler
+- C11 compiler
 
 - docker-compose (for testing)
 
@@ -85,14 +86,15 @@ Using this library for your own project:
  `/c25519.c` and `/c25519.h`.
 
  In both cases, you must link against libmbedcrypto (and/or configure your
- mbedtls build to only include the needed functions TODO: specify
- which).
+ mbedtls build to only include the needed functions.
 
 ### Example
 
  The [`im.c`](./examples/im.c) example shows how additional
  functionality can be used in combination with the library. The example
- is not a feature complete instant messenger.
+ is not a feature complete instant messenger and for simplicity's sake
+ the code is full of hardcoded and spec deviating behaviour that should
+ not represent a serious XMPP client.
 
 Run the im (instant messenger) example:
 
@@ -118,12 +120,10 @@ EOF
 
  `$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
 
-
-
 ## License
 
- The new code in the library is licensed under ISC, everything else is
- also permissively licensed:
+ The code in this repository is licensed under ISC, all vendored code in
+ this repository is also permissively licensed:
 
  yxml is licensed under MIT, c25519 is in the public domain and
  Everest Curve25519 is licensed under Apache-2.0.
