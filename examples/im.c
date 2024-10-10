@@ -23,11 +23,7 @@
 
 #include "system.h"
 
-#if 0
-#define Log(fmt, ...) fprintf(log, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
-#else
 #define Log(fmt, ...) fprintf(stdout, fmt "\n" __VA_OPT__(,) __VA_ARGS__)
-#endif
 #define LogWarn(fmt, ...) fprintf(stdout, "\e[33m" fmt "\e[0m\n" __VA_OPT__(,) __VA_ARGS__)
 
 #define PUBLISH_OPTIONS_OPEN                                           \
@@ -42,13 +38,9 @@
 typedef char Uuidv4[36+1];
 
 static const char *serverip;
-static char *logdata;
-static size_t logdatan;
-static FILE *log;
 static struct xmppClient client;
 static struct StaticData sd;
 static char linebuf[1000];
-static char *line;
 static struct omemoStore omemostore;
 static struct omemoSession omemosession;
 static int deviceid, remoteid;
@@ -113,11 +105,6 @@ static void GenerateUuidv4(Uuidv4 dst) {
     dst++, p++;
   }
   *dst = '\0';
-}
-
-static void Die() {
-  free(line);
-  exit(0);
 }
 
 static struct {
@@ -186,7 +173,7 @@ static char *GetLine() {
   ssize_t n;
   // We expect that stdin is buffered on newlines.
   if ((n = read(STDIN_FILENO, linebuf, sizeof(linebuf)-1)) <= 0)
-    Die();
+    exit(0);
   linebuf[n-1] = 0;
   return linebuf;
 }
@@ -197,7 +184,7 @@ static void GivePassword() {
   fflush(stdout);
   pwd = GetLine();
   xmppSupplyPassword(&client, pwd);
-  explicit_bzero(pwd, strlen(pwd));
+  memset(pwd, 0, strlen(pwd)); // should use explicit_bzero here
 }
 
 static void PrintPrompt() {
@@ -705,7 +692,7 @@ static bool IterateClient() {
     default:
       if (r < 0) {
         Log("Error encountered %d", r);
-        Die();
+        exit(1);
       }
       break;
     }
@@ -755,9 +742,6 @@ static void HandleCommand() {
       Initialize(jid);
       puts("Logging in...");
     }
-  } else if (!strcmp("/log", cmd)) {
-    fflush(log);
-    printf("Printing log:\n%d %s\n", (int)logdatan, logdata);
   } else if (!strncmp("/ping ", cmd, 6)) {
     if (HasConnection()) {
       strcpy(jid, cmd+6);
@@ -785,7 +769,6 @@ static void HandleCommand() {
 }
 
 static void Loop() {
-  char *line = NULL;
   for (;;) {
     if (xmppIsInitialized(&client)) {
       if (IterateClient()) {
@@ -797,7 +780,6 @@ static void Loop() {
     }
     HandleCommand();
   }
-  free(line);
 }
 
 static void LoadStore() {
@@ -805,8 +787,6 @@ static void LoadStore() {
 }
 
 void RunIm(const char *ip) {
-  log = open_memstream(&logdata, &logdatan);
-  assert(log);
   serverip = ip;
   deviceid = 1024;
   xmppParseJid(&remotejid, remotejidp, sizeof(remotejidp), "user@localhost");
@@ -815,7 +795,7 @@ void RunIm(const char *ip) {
   assert(!omemoSetupSession(&omemosession, 100));
   LoadSession();
   Loop();
-  Die();
+  exit(0);
 }
 
 #ifdef IM_NATIVE

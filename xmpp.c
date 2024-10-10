@@ -21,6 +21,25 @@
 #include "xmpp.h"
 #include "yxml.h"
 
+static char *StpCpy(char *d, char *s) {
+  while ((*d = *s++))
+    d++;
+  return d;
+}
+
+static char *SafeStpCpy(char *d, char *e, const char *s) {
+  while (d < e && (*d = *s++))
+    d++;
+  return d;
+}
+
+static char *SafeMempCpy(char *d, char *e, char *s, size_t n) {
+  if (d + n > e)
+    return e;
+  memcpy(d, s, n);
+  return d + n;
+}
+
 static char *EncodeBase64(char *d, char *e, const char *s, size_t n) {
   if (mbedtls_base64_encode((unsigned char *)d, e-d, &n, (const unsigned char *)s, n))
     return e;
@@ -80,7 +99,7 @@ void xmppReadXmlSlice(char *d, const struct xmppXmlSlice *slc) {
     // with parsing input validation has already succeeded so there is
     // no reason to check for errors again.
     if (yxml_parse(&x, slc->p[i]) == target)
-      d = stpcpy(d, x.data);
+      d = StpCpy(d, x.data);
   }
 }
 
@@ -395,19 +414,6 @@ static int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool ins
   }
   st->raw.rawn = st->raw.n = p->i - i;
   return 0;
-}
-
-static char *SafeStpCpy(char *d, char *e, const char *s) {
-  while (*s && d < e)
-    *d++ = *s++;
-  return d;
-}
-
-static char *SafeMempCpy(char *d, char *e, char *s, size_t n) {
-  if (d + n > e)
-    return e;
-  memcpy(d, s, n);
-  return d + n;
 }
 
 /**

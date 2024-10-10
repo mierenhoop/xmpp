@@ -354,8 +354,6 @@ int omemoSetupSession(struct omemoSession *session, size_t cap) {
     return OMEMO_EALLOC;
   }
   session->mkskipped.c = cap;
-  // TODO: allow this to be set via arg or #define?
-  session->mkskipped.maxskip = 1000;
   return 0;
 }
 
@@ -386,7 +384,7 @@ static void GetMac(CTX ctx, uint8_t d[static 8], const omemoKey ika, const omemo
 
 static void Encrypt(CTX ctx, uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
                     uint8_t iv[static 16]) {
-  _Static_assert(OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE == 48);
+  assert(OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE == 48);
   uint8_t tmp[48];
   memcpy(tmp, in, 32);
   memset(tmp+32, 0x10, 0x10);
@@ -410,11 +408,11 @@ struct __attribute__((__packed__)) DeriveChainKeyOutput {
   omemoKey cipher, mac;
   uint8_t iv[16];
 };
-_Static_assert(sizeof(struct DeriveChainKeyOutput) == 80);
 
 static void DeriveChainKey(CTX ctx, struct DeriveChainKeyOutput *out, const omemoKey ck) {
   uint8_t salt[32];
   memset(salt, 0, 32);
+  assert(sizeof(struct DeriveChainKeyOutput) == 80);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
                       salt, 32, ck, 32, "WhisperMessageKeys",
                       18, (uint8_t *)out,
@@ -616,9 +614,14 @@ static struct omemoMessageKey *FindMessageKey(struct omemoSkippedMessageKeys *ke
   return NULL;
 }
 
+#define CLAMP0(v) ((v) > 0 ? (v) : 0)
+
+static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
+  return CLAMP0(n - nr);
+}
+
 static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkippedMessageKeys *keys, uint32_t n) {
-  // TODO: fix this assertion
-  //assert(keys->n + (n - state->nr) <= keys->c); // this is checked in DecryptMessage
+  assert(keys->n + GetAmountSkipped(state->nr, n) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
     omemoKey mk;
     GetBaseMaterials(ctx, state->ckr, mk, state->ckr);
@@ -669,14 +672,12 @@ static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
     memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
   } else {
-    // TODO: add back in
-    //if (!shouldstep && headern < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
-    //if (shouldstep && headerpn < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
-    //uint64_t nskips = shouldstep ?
-    //  headerpn - session->state.nr + headern :
-    //  headern - session->state.nr;
-    //if (nskips > session->mkskipped.maxskip) Throw(ctx, OMEMO_EMAXSKIP);
-    //if (nskips > session->mkskipped.c - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
+    if (!shouldstep && headern < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
+    uint64_t nskips = shouldstep
+      ? GetAmountSkipped(session->state.nr, headerpn) + headern
+      : GetAmountSkipped(session->state.nr, headern);
+    if (nskips > OMEMO_MAXSKIPPED) Throw(ctx, OMEMO_EMAXSKIP);
+    if (nskips > session->mkskipped.c - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
     if (shouldstep) {
       SkipMessageKeys(ctx, &session->state, &session->mkskipped, headerpn);
       DHRatchet(ctx, &session->state, headerdh);

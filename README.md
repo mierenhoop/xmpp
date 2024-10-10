@@ -13,14 +13,6 @@ This repository contains two libraries:
 
 - `omemo.c`: a compact implementation of OMEMO.
 
-### Uses
-
-- Instant messenger.
-
-- Easy integration of IoT device with existing XMPP software.
-
-- Integrating chat into a video game.
-
 ### Goals
 
 - Run on embedded: support for ESP32 on ESP-IDF & Raspberry Pi Pico
@@ -65,7 +57,7 @@ This repository contains two libraries:
 
 - MbedTLS 3.0+
 
-- C11 compiler
+- C99 compiler
 
 - docker-compose (for testing)
 

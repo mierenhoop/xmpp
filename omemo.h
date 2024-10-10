@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #define OMEMO_NUMPREKEYS 100
+#define OMEMO_MAXSKIPPED 1000
 
 #define OMEMO_EPROTOBUF (-1)
 #define OMEMO_ECRYPTO (-2)
@@ -61,7 +62,7 @@ struct omemoMessageKey {
 // c >= maxskip
 struct omemoSkippedMessageKeys {
   struct omemoMessageKey *p, *removed;
-  size_t n, c, maxskip;
+  size_t n, c;
 };
 
 struct omemoState {
