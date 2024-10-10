@@ -1,3 +1,19 @@
+/**
+ * Copyright 2024 mierenhoop
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
 #include <mbedtls/pkcs5.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/net_sockets.h>
@@ -187,6 +203,7 @@ bool xmppParseAttribute(struct xmppParser *p, struct xmppXmlSlice *slc) {
       slc->rawn++;
   }
   longjmp(p->jb, XMPP_EPARTIAL);
+  return false;
 }
 
 void xmppParseContent(struct xmppParser *p, struct xmppXmlSlice *slc) {
@@ -236,6 +253,7 @@ bool xmppParseElement(struct xmppParser *p) {
     }
   }
   longjmp(p->jb, XMPP_EPARTIAL);
+  return false;
 }
 
 static void ReadAckAnswer(struct xmppParser *p, struct xmppStanza *st) {
@@ -572,11 +590,8 @@ void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...) {
         s = va_arg(ap, const char*);
         if (!skip)
           d = EncodeBase64(d, e, s, n);
-      break; case 'n':
-        n = va_arg(ap, int);
-        s = va_arg(ap, const char*);
-        if (!skip)
-          d = EncodeXmlString(d, e, s, n);
+      break; default:
+        assert(false);
       }
     break; case '[': skip = !va_arg(ap, int); // actually bool
     break; case ']': skip = false;
@@ -609,8 +624,8 @@ int xmppFlush(struct xmppClient *c, bool isstanza) {
 }
 
 // same as xmppFormatStanza but with xmppFlush isstanza = false instead of true
-#define BuildComplete(client, fmt, ...)                                \
-  (xmppAppendXml(&(client)->builder, fmt __VA_OPT__(, ) __VA_ARGS__),  \
+#define BuildComplete(client, ...)                                     \
+  (xmppAppendXml(&(client)->builder, __VA_ARGS__),                     \
    xmppFlush((c), false))
 
 // res: string or NULL if you want the server to generate it

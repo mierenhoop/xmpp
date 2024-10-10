@@ -1509,7 +1509,7 @@ void sha512_get(const struct sha512_state *s, uint8_t *hash,
 }
 
 // Some platforms don't support 128 bit int.
-#if defined(__x86_64__)
+#ifdef __SIZEOF_INT128__
 
 typedef unsigned __int128 uint128_t;
 

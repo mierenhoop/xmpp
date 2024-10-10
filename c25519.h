@@ -438,7 +438,7 @@ void sha512_get(const struct sha512_state *s, uint8_t *hash,
 #ifndef EVEREST_CURVE25519_H_
 #define EVEREST_CURVE25519_H_
 
-#if defined(__x86_64__)
+#ifdef __SIZEOF_INT128__
 
 void curve25519(uint8_t mypublic[32], const uint8_t secret[32],
                 const uint8_t basepoint[32]);

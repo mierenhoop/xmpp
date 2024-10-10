@@ -1,3 +1,19 @@
+/**
+ * Copyright 2024 mierenhoop
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
 #ifndef XMPP_H_
 #define XMPP_H_
 
@@ -36,10 +52,16 @@ struct StaticData {
   char in[XMPP_CONFIG_INBUF_SIZE], out[XMPP_CONFIG_OUTBUF_SIZE], saslbuf[XMPP_CONFIG_MAX_SASLBUF_SIZE], xbuf[XMPP_CONFIG_YXMLBUF_SIZE], smackid[XMPP_CONFIG_MAX_SMACKID_SIZE], jid[XMPP_CONFIG_MAX_JID_SIZE+1];
 };
 
-// p can be null!
+/**
+ * Slice of escaped XML content.
+ *
+ * p = pointer to either '>', '\'' or '"', can also be NULL
+ * rawn = the amount of bytes to the closing '<', '\'' or '"'
+ * n = the size of the content after it would be unescaped
+ */
 struct xmppXmlSlice {
   char *p;
-  size_t n, rawn; // TODO: n -> realn, rawn -> n
+  size_t n, rawn;
 };
 
 /**
@@ -207,9 +229,8 @@ struct xmppFailure {
 
 struct xmppStream {
   int features;
-  //int optionalfeatures;
   int requiredfeatures;
-  bool hasunknownrequired; // TODO: make this an error?
+  bool hasunknownrequired;
 };
 
 // XML stanza transformed into a C structure.
@@ -247,7 +268,7 @@ struct xmppJid {
 // https://wiki.xmpp.org/web/SASL_Authentication_and_SCRAM#In_detail
 // feel free to realloc p if malloc'ed: ctx.p = realloc(ctx.p, (ctx.n*=2))
 struct xmppSaslContext {
-  int state; // TODO: we might not need this
+  int state;
   char *p;
   size_t n;
   size_t initialmsg;
@@ -323,10 +344,9 @@ struct xmppClient {
  * @return 0 if successful or XMPP_EMEM if there is not enough capacity
  * @see xmppFlush
  */
-#define xmppFormatStanza(c, fmt, ...)                                  \
+#define xmppFormatStanza(c, ...) /* Actually (c, fmt, ...) */          \
   (xmppStartStanza(&(c)->builder),                                     \
-   xmppAppendXml(&(c)->builder, fmt __VA_OPT__(, ) __VA_ARGS__),       \
-   xmppFlush((c), true))
+   xmppAppendXml(&(c)->builder, __VA_ARGS__), xmppFlush((c), true))
 
 /**
  * Appends a formatted XML string to the builder.
@@ -335,11 +355,10 @@ struct xmppClient {
  * @param fmt is a printf-like format string that only supports the
  * following specifiers:
  * - %s: pointer to nul-string which will be generously escaped (for
- *   attribute and content) TODO: make this %z
+ *   attribute and content)
  * - %b: base64 representation of raw binary data, the first parameter 
  *   is the length and the second is a pointer to the data
  * - %d: integer (int)
- * - %n: length and pointer to string which will be escaped
  */
 void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...);
 
@@ -399,9 +418,6 @@ static inline void xmppInitClient(struct xmppClient *c, struct StaticData *d, co
   c->opts = opts;
   c->state = 1; // CLIENTSTATE_INIT
 }
-
-// TODO: have these function take Parser and Builder respectively and
-// have a separate function for IsTls?
 
 /**
  * Get buffer and maximimum size for receiving data.
