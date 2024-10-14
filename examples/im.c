@@ -88,7 +88,7 @@ static bool HasConnection() {
   if (xmppIsInitialized(&client)) {
     return true;
   } else {
-    puts("Please login first.\nTry: /login jid password");
+    puts("Please login first.\nTry: /login jid");
     return false;
   }
 }

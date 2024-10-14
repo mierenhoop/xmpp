@@ -44,10 +44,12 @@ This repository contains two libraries:
  included as amalgamation in `/c25519.c` and `/c25519.h`. Some changes
  have been made there which can be inspected with `$ git diff 2eef25dc
  -- c25519.*`. This Curve25519 implementation is noticably slower than
- curve25519\_donna. For this reason [cosmopolitan's
+ curve25519\_donna. Decrypting messages can take hundreds of
+ milliseconds to seconds and filling a hundred prekeys can take up to
+ minutes on microcontrollers. To speed things up, [cosmopolitan's
  overhaul](https://github.com/jart/cosmopolitan/blob/master/third_party/mbedtls/everest.c)
  of the [Everest](https://project-everest.github.io/) Curve25519
- implementation is enabled on x86 64-bit systems.
+ implementation is enabled on supported systems.
 
  The version of OMEMO implemented is 0.3.0, updating this library to a
  newer version of OMEMO should be trivial, but supporting multiple
@@ -111,6 +113,8 @@ EOF
  `$ ESP_DEV=/dev/ttyUSB0 make esp-upload`
 
  `$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
+
+
 
 ## License
 
