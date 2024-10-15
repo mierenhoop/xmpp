@@ -50,7 +50,10 @@ size-esp-im: | o
 esp-upload:
 	$(ESPIDF_DOCKERCMD) flash
 
-# can also monitor with $ rlwrap -- socat - /dev/ttyUSB0,b115200,cfmakeraw,ignoreeof
+.PHONY: esp-console
+esp-console:
+	rlwrap -- socat - $(ESP_DEV),b115200,cfmakeraw,ignoreeof
+
 .PHONY: esp-monitor
 esp-monitor:
 	$(ESPIDF_DOCKERCMD) monitor
