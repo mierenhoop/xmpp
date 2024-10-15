@@ -114,7 +114,9 @@ EOF
 
  `$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
 
+### Demo of XMPP & OMEMO on an ESP32
 
+https://github.com/user-attachments/assets/b01d9439-f30b-4062-8711-02cbf9599e67
 
 ## License
 
