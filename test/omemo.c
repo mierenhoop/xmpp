@@ -92,7 +92,7 @@ static void TestProtobufPrekey() {
       [3] = {PB_REQUIRED | PB_LEN, 33}, // identitykey/ik
       [4] = {PB_REQUIRED | PB_LEN},     // message
   };
-  assert(!ParseProtobuf(msg + 1, msgn - 1, fields, 7));
+  assert(!ParseProtobuf(msg, msgn, fields, 7));
 }
 
 static void TestFormatProtobuf() {
@@ -450,6 +450,7 @@ static void TestSerialization() {
 int main() {
   RunTest(TestParseProtobuf);
   RunTest(TestFormatProtobuf);
+  RunTest(TestProtobufPrekey);
   RunTest(TestCurve25519);
   RunTest(TestSignature);
   RunTest(TestEncryption);
