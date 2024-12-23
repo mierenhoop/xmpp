@@ -94,7 +94,7 @@ start-omemo-bot: | test/bot-venv/
 
 .PHONY: tags
 tags:
-	ctags-exuberant -R --exclude=o --exclude=test/bot-venv
+	ctags-exuberant --c-kinds=+p -R --exclude=o --exclude=test/bot-venv
 
 .PHONY: clean
 clean:
