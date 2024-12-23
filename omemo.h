@@ -88,6 +88,18 @@ struct omemoState {
   uint32_t ns, nr, pn;
 };
 
+struct omemoKeyDecryptor {
+  struct omemoState newstate;
+  bool shouldstep;
+  uint32_t headern, headerpn;
+  omemoKey headerdh;
+  bool providedmk;
+  omemoKey mk;
+  size_t maclen;
+  uint8_t macinput[66 + OMEMO_INTERNAL_FULLMSG_MAXSIZE];
+  uint8_t mac[8];
+};
+
 // [        16        |   16  ]
 //  GCM encryption key GCM tag
 typedef uint8_t omemoKeyPayload[OMEMO_INTERNAL_PAYLOAD_SIZE];
@@ -113,6 +125,7 @@ struct omemoSession {
   int fsm;
   omemoKey remoteidentity;
   struct omemoState state;
+  // TODO: remove
   struct omemoSkippedMessageKeys mkskipped;
   omemoKey pendingek;
   uint32_t pendingpk_id, pendingspk_id;
@@ -197,6 +210,13 @@ int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *s
 int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload);
 
 /**
+ * Initialize session with prekey message.
+ *
+ * Must be called before omemoDecryptKey().
+ */
+int omemoInitFromPrekey(struct omemoSession *session, const struct omemoStore *store, const uint8_t *pkmsg, size_t pkmsgn, const uint8_t **msg, size_t *msgn);
+
+/**
  * Decrypt message encryption key payload for a specific recipient.
  */
 int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn);
@@ -210,6 +230,8 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
 int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
                                uint8_t iv[12], const uint8_t *s,
                                size_t n);
+
+int omemoSkipMessageKey(struct omemoKeyDecryptor *dec, size_t *nr, omemoKey dh, omemoKey mk);
 
 /**
  * Decrypt message taken from the <payload> element.

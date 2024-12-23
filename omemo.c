@@ -220,6 +220,7 @@ static size_t FormatMessageHeader(uint8_t d[OMEMO_INTERNAL_HEADER_MAXSIZE], uint
   return p - d;
 }
 
+// TODO: remove
 /**
  * Remove the skipped message key that has just been used for
  * decrypting.
@@ -364,6 +365,7 @@ int omemoSetupStore(struct omemoStore *store) {
   return 0;
 }
 
+// TODO: REMOVE
 int omemoSetupSession(struct omemoSession *session, size_t cap) {
   memset(session, 0, sizeof(struct omemoSession));
   if (!(session->mkskipped.p = malloc(cap * sizeof(struct omemoMessageKey)))) {
@@ -373,6 +375,7 @@ int omemoSetupSession(struct omemoSession *session, size_t cap) {
   return 0;
 }
 
+// TODO: remove
 void omemoFreeSession(struct omemoSession *session) {
   if (session->mkskipped.p) {
     free(session->mkskipped.p);
@@ -381,7 +384,7 @@ void omemoFreeSession(struct omemoSession *session) {
 }
 
 //  AD = Encode(IKA) || Encode(IKB)
-static void GetAd(uint8_t ad[66], const omemoKey ika, const omemoKey ikb) {
+static void GetAd(uint8_t ad[static 66], const omemoKey ika, const omemoKey ikb) {
   omemoSerializeKey(ad, ika);
   omemoSerializeKey(ad + 33, ikb);
 }
@@ -396,6 +399,15 @@ static void GetMac(CTX ctx, uint8_t d[static 8], const omemoKey ika, const omemo
                       32, macinput, 66 + msgn, mac) != 0)
     Throw(ctx, OMEMO_ECRYPTO);
   memcpy(d, mac, 8);
+}
+
+static bool VerifyMac(CTX ctx, const omemoKey ika, const omemoKey ikb,
+                  struct omemoKeyDecryptor *dec) {
+  uint8_t mac[32];
+  if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), dec->mk,
+                      32, dec->macinput, dec->maclen, mac) != 0)
+    Throw(ctx, OMEMO_ECRYPTO);
+  return !!memcmp(mac, dec->mac, 8);
 }
 
 static void Encrypt(CTX ctx, uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
@@ -636,6 +648,40 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return CLAMP0(n - nr);
 }
 
+int SkipMessageKey(CTX ctx, struct omemoKeyDecryptor *dec, size_t *nr, omemoKey dh, omemoKey mk) {
+  omemoKey tmk;
+  if (dec->shouldstep && dec->newstate.nr >= dec->headerpn) {
+      DHRatchet(ctx, &dec->newstate, dec->headerdh);
+      dec->shouldstep = false;
+  }
+  if ((dec->shouldstep && dec->newstate.nr < dec->headerpn)
+      || dec->newstate.nr < dec->headern) {
+    GetBaseMaterials(ctx, dec->newstate.ckr, tmk, dec->newstate.ckr);
+    if (nr) *nr = dec->newstate.nr;
+    if (dh) memcpy(dh, dec->newstate.dhr, 32);
+    if (mk) memcpy(mk, tmk, 32);
+    dec->newstate.nr++;
+    return 0;
+  }
+  return 1;
+}
+
+int omemoSkipMessageKey(struct omemoKeyDecryptor *dec, size_t *nr, omemoKey dh, omemoKey mk) {
+  if (!dec) return OMEMO_ESTATE;
+  int r;
+  SetupCtx(ctx);
+  if (Recover(ctx, r)) return r;
+  return SkipMessageKey(ctx, dec, nr, dh, mk);
+}
+
+// puts it in session, then you may call decrypt again, decrypt will remove it afterwards.
+void omemoSupplyMessageKey(struct omemoKeyDecryptor *dec, omemoKey mk) {
+  if (dec && mk) {
+    dec->providedmk = true;
+    memcpy(dec->mk, mk, 32);
+  }
+}
+
 static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkippedMessageKeys *keys, uint32_t n) {
   assert(keys->n + GetAmountSkipped(state->nr, n) <= keys->c); // this is checked in DecryptMessage
   while (state->nr < n) {
@@ -649,6 +695,12 @@ static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkipp
   }
 }
 
+// Random note:
+// When a skipped message key has been deleted and that message is
+// attempted to be decrypted then dhr != headerdh, thus the ratchet will
+// be stepped with the wrong key. However because the mac will not be
+// valid, all changes to state are discarded and the dhr will be
+// reverted to the last correct one.
 static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
                               const struct omemoStore *store,
                               omemoKeyPayload decrypted, const uint8_t *msg,
@@ -684,6 +736,8 @@ static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
 
   omemoKey mk;
   struct omemoMessageKey *key;
+  // TODO: extract the entire following blocks into separate functions.
+  // Also, when these functions are not called, we should still run SkipMessageKeys and the like.
   if ((key = FindMessageKey(&session->mkskipped, headerdh, headern))) {
     memcpy(mk, key->mk, 32);
     session->mkskipped.removed = key;
@@ -771,6 +825,103 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
   DecryptKeyImpl(ctx, session, store, payload, isprekey, msg, msgn);
   if (session->mkskipped.removed)
     NormalizeSkipMessageKeysTrivial(&session->mkskipped);
+  return 0;
+}
+
+int omemoInitKeyDecryptor(struct omemoSession *session,
+                          const struct omemoStore *store, bool isprekey,
+                          const uint8_t *msg, size_t msgn,
+                          struct omemoKeyDecryptor *dec) {
+
+  if (!session || !store || !store->isinitialized || !msg || !msgn)
+    return OMEMO_ESTATE;
+  memcpy(&dec->newstate, &session->state, sizeof(struct omemoState));
+  int r;
+  SetupCtx(ctx);
+  if (Recover(ctx, r)) return r;
+  if (isprekey) {
+    if (msgn == 0 || msg[0] != ((3 << 4) | 3))
+      Throw(ctx, OMEMO_ECORRUPT);
+    // PreKeyWhisperMessage
+    struct ProtobufField fields[7] = {
+      [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
+      [1] = {PB_REQUIRED | PB_UINT32}, // prekeyid
+      [6] = {PB_REQUIRED | PB_UINT32}, // signedprekeyid
+      [2] = {PB_REQUIRED | PB_LEN, 33}, // basekey/ek
+      [3] = {PB_REQUIRED | PB_LEN, 33}, // identitykey/ik
+      [4] = {PB_REQUIRED | PB_LEN}, // message
+    };
+    if (ParseProtobuf(msg+1, msgn-1, fields, 7))
+      Throw(ctx, OMEMO_EPROTOBUF);
+    // nr will only ever be 0 with the first prekey message
+    // we could put this in session->fsm...
+    if (session->state.nr == 0) {
+      // TODO: later remove this prekey
+      const struct omemoPreKey *pk = FindPreKey(store, fields[1].v);
+      const struct omemoSignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
+      if (!pk || !spk)
+        Throw(ctx, OMEMO_ECORRUPT);
+      memcpy(session->remoteidentity, fields[3].p+1, 32);
+      omemoKey sk;
+      GetSharedSecret(ctx, sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1);
+      RatchetInitBob(&session->state, sk, &spk->kp);
+    }
+    msg = fields[4].p;
+    msgn = fields[4].v;
+  } else {
+    if (!session->fsm) // TODO: specify which states are allowed here
+      Throw(ctx, OMEMO_ESTATE);
+  }
+  session->fsm = SESSION_READY;
+  if (msgn < 9 || msg[0] != ((3 << 4) | 3))
+    Throw(ctx, OMEMO_ECORRUPT);
+  struct ProtobufField fields[5] = {
+    [1] = {PB_REQUIRED | PB_LEN, 33}, // ek
+    [2] = {PB_REQUIRED | PB_UINT32}, // n
+    [3] = {PB_REQUIRED | PB_UINT32}, // pn
+    [4] = {PB_REQUIRED | PB_LEN}, // ciphertext
+  };
+
+  if (ParseProtobuf(msg+1, msgn-9, fields, 5))
+    Throw(ctx, OMEMO_EPROTOBUF);
+  // these checks should already be handled by ParseProtobuf, just to make sure...
+  if (fields[4].v > 48 || fields[4].v < 32)
+    Throw(ctx, OMEMO_ECORRUPT);
+  assert(fields[1].v == 33);
+
+  if (dec) {
+    dec->headern = fields[2].v;
+    dec->headerpn = fields[3].v;
+    memcpy(dec->headerdh, fields[1].p+1, 32);
+  }
+  return 0;
+}
+
+int64_t omemoGetSkipAmount(const struct omemoSession *session, const struct omemoKeyDecryptor *dec) {
+  return dec->shouldstep
+    ? GetAmountSkipped(session->state.nr, dec->headerpn) + dec->headern
+    : GetAmountSkipped(session->state.nr, dec->headern);
+}
+
+int omemoDecryptKeyNew(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyDecryptor *dec, omemoKeyPayload decrypted) {
+  int r;
+  SetupCtx(ctx);
+  if (Recover(ctx, r)) return r;
+  if (!dec->providedmk) {
+    while (!SkipMessageKey(ctx, dec, NULL, NULL, NULL)) {}
+    GetBaseMaterials(ctx, dec->newstate.ckr, dec->mk, dec->newstate.ckr);
+    session->state.nr++;
+  }
+  struct DeriveChainKeyOutput kdfout;
+  DeriveChainKey(ctx, &kdfout, dec->mk);
+  uint8_t mac[8];
+  if (!VerifyMac(ctx, session->remoteidentity, store->identity.pub, dec))
+    Throw(ctx, OMEMO_ECORRUPT);
+  uint8_t tmp[48];
+  // TODO: embed full msg inside dec?
+  //Decrypt(ctx, tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv);
+  memcpy(decrypted, tmp, 32);
+  memcpy(&session->state, &dec->newstate, sizeof(struct omemoState));
   return 0;
 }
 
