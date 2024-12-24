@@ -208,8 +208,8 @@ static void TestSession() {
   ParseBundle(&bundleb, &storeb);
 
   struct omemoSession sessiona, sessionb;
-  assert(!omemoSetupSession(&sessiona, 1000));
-  assert(!omemoSetupSession(&sessionb, 1000));
+  memset(&sessiona, 0, sizeof(sessiona));
+  memset(&sessionb, 0, sizeof(sessionb));
   assert(omemoInitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
   Send(a, 0);
@@ -230,15 +230,12 @@ static void TestSession() {
   assert(sessiona.mkskipped.n == 1);
   Recv(a, 3, false);
   assert(sessiona.mkskipped.n == 0);
-
-  omemoFreeSession(&sessiona);
-  omemoFreeSession(&sessionb);
 }
 
 // Test session built by Gajim
 static void TestReceive() {
   struct omemoSession session;
-  assert(!omemoSetupSession(&session, 1000));
+  memset(&session, 0, sizeof(session));
   struct omemoStore store;
   memset(&store, 0, sizeof(struct omemoStore));
   store.isinitialized = true;
@@ -255,7 +252,6 @@ static void TestReceive() {
   uint8_t msg[180];
   CopyHex(msg,"33083812210508a21e22879385c9f5ea5ef0a50b993167659fbc0e90614365b9d0147ac8f1201a21057f1a8715095495c17552d720975d8405c38ed11bee9404bca19062d352a9c7082252330a2105e5bbca217d32f97f860ecd3c47df86f2a71eb8d2e387e31dd1f5f5349863b455100018002220a0bae4d6e5da28a1897fa3562cd4d24ee60bc9a5d4daf0f13646239bec36a2b4fd5aa1843e12d6f128f1eaa07b3001");
   assert(omemoDecryptKey(&session, &store, payload, true, msg, 164) == 0);
-  omemoFreeSession(&session);
 }
 
 static void TestDeriveChainKey() {
@@ -412,8 +408,8 @@ static void TestSerialization() {
   ParseBundle(&bundleb, &storeb);
 
   struct omemoSession sessiona, sessionb;
-  assert(!omemoSetupSession(&sessiona, 1000));
-  assert(!omemoSetupSession(&sessionb, 1000));
+  memset(&sessiona, 0, sizeof(sessiona));
+  memset(&sessionb, 0, sizeof(sessionb));
   assert(omemoInitFromBundle(&sessiona, &storea, &bundleb) == 0);
 
   size_t n = omemoGetSerializedStoreSize(&storea);
@@ -428,7 +424,7 @@ static void TestSerialization() {
   sessiona.mkskipped.n = 3;
 
   struct omemoSession tmpsession;
-  omemoSetupSession(&tmpsession, 100);
+  memset(&tmpsession, 0, sizeof(tmpsession));
   n = omemoGetSerializedSessionSize(&sessiona);
   uint8_t *buf2 = malloc(n);
   assert(buf2);

@@ -75,10 +75,9 @@ struct omemoMessageKey {
 // point to that key in array p. After this happens, it is the task of
 // the API consumer to remove the key from the array and move the
 // contents so that the array doesn't contain holes.
-// c >= maxskip
 struct omemoSkippedMessageKeys {
-  struct omemoMessageKey *p, *removed;
-  size_t n, c;
+  struct omemoMessageKey p[OMEMO_MAXSKIPPED], *removed;
+  size_t n;
 };
 
 struct omemoState {
@@ -152,16 +151,6 @@ int omemoSetupStore(struct omemoStore *store);
  * @returns 0 or OMEMO_ECRYPTO
  */
 int omemoRefillPreKeys(struct omemoStore *store);
-
-/**
- * Allocate and initialize a session.
- *
- * @param cap is the amount of message keys that will be reserved in
- * memory
- * @see omemoFreeSession()
- */
-int omemoSetupSession(struct omemoSession *session, size_t cap);
-void omemoFreeSession(struct omemoSession *session);
 
 size_t omemoGetSerializedStoreSize(const struct omemoStore *store);
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store);

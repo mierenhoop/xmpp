@@ -95,7 +95,6 @@ static bool HasConnection() {
 
 static void CloseOmemo() {
   if (omemoIsSessionInitialized(&omemosession)) {
-    omemoFreeSession(&omemosession);
     memset(&omemosession, 0, sizeof(omemosession));
   }
 }
@@ -808,7 +807,7 @@ void RunIm(const char *ip) {
   xmppParseJid(&remotejid, remotejidp, sizeof(remotejidp), "user@localhost");
   LoadStore();
   assert(omemostore.isinitialized);
-  assert(!omemoSetupSession(&omemosession, 100));
+  memset(&omemosession, 0, sizeof(omemosession));
   LoadSession();
   Loop();
   exit(0);

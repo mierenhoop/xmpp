@@ -228,7 +228,7 @@ static size_t FormatMessageHeader(uint8_t d[OMEMO_INTERNAL_HEADER_MAXSIZE], uint
  */
 static void
 NormalizeSkipMessageKeysTrivial(struct omemoSkippedMessageKeys *s) {
-  assert(s->p && s->n <= s->c);
+  assert(s->p && s->n <= OMEMO_MAXSKIPPED);
   if (s->removed) {
     assert(s->p <= s->removed && s->removed < s->p + s->n);
     size_t n = s->n - (s->removed - s->p) - 1;
@@ -362,22 +362,6 @@ int omemoSetupStore(struct omemoStore *store) {
     Throw(ctx, r);
   store->isinitialized = true;
   return 0;
-}
-
-int omemoSetupSession(struct omemoSession *session, size_t cap) {
-  memset(session, 0, sizeof(struct omemoSession));
-  if (!(session->mkskipped.p = malloc(cap * sizeof(struct omemoMessageKey)))) {
-    return OMEMO_EALLOC;
-  }
-  session->mkskipped.c = cap;
-  return 0;
-}
-
-void omemoFreeSession(struct omemoSession *session) {
-  if (session->mkskipped.p) {
-    free(session->mkskipped.p);
-    session->mkskipped.p = NULL;
-  }
 }
 
 //  AD = Encode(IKA) || Encode(IKB)
@@ -637,7 +621,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
 }
 
 static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkippedMessageKeys *keys, uint32_t n) {
-  assert(keys->n + GetAmountSkipped(state->nr, n) <= keys->c); // this is checked in DecryptMessage
+  assert(keys->n + GetAmountSkipped(state->nr, n) <= OMEMO_MAXSKIPPED); // this is checked in DecryptMessage
   while (state->nr < n) {
     omemoKey mk;
     GetBaseMaterials(ctx, state->ckr, mk, state->ckr);
@@ -693,7 +677,7 @@ static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
       ? GetAmountSkipped(session->state.nr, headerpn) + headern
       : GetAmountSkipped(session->state.nr, headern);
     if (nskips > OMEMO_MAXSKIPPED) Throw(ctx, OMEMO_EMAXSKIP);
-    if (nskips > session->mkskipped.c - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
+    if (nskips > OMEMO_MAXSKIPPED - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
     if (shouldstep) {
       SkipMessageKeys(ctx, &session->state, &session->mkskipped, headerpn);
       DHRatchet(ctx, &session->state, headerdh);
@@ -1009,7 +993,7 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
   const char *e = p + n;
-  while (session->mkskipped.n < session->mkskipped.c &&
+  while (session->mkskipped.n < OMEMO_MAXSKIPPED &&
          !ParseRepeatingField(p, e - p, &fields[15], 15) &&
          fields[15].p) {
     struct ProtobufField innerfields[] = {
