@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'
+         xmlns='http://usefulinc.com/ns/doap#'>
+  <Project xml:lang='en'>
+    <name>mierenhoop/xmpp</name>
+    <created>2025-01-23</created>
+    <shortdesc xml:lang='en'>Portable XMPP &amp; OMEMO implementations in C</shortdesc>
+    <homepage rdf:resource='https://github.com/mierenhoop/xmpp'/>
+    <license rdf:resource='https://raw.githubusercontent.com/mierenhoop/xmpp/refs/heads/master/LICENSE'/>
+    <programming-language>C</programming-language>
+    <category rdf:resource='https://linkmauve.fr/ns/xmpp-doap#category-library'/>
+    <repository>
+      <GitRepository>
+        <browse rdf:resource='https://github.com/mierenhoop/xmpp'/>
+        <location rdf:resource='https://github.com/mierenhoop/xmpp.git'/>
+      </GitRepository>
+    </repository>
+    <!-- We only implement a small part of this... -->
+    <implements rdf:resource='https://xmpp.org/rfcs/rfc6120.html'/>
+    <implements>
+      <xmpp:SupportedXep>
+        <xmpp:xep rdf:resource='https://xmpp.org/extensions/xep-0384.html'/>
+        <xmpp:status>partial</xmpp:status>
+        <xmpp:version>0.3.0</xmpp:version>
+        <xmpp:note xml:lang='en'>Storage and XML (de)serialization should be handled by client.</xmpp:note>
+      </xmpp:SupportedXep>
+    </implements>
+  </Project>
+</rdf:RDF>
