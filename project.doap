@@ -1,6 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'
-         xmlns='http://usefulinc.com/ns/doap#'>
+         xmlns='http://usefulinc.com/ns/doap#'
+         xmlns:xmpp='https://linkmauve.fr/ns/xmpp-doap#'>
   <Project xml:lang='en'>
     <name>mierenhoop/xmpp</name>
     <created>2025-01-23</created>
