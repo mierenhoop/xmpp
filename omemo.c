@@ -31,27 +31,18 @@
 
 #include "omemo.h"
 
-typedef struct Ctx {
-  jmp_buf jb;
-} *CTX;
-
-#define SetupCtx(ctx)               \
-  struct Ctx _setupctx_##ctx = {0}; \
-  CTX ctx = &_setupctx_##ctx;
-
-#define Recover(ctx, r) (r = setjmp((ctx)->jb))
-#define Throw(ctx, r) longjmp((ctx)->jb, r)
+#define TRY(expr) \
+  do { \
+    int _r_; \
+    if ((_r_ = expr)) \
+      return _r_; \
+  } while (0)
 
 enum {
   SESSION_UNINIT = 0,
   SESSION_INIT,
   SESSION_READY,
 };
-
-static void GetRandom(CTX ctx, void *p, size_t n) {
-  if (omemoRandom(p, n))
-    Throw(ctx, OMEMO_ECRYPTO);
-}
 
 // Protobuf: https://protobuf.dev/programming-guides/encoding/
 
@@ -229,18 +220,19 @@ static void ConvertCurvePrvToEdPub(omemoKey ed, const omemoKey prv) {
   ed25519_pack(ed, x, y);
 }
 
-static void c25519_sign(CTX ctx, omemoCurveSignature sig, const omemoKey prv, const uint8_t *msg, size_t msgn) {
+[[nodiscard]] static int c25519_sign(omemoCurveSignature sig, const omemoKey prv, const uint8_t *msg, size_t msgn) {
   assert(msgn <= 33);
   omemoKey ed;
   uint8_t msgbuf[33+64];
   int sign = 0;
   memcpy(msgbuf, msg, msgn);
-  GetRandom(ctx, msgbuf+msgn, 64);
+  TRY(omemoRandom(msgbuf+msgn, 64));
   ConvertCurvePrvToEdPub(ed, prv);
   sign = ed[31] & 0x80;
   edsign_sign_modified(sig, ed, prv, msgbuf, msgn);
   sig[63] &= 0x7f;
   sig[63] |= sign;
+  return 0;
 }
 
 static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, const uint8_t *msg, size_t msgn) {
@@ -254,33 +246,35 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
   return !!edsign_verify(sig2, ed, msg, msgn);
 }
 
-static void GenerateKeyPair(CTX ctx, struct omemoKeyPair *kp) {
+[[nodiscard]] static int GenerateKeyPair(struct omemoKeyPair *kp) {
   memset(kp, 0, sizeof(*kp));
-  GetRandom(ctx, kp->prv, sizeof(kp->prv));
+  TRY(omemoRandom(kp->prv, sizeof(kp->prv)));
   c25519_prepare(kp->prv);
   curve25519(kp->pub, kp->prv, c25519_base_x);
+  return 0;
 }
 
-static void GeneratePreKey(CTX ctx, struct omemoPreKey *pk, uint32_t id) {
+[[nodiscard]] static int GeneratePreKey(struct omemoPreKey *pk, uint32_t id) {
   pk->id = id;
-  GenerateKeyPair(ctx, &pk->kp);
+  return GenerateKeyPair(&pk->kp);
 }
 
-static void GenerateIdentityKeyPair(CTX ctx, struct omemoKeyPair *kp) {
-  GenerateKeyPair(ctx, kp);
+[[nodiscard]] static int GenerateIdentityKeyPair(struct omemoKeyPair *kp) {
+  return GenerateKeyPair(kp);
 }
 
-static void GenerateRegistrationId(CTX ctx, uint32_t *id) {
-  GetRandom(ctx, id, sizeof(*id));
+[[nodiscard]] static int GenerateRegistrationId(uint32_t *id) {
+  TRY(omemoRandom(id, sizeof(*id)));
   *id = (*id % 16380) + 1;
+  return 0;
 }
 
-static void CalculateCurveSignature(CTX ctx, omemoCurveSignature sig, omemoKey signprv,
+[[nodiscard]] static int CalculateCurveSignature(omemoCurveSignature sig, omemoKey signprv,
                                     uint8_t *msg, size_t n) {
   assert(n <= 33);
   uint8_t rnd[sizeof(omemoCurveSignature)], buf[33 + 128];
-  GetRandom(ctx, rnd, sizeof(rnd));
-  c25519_sign(ctx, sig, signprv, msg, n);
+  TRY(omemoRandom(rnd, sizeof(rnd)));
+  return c25519_sign(sig, signprv, msg, n);
 }
 
 //  DH(dh_pair, dh_pub)
@@ -290,14 +284,14 @@ static void CalculateCurveAgreement(uint8_t d[static 32], const omemoKey prv,
   curve25519(d, prv, pub);
 }
 
-static void GenerateSignedPreKey(CTX ctx, struct omemoSignedPreKey *spk,
+[[nodiscard]] static int GenerateSignedPreKey(struct omemoSignedPreKey *spk,
                                  uint32_t id,
                                  struct omemoKeyPair *idkp) {
   omemoSerializedKey ser;
   spk->id = id;
-  GenerateKeyPair(ctx, &spk->kp);
+  TRY(GenerateKeyPair(&spk->kp));
   omemoSerializeKey(ser, spk->kp.pub);
-  CalculateCurveSignature(ctx, spk->sig, idkp->prv, ser,
+  return CalculateCurveSignature(spk->sig, idkp->prv, ser,
                           sizeof(omemoSerializedKey));
 }
 
@@ -313,15 +307,12 @@ static inline uint32_t IncrementWrapSkipZero(uint32_t n) {
 }
 
 int omemoRefillPreKeys(struct omemoStore *store) {
-  int i, r;
-  SetupCtx(ctx);
-  if (Recover(ctx, r))
-    return r;
+  int i;
   for (i = 0; i < OMEMO_NUMPREKEYS; i++) {
     if (!store->prekeys[i].id) {
       struct omemoPreKey pk;
       uint32_t n = IncrementWrapSkipZero(store->pkcounter);
-      GeneratePreKey(ctx, &pk, n);
+      TRY(GeneratePreKey(&pk, n));
       memcpy(store->prekeys+i, &pk, sizeof(struct omemoPreKey));
       store->pkcounter = n;
     }
@@ -329,20 +320,20 @@ int omemoRefillPreKeys(struct omemoStore *store) {
   return 0;
 }
 
-int omemoSetupStore(struct omemoStore *store) {
-  int r;
-  SetupCtx(ctx);
-  if (Recover(ctx, r)) {
-    memset(store, 0, sizeof(struct omemoStore));
-    return r;
-  }
+[[nodiscard]] static int omemoSetupStoreImpl(struct omemoStore *store) {
   memset(store, 0, sizeof(struct omemoStore));
-  GenerateIdentityKeyPair(ctx, &store->identity);
-  GenerateSignedPreKey(ctx, &store->cursignedprekey, 1, &store->identity);
-  if ((r = omemoRefillPreKeys(store)))
-    Throw(ctx, r);
+  TRY(GenerateIdentityKeyPair(&store->identity));
+  TRY(GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity));
+  TRY(omemoRefillPreKeys(store));
   store->isinitialized = true;
   return 0;
+}
+
+int omemoSetupStore(struct omemoStore *store) {
+  int r;
+  if ((r = omemoSetupStoreImpl(store)))
+    memset(store, 0, sizeof(struct omemoStore));
+  return r;
 }
 
 //  AD = Encode(IKA) || Encode(IKB)
@@ -351,7 +342,7 @@ static void GetAd(uint8_t ad[66], const omemoKey ika, const omemoKey ikb) {
   omemoSerializeKey(ad + 33, ikb);
 }
 
-static void GetMac(CTX ctx, uint8_t d[static 8], const omemoKey ika, const omemoKey ikb,
+[[nodiscard]] static int GetMac(uint8_t d[static 8], const omemoKey ika, const omemoKey ikb,
                   const omemoKey mk, const uint8_t *msg, size_t msgn) {
   assert(msgn <= OMEMO_INTERNAL_FULLMSG_MAXSIZE);
   uint8_t macinput[66 + OMEMO_INTERNAL_FULLMSG_MAXSIZE], mac[32];
@@ -359,11 +350,12 @@ static void GetMac(CTX ctx, uint8_t d[static 8], const omemoKey ika, const omemo
   memcpy(macinput + 66, msg, msgn);
   if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), mk,
                       32, macinput, 66 + msgn, mac) != 0)
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
   memcpy(d, mac, 8);
+  return 0;
 }
 
-static void Encrypt(CTX ctx, uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
+[[nodiscard]] static int Encrypt(uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
                     uint8_t iv[static 16]) {
   assert(OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE == 48);
   uint8_t tmp[48];
@@ -373,16 +365,18 @@ static void Encrypt(CTX ctx, uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], 
   if (mbedtls_aes_setkey_enc(&aes, key, 256)
    || mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 48,
                                iv, tmp, out))
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
+  return 0;
 }
 
-static void Decrypt(CTX ctx, uint8_t *out, const uint8_t *in, size_t n, omemoKey key,
+[[nodiscard]] static int Decrypt(uint8_t *out, const uint8_t *in, size_t n, omemoKey key,
                     uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
   if (mbedtls_aes_setkey_dec(&aes, key, 256) ||
   mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, n,
                                iv, in, out))
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
+  return 0;
 }
 
 struct __attribute__((__packed__)) DeriveChainKeyOutput {
@@ -390,7 +384,7 @@ struct __attribute__((__packed__)) DeriveChainKeyOutput {
   uint8_t iv[16];
 };
 
-static void DeriveChainKey(CTX ctx, struct DeriveChainKeyOutput *out, const omemoKey ck) {
+[[nodiscard]] static int DeriveChainKey(struct DeriveChainKeyOutput *out, const omemoKey ck) {
   uint8_t salt[32];
   memset(salt, 0, 32);
   assert(sizeof(struct DeriveChainKeyOutput) == 80);
@@ -398,37 +392,39 @@ static void DeriveChainKey(CTX ctx, struct DeriveChainKeyOutput *out, const omem
                       salt, 32, ck, 32, "WhisperMessageKeys",
                       18, (uint8_t *)out,
                       sizeof(struct DeriveChainKeyOutput)))
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
+  return 0;
 }
 
 // d may be the same pointer as ck
 //  ck, mk = KDF_CK(ck)
-static void GetBaseMaterials(CTX ctx, omemoKey d, omemoKey mk, const omemoKey ck) {
+[[nodiscard]] static int GetBaseMaterials(omemoKey d, omemoKey mk, const omemoKey ck) {
   omemoKey tmp;
   uint8_t data = 1;
   if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, mk) != 0)
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
   data = 2;
   if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, tmp) != 0)
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
   memcpy(d, tmp, 32);
+  return 0;
 }
 
 // CKs, mk = KDF_CK(CKs)
 // header = HEADER(DHs, PN, Ns)
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
-static void EncryptKeyImpl(CTX ctx, struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
+[[nodiscard]] static int EncryptKeyImpl(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
-    Throw(ctx, OMEMO_ESTATE);
+    return OMEMO_ESTATE;
   omemoKey mk;
-  GetBaseMaterials(ctx, session->state.cks, mk, session->state.cks);
+  TRY(GetBaseMaterials(session->state.cks, mk, session->state.cks));
   struct DeriveChainKeyOutput kdfout;
-  DeriveChainKey(ctx, &kdfout, mk);
+  TRY(DeriveChainKey(&kdfout, mk));
   msg->n = FormatMessageHeader(msg->p, session->state.ns, session->state.pn, session->state.dhs.pub);
-  Encrypt(ctx, msg->p+msg->n, payload, kdfout.cipher, kdfout.iv);
+  TRY(Encrypt(msg->p+msg->n, payload, kdfout.cipher, kdfout.iv));
   msg->n += OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE;
-  GetMac(ctx, msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mac, msg->p, msg->n);
+  TRY(GetMac(msg->p+msg->n, store->identity.pub, session->remoteidentity, kdfout.mac, msg->p, msg->n));
   msg->n += 8;
   session->state.ns++;
   if (session->fsm == SESSION_INIT) {
@@ -442,6 +438,7 @@ static void EncryptKeyImpl(CTX ctx, struct omemoSession *session, const struct o
     memmove(msg->p + headersz, msg->p + OMEMO_INTERNAL_PREKEYHEADER_MAXSIZE, msg->n);
     msg->n += headersz;
   }
+  return 0;
 }
 
 int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
@@ -449,25 +446,24 @@ int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store
   struct omemoState backup;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   memset(msg, 0, sizeof(struct omemoKeyMessage));
-  SetupCtx(ctx);
-  if (Recover(ctx, r)) {
+  if ((r = EncryptKeyImpl(session, store, msg, payload))) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(msg, 0, sizeof(struct omemoKeyMessage));
   }
-  EncryptKeyImpl(ctx, session, store, msg, payload);
   return r;
 }
 
 // RK, ck = KDF_RK(RK, DH(DHs, DHr))
-static void DeriveRootKey(CTX ctx, struct omemoState *state, omemoKey ck) {
+[[nodiscard]] static int DeriveRootKey(struct omemoState *state, omemoKey ck) {
   uint8_t secret[32], masterkey[64];
   CalculateCurveAgreement(secret, state->dhs.prv, state->dhr);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
                       state->rk, 32, secret, sizeof(secret),
                       "WhisperRatchet", 14, masterkey, 64) != 0)
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
   memcpy(state->rk, masterkey, 32);
   memcpy(ck, masterkey + 32, 32);
+  return 0;
 }
 
 
@@ -476,7 +472,7 @@ static void DeriveRootKey(CTX ctx, struct omemoState *state, omemoKey ck) {
 // DH3 = DH(EKA, SPKB)
 // DH4 = DH(EKA, OPKB)
 // SK = KDF(DH1 || DH2 || DH3 || DH4)
-static void GetSharedSecret(CTX ctx, omemoKey sk, bool isbob, const omemoKey ika, const omemoKey ska, const omemoKey eka, const omemoKey ikb, const omemoKey spkb, const omemoKey opkb) {
+[[nodiscard]] static int GetSharedSecret(omemoKey sk, bool isbob, const omemoKey ika, const omemoKey ska, const omemoKey eka, const omemoKey ikb, const omemoKey spkb, const omemoKey opkb) {
   uint8_t secret[32*5] = {0}, salt[32];
   memset(secret, 0xff, 32);
   // When we are bob, we must swap the first two.
@@ -487,10 +483,11 @@ static void GetSharedSecret(CTX ctx, omemoKey sk, bool isbob, const omemoKey ika
   CalculateCurveAgreement(secret+128, eka, opkb);
   memset(salt, 0, 32);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, sk, 32) != 0)
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
   uint8_t full[64];
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), salt, 32, secret, sizeof(secret), "WhisperText", 11, full, 64) != 0)
-    Throw(ctx, OMEMO_ECRYPTO);
+    return OMEMO_ECRYPTO;
+  return 0;
 }
 
 //  state.DHs = GENERATE_DH()
@@ -501,20 +498,16 @@ static void GetSharedSecret(CTX ctx, omemoKey sk, bool isbob, const omemoKey ika
 //  state.Nr = 0
 //  state.PN = 0
 //  state.MKSKIPPED = {}
-static void RatchetInitAlice(CTX ctx, struct omemoState *state, const omemoKey sk, const omemoKey ekb, const struct omemoKeyPair *eka) {
+[[nodiscard]] static int RatchetInitAlice(struct omemoState *state, const omemoKey sk, const omemoKey ekb, const struct omemoKeyPair *eka) {
   memset(state, 0, sizeof(struct omemoState));
   memcpy(&state->dhs, eka, sizeof(struct omemoKeyPair));
   memcpy(state->rk, sk, 32);
   memcpy(state->dhr, ekb, 32);
-  DeriveRootKey(ctx, state, state->cks);
+  return DeriveRootKey(state, state->cks);
 }
 
 // We can remove the bundle struct all together by inlining the fields as arguments.
 int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *store, const struct omemoBundle *bundle) {
-  int r;
-  SetupCtx(ctx);
-  if (Recover(ctx, r))
-    return r;
   omemoSerializedKey serspk;
   omemoSerializeKey(serspk, bundle->spk);
   if (!VerifySignature(bundle->spks, bundle->ik, serspk,
@@ -522,14 +515,14 @@ int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *s
     return OMEMO_ESIG;
   }
   struct omemoKeyPair eka;
-  GenerateKeyPair(ctx, &eka);
+  TRY(GenerateKeyPair(&eka));
   memset(&session->state, 0, sizeof(struct omemoState));
   memcpy(session->remoteidentity, bundle->ik, 32);
   omemoKey sk;
-  GetSharedSecret(ctx, sk, false, store->identity.prv, eka.prv,
+  TRY(GetSharedSecret(sk, false, store->identity.prv, eka.prv,
                            eka.prv, bundle->ik, bundle->spk,
-                           bundle->pk);
-  RatchetInitAlice(ctx, &session->state, sk, bundle->spk, &eka);
+                           bundle->pk));
+  TRY(RatchetInitAlice(&session->state, sk, bundle->spk, &eka));
   memcpy(session->pendingek, eka.pub, 32);
   session->pendingpk_id = bundle->pk_id;
   session->pendingspk_id = bundle->spk_id;
@@ -555,10 +548,10 @@ static const struct omemoSignedPreKey *FindSignedPreKey(const struct omemoStore 
   return NULL;
 }
 
-static void RotateSignedPreKey(CTX ctx, struct omemoStore *store) {
+[[nodiscard]] static int RotateSignedPreKey(struct omemoStore *store) {
   memcpy(&store->prevsignedprekey, &store->cursignedprekey,
          sizeof(struct omemoSignedPreKey));
-  GenerateSignedPreKey(ctx,
+  return GenerateSignedPreKey(
       &store->cursignedprekey,
       IncrementWrapSkipZero(store->prevsignedprekey.id),
       &store->identity);
@@ -571,14 +564,15 @@ static void RotateSignedPreKey(CTX ctx, struct omemoStore *store) {
 //  RK, CKr = KDF_RK(RK, DH(DHs, DHr))
 //  DHs = GENERATE_DH()
 //  RK, CKs = KDF_RK(RK, DH(DHs, DHr))
-static void DHRatchet(CTX ctx, struct omemoState *state, const omemoKey dh) {
+[[nodiscard]] static int DHRatchet(struct omemoState *state, const omemoKey dh) {
   state->pn = state->ns;
   state->ns = 0;
   state->nr = 0;
   memcpy(state->dhr, dh, 32);
-  DeriveRootKey(ctx, state, state->ckr);
-  GenerateKeyPair(ctx, &state->dhs);
-  DeriveRootKey(ctx, state, state->cks);
+  TRY(DeriveRootKey(state, state->ckr));
+  TRY(GenerateKeyPair(&state->dhs));
+  TRY(DeriveRootKey(state, state->cks));
+  return 0;
 }
 
 static void RatchetInitBob(struct omemoState *state, const omemoKey sk, const struct omemoKeyPair *ekb) {
@@ -592,26 +586,24 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return CLAMP0(n - nr);
 }
 
-static void SkipMessageKeys(CTX ctx, struct omemoSession *session, uint32_t n) {
+[[nodiscard]] static int SkipMessageKeys(struct omemoSession *session, uint32_t n) {
   struct omemoMessageKey k;
   while (session->state.nr < n) {
-    GetBaseMaterials(ctx, session->state.ckr, k.mk, session->state.ckr);
+    TRY(GetBaseMaterials(session->state.ckr, k.mk, session->state.ckr));
     memcpy(k.dh, session->state.dhr, 32);
     k.nr = session->state.nr;
-    int r;
-    // TODO: use TRY macro
-    if ((r = omemoStoreMessageKey(session, &k)))
-      Throw(ctx, r);
+    TRY(omemoStoreMessageKey(session, &k));
     session->state.nr++;
   }
+  return 0;
 }
 
-static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
+[[nodiscard]] static int DecryptMessageImpl(struct omemoSession *session,
                               const struct omemoStore *store,
                               omemoKeyPayload decrypted, const uint8_t *msg,
                               size_t msgn) {
   if (msgn < 9 || msg[0] != ((3 << 4) | 3))
-    Throw(ctx, OMEMO_ECORRUPT);
+    return OMEMO_ECORRUPT;
   struct ProtobufField fields[5] = {
     [1] = {PB_REQUIRED | PB_LEN, 33}, // ek
     [2] = {PB_REQUIRED | PB_UINT32}, // n
@@ -620,10 +612,10 @@ static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
   };
 
   if (ParseProtobuf(msg+1, msgn-9, fields, 5))
-    Throw(ctx, OMEMO_EPROTOBUF);
+    return OMEMO_EPROTOBUF;
   // these checks should already be handled by ParseProtobuf, just to make sure...
   if (fields[4].v > 48 || fields[4].v < 32)
-    Throw(ctx, OMEMO_ECORRUPT);
+    return OMEMO_ECORRUPT;
   assert(fields[1].v == 33);
 
   uint32_t headern = fields[2].v;
@@ -647,36 +639,37 @@ static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
   if (!(r = omemoLoadMessageKey(session, &key))) {
     memcpy(mk, key.mk, 32);
   } else if (r < 0) {
-    Throw(ctx, r);
+    return r;
   } else {
-    if (!shouldstep && headern < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
+    if (!shouldstep && headern < session->state.nr) return OMEMO_EKEYGONE;
     uint64_t nskips = shouldstep
       ? GetAmountSkipped(session->state.nr, headerpn) + headern
       : GetAmountSkipped(session->state.nr, headern);
     if (shouldstep) {
-      SkipMessageKeys(ctx, session, headerpn);
-      DHRatchet(ctx, &session->state, headerdh);
+      TRY(SkipMessageKeys(session, headerpn));
+      TRY(DHRatchet(&session->state, headerdh));
     }
-    SkipMessageKeys(ctx, session, headern);
-    GetBaseMaterials(ctx, session->state.ckr, mk, session->state.ckr);
+    TRY(SkipMessageKeys(session, headern));
+    TRY(GetBaseMaterials(session->state.ckr, mk, session->state.ckr));
     session->state.nr++;
   }
   struct DeriveChainKeyOutput kdfout;
-  DeriveChainKey(ctx, &kdfout, mk);
+  TRY(DeriveChainKey(&kdfout, mk));
   uint8_t mac[8];
-  GetMac(ctx, mac, session->remoteidentity, store->identity.pub, kdfout.mac, msg, msgn-8);
+  TRY(GetMac(mac, session->remoteidentity, store->identity.pub, kdfout.mac, msg, msgn-8));
   if (memcmp(mac, msg+msgn-8, 8))
-    Throw(ctx, OMEMO_ECORRUPT);
+    return OMEMO_ECORRUPT;
   uint8_t tmp[48];
-  Decrypt(ctx, tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv);
+  TRY(Decrypt(tmp, fields[4].p, fields[4].v, kdfout.cipher, kdfout.iv));
   memcpy(decrypted, tmp, 32);
   session->fsm = SESSION_READY;
+  return 0;
 }
 
-static void DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+[[nodiscard]] static int DecryptKeyImpl(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   if (isprekey) {
     if (msgn == 0 || msg[0] != ((3 << 4) | 3))
-      Throw(ctx, OMEMO_ECORRUPT);
+      return OMEMO_ECORRUPT;
     // PreKeyWhisperMessage
     struct ProtobufField fields[7] = {
       [5] = {PB_REQUIRED | PB_UINT32}, // registrationid
@@ -687,7 +680,7 @@ static void DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct o
       [4] = {PB_REQUIRED | PB_LEN}, // message
     };
     if (ParseProtobuf(msg+1, msgn-1, fields, 7))
-      Throw(ctx, OMEMO_EPROTOBUF);
+      return OMEMO_EPROTOBUF;
     // nr will only ever be 0 with the first prekey message
     // we could put this in session->fsm...
     if (session->state.nr == 0) {
@@ -695,20 +688,20 @@ static void DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct o
       const struct omemoPreKey *pk = FindPreKey(store, fields[1].v);
       const struct omemoSignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
       if (!pk || !spk)
-        Throw(ctx, OMEMO_ECORRUPT);
+        return OMEMO_ECORRUPT;
       memcpy(session->remoteidentity, fields[3].p+1, 32);
       omemoKey sk;
-      GetSharedSecret(ctx, sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1);
+      TRY(GetSharedSecret(sk, true, store->identity.prv, spk->kp.prv, pk->kp.prv, fields[3].p+1, fields[2].p+1, fields[2].p+1));
       RatchetInitBob(&session->state, sk, &spk->kp);
     }
     msg = fields[4].p;
     msgn = fields[4].v;
   } else {
     if (!session->fsm) // TODO: specify which states are allowed here
-      Throw(ctx, OMEMO_ESTATE);
+      return OMEMO_ESTATE;
   }
   session->fsm = SESSION_READY;
-  DecryptMessageImpl(ctx, session, store, payload, msg, msgn);
+  return DecryptMessageImpl(session, store, payload, msg, msgn);
 }
 
 int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
@@ -717,13 +710,10 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
   struct omemoState backup;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   int r;
-  SetupCtx(ctx);
-  if (Recover(ctx, r)) {
+  if ((r = DecryptKeyImpl(session, store, payload, isprekey, msg, msgn))) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(payload, 0, OMEMO_INTERNAL_PAYLOAD_SIZE);
-    return r;
   }
-  DecryptKeyImpl(ctx, session, store, payload, isprekey, msg, msgn);
   return 0;
 }
 

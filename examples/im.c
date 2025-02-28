@@ -813,6 +813,15 @@ void RunIm(const char *ip) {
   exit(0);
 }
 
+// TODO: temporarily disable skipped message keys in both esp and native
+int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *) {
+  return OMEMO_EUSER;
+}
+
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *) {
+  return OMEMO_EUSER;
+}
+
 #ifdef IM_NATIVE
 
 #define SESSION_LOCATION "/tmp/session"
