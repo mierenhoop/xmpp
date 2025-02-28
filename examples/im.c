@@ -421,11 +421,14 @@ static void ParseEncryptedMessage(struct xmppParser *parser, const struct xmppXm
   }
   DecodeBase64(&key, &keysz, &keyslc);
   omemoKeyPayload decryptedkey;
+  BeginTransaction();
   int r = omemoDecryptKey(&omemosession, &omemostore, decryptedkey, isprekey, key, keysz);
   if (r < 0) {
+    CancelTransaction();
     LogWarn("omemoKeyMessage decryption error: %d", r);
     goto free;
   }
+  CommitTransaction();
   SaveSession();
   if (ivslc.n && payloadslc.n) {
     DecodeBase64(&iv, &ivsz, &ivslc);
@@ -813,7 +816,16 @@ void RunIm(const char *ip) {
   exit(0);
 }
 
-// TODO: temporarily disable skipped message keys in both esp and native
+#ifdef IM_NATIVE
+
+#include <sqlite3.h>
+
+#define SESSION_LOCATION "/tmp/session.db"
+
+#define SCHEMA "create table if not exists session(data);\n"
+
+sqlite3 *db;
+
 int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *) {
   return OMEMO_EUSER;
 }
@@ -821,10 +833,6 @@ int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *) {
 int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *) {
   return OMEMO_EUSER;
 }
-
-#ifdef IM_NATIVE
-
-#define SESSION_LOCATION "/tmp/session"
 
 int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 int xmppRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
@@ -843,26 +851,52 @@ static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
   return *data != NULL;
 }
 
+static void OpenDatabase() {
+  int rc = sqlite3_open(SESSION_LOCATION, &db);
+  assert(!rc);
+  rc = sqlite3_exec(db, SCHEMA, NULL, 0, NULL);
+  assert(rc == SQLITE_OK);
+}
+
+void BeginTransaction() {}
+void CommitTransaction() {}
+void CancelTransaction() {}
+
 void SaveSession() {
-  FILE *f = fopen(SESSION_LOCATION, "w");
-  if (f) {
-    size_t n = omemoGetSerializedSessionSize(&omemosession);
-    uint8_t *buf = Malloc(n);
-    omemoSerializeSession(buf, &omemosession);
-    fwrite(buf, n, 1, f);
-    free(buf);
-    fclose(f);
-  }
+  OpenDatabase();
+  sqlite3_stmt *stmt;
+  int rc = sqlite3_prepare_v2(db, "replace into session(rowid, data) values (1, ?);", -1, &stmt, NULL);
+  size_t n = omemoGetSerializedSessionSize(&omemosession);
+  uint8_t *buf = Malloc(n);
+  omemoSerializeSession(buf, &omemosession);
+  sqlite3_bind_blob(stmt, 1, buf, n, NULL);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  free(buf);
+  sqlite3_close_v2(db);
 }
 
 void LoadSession() {
-  uint8_t *data;
-  size_t n;
-  if (ReadWholeFile(SESSION_LOCATION, &data, &n)) {
-    assert(!omemoDeserializeSession(data, n, &omemosession));
-    free(data);
-  } else {
+  OpenDatabase();
+  sqlite3_stmt *stmt;
+  int rc = sqlite3_prepare_v2(db, "select data from session;", -1, &stmt, NULL);
+  sqlite3_step(stmt);
+  if (rc == SQLITE_ROW) {
+    const void *blob = sqlite3_column_blob(stmt, 0);
+    assert(blob);
+    int size = sqlite3_column_bytes(stmt, 0);
+    assert(size > 0);
+    assert(!omemoDeserializeSession(blob, size, &omemosession));
+    sqlite3_finalize(stmt);
+    sqlite3_close_v2(db);
+  } else if (rc == SQLITE_OK) {
+    sqlite3_finalize(stmt);
+    sqlite3_close_v2(db);
     SaveSession();
+  } else {
+    sqlite3_finalize(stmt);
+    sqlite3_close_v2(db);
+    assert(0);
   }
 }
 

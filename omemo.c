@@ -272,7 +272,7 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
 [[nodiscard]] static int CalculateCurveSignature(omemoCurveSignature sig, omemoKey signprv,
                                     uint8_t *msg, size_t n) {
   assert(n <= 33);
-  uint8_t rnd[sizeof(omemoCurveSignature)], buf[33 + 128];
+  uint8_t rnd[sizeof(omemoCurveSignature)];
   TRY(omemoRandom(rnd, sizeof(rnd)));
   return c25519_sign(sig, signprv, msg, n);
 }
@@ -598,7 +598,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return 0;
 }
 
-[[nodiscard]] static int DecryptMessageImpl(struct omemoSession *session,
+[[nodiscard]] static int DecryptKeyImpl(struct omemoSession *session,
                               const struct omemoStore *store,
                               omemoKeyPayload decrypted, const uint8_t *msg,
                               size_t msgn) {
@@ -666,7 +666,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return 0;
 }
 
-[[nodiscard]] static int DecryptKeyImpl(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+[[nodiscard]] static int DecryptGenericKeyImpl(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   if (isprekey) {
     if (msgn == 0 || msg[0] != ((3 << 4) | 3))
       return OMEMO_ECORRUPT;
@@ -701,7 +701,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
       return OMEMO_ESTATE;
   }
   session->fsm = SESSION_READY;
-  return DecryptMessageImpl(session, store, payload, msg, msgn);
+  return DecryptKeyImpl(session, store, payload, msg, msgn);
 }
 
 int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
@@ -710,7 +710,7 @@ int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store
   struct omemoState backup;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   int r;
-  if ((r = DecryptKeyImpl(session, store, payload, isprekey, msg, msgn))) {
+  if ((r = DecryptGenericKeyImpl(session, store, payload, isprekey, msg, msgn))) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(payload, 0, OMEMO_INTERNAL_PAYLOAD_SIZE);
   }

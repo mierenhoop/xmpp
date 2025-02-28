@@ -42,6 +42,14 @@ void ConnectWifi(void);
 int omemoRandom(void *p, size_t n) { esp_fill_random(p, n); return 0; }
 int xmppRandom(void *p, size_t n) { esp_fill_random(p, n); return 0; }
 
+int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *) {
+  return OMEMO_EUSER;
+}
+
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *) {
+  return OMEMO_EUSER;
+}
+
 void LoadSession() {}
 void SaveSession() {}
 

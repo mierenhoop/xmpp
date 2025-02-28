@@ -116,12 +116,14 @@ static void TestKeyPair(struct omemoKeyPair *kp, const char *rnd, const char *pr
   CopyHex(kpub, pub);
   c25519_prepare(kp->prv);
   assert(!memcmp(kp->prv, kprv, 32));
-  // TODO: test everest vs c25519
-  //curve25519_donna(kp->pub, kprv, base);
-  //assert(!memcmp(kpub, kp->pub, 32));
-  //memset(kp->pub, 0, 32);
+#ifndef __SIZEOF_INT128__
+#warning "Not testing the faster curve25519 implementation because system doesn't support 128bit integers."
+#endif
+  curve25519(kp->pub, kprv, c25519_base_x);
+  assert(!memcmp(kpub, kp->pub, 32));
+  memset(kp->pub, 0, 32);
   c25519_smult(kp->pub, c25519_base_x, kprv);
-  //assert(!memcmp(kpub, kp->pub, 32));
+  assert(!memcmp(kpub, kp->pub, 32));
 }
 
 static void TestCurve25519() {
@@ -460,6 +462,9 @@ static void TestSerialization() {
   } while (0)
 
 int main() {
+  // TODO: tests TestCurve25519, TestSignature, TestSession and
+  // TestSerialization are slow because they use the slow
+  // edsign_sign_modified and edsign_verify.
   RunTest(TestParseProtobuf);
   RunTest(TestFormatProtobuf);
   RunTest(TestProtobufPrekey);
