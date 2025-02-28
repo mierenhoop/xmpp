@@ -194,6 +194,36 @@ static void TestEncryption() {
     assert(!memcmp(messages[id].payload, dec, sizeof(omemoKeyPayload))); \
   } while (0);
 
+#define MKSKIPPEDN 10
+struct omemoMessageKey mkskipped[MKSKIPPEDN];
+int mkskippedi;
+
+static void RemoveSkippedKey(int i) {
+  size_t n = MKSKIPPEDN - i - 1;
+  memmove(mkskipped + i, mkskipped + i + 1,
+          n * sizeof(*mkskipped));
+  mkskippedi--;
+}
+
+int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *k) {
+  for (int i = 0; i < mkskippedi; i++) {
+    struct omemoMessageKey *sk = &mkskipped[i];
+    if (k->nr == sk->nr && !memcmp(k->dh, sk->dh, 32)) {
+      memcpy(k->mk, sk->mk, 32);
+      RemoveSkippedKey(i);
+      return 0;
+    }
+  }
+  return 1;
+}
+
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *k) {
+  if (mkskippedi >= MKSKIPPEDN)
+    return OMEMO_EUSER;
+  memcpy(&mkskipped[mkskippedi++], k, sizeof(*k));
+  return 0;
+}
+
 static void TestSession() {
   struct {
     omemoKeyPayload payload;
@@ -224,12 +254,15 @@ static void TestSession() {
   Send(b, 3);
   Send(b, 4);
 
-  assert(sessiona.mkskipped.n == 0);
+  assert(mkskippedi == 0);
   Recv(a, 4, false);
 
-  assert(sessiona.mkskipped.n == 1);
+  assert(mkskippedi == 1);
   Recv(a, 3, false);
-  assert(sessiona.mkskipped.n == 0);
+  assert(mkskippedi == 0);
+
+  memset(mkskipped, 0, sizeof(mkskipped));
+  mkskippedi = 0;
 }
 
 // Test session built by Gajim
@@ -420,9 +453,6 @@ static void TestSerialization() {
   assert(!omemoDeserializeStore(buf, n, &storeb));
   assert(!memcmp(&storea, &storeb, sizeof(struct omemoStore)));
 
-  memset(sessiona.mkskipped.p, 0xff, 3*sizeof(struct omemoMessageKey));
-  sessiona.mkskipped.n = 3;
-
   struct omemoSession tmpsession;
   memset(&tmpsession, 0, sizeof(tmpsession));
   n = omemoGetSerializedSessionSize(&sessiona);
@@ -430,9 +460,6 @@ static void TestSerialization() {
   assert(buf2);
   omemoSerializeSession(buf2, &sessiona);
   assert(!omemoDeserializeSession(buf2, n, &tmpsession));
-  assert(tmpsession.mkskipped.n == sessiona.mkskipped.n);
-  assert(!memcmp(tmpsession.mkskipped.p, sessiona.mkskipped.p, sessiona.mkskipped.n*sizeof(struct omemoMessageKey)));
-  memcpy(&tmpsession.mkskipped, &sessiona.mkskipped, sizeof(struct omemoSkippedMessageKeys));
   assert(!memcmp(&tmpsession, &sessiona, sizeof(struct omemoSession)));
 }
 

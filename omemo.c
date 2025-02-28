@@ -220,25 +220,6 @@ static size_t FormatMessageHeader(uint8_t d[OMEMO_INTERNAL_HEADER_MAXSIZE], uint
   return p - d;
 }
 
-/**
- * Remove the skipped message key that has just been used for
- * decrypting.
- *
- *  del state.MKSKIPPED[header.dh, header.n]
- */
-static void
-NormalizeSkipMessageKeysTrivial(struct omemoSkippedMessageKeys *s) {
-  assert(s->p && s->n <= OMEMO_MAXSKIPPED);
-  if (s->removed) {
-    assert(s->p <= s->removed && s->removed < s->p + s->n);
-    size_t n = s->n - (s->removed - s->p) - 1;
-    memmove(s->removed, s->removed + 1,
-            n * sizeof(struct omemoSkippedMessageKeys));
-    s->n--;
-    s->removed = NULL;
-  }
-}
-
 static void ConvertCurvePrvToEdPub(omemoKey ed, const omemoKey prv) {
   struct ed25519_pt p;
   ed25519_smult(&p, &ed25519_base, prv);
@@ -605,31 +586,23 @@ static void RatchetInitBob(struct omemoState *state, const omemoKey sk, const st
   memcpy(state->rk, sk, 32);
 }
 
-static struct omemoMessageKey *FindMessageKey(struct omemoSkippedMessageKeys *keys, const omemoKey dh, uint32_t n) {
-  for (int i = 0; i < keys->n; i++) {
-    if (keys->p[i].nr == n && !memcmp(dh, keys->p[i].dh, 32)) {
-      return keys->p + i;
-    }
-  }
-  return NULL;
-}
-
 #define CLAMP0(v) ((v) > 0 ? (v) : 0)
 
 static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return CLAMP0(n - nr);
 }
 
-static void SkipMessageKeys(CTX ctx, struct omemoState *state, struct omemoSkippedMessageKeys *keys, uint32_t n) {
-  assert(keys->n + GetAmountSkipped(state->nr, n) <= OMEMO_MAXSKIPPED); // this is checked in DecryptMessage
-  while (state->nr < n) {
-    omemoKey mk;
-    GetBaseMaterials(ctx, state->ckr, mk, state->ckr);
-    keys->p[keys->n].nr = state->nr;
-    memcpy(keys->p[keys->n].dh, state->dhr, 32);
-    memcpy(keys->p[keys->n].mk, mk, 32);
-    keys->n++;
-    state->nr++;
+static void SkipMessageKeys(CTX ctx, struct omemoSession *session, uint32_t n) {
+  struct omemoMessageKey k;
+  while (session->state.nr < n) {
+    GetBaseMaterials(ctx, session->state.ckr, k.mk, session->state.ckr);
+    memcpy(k.dh, session->state.dhr, 32);
+    k.nr = session->state.nr;
+    int r;
+    // TODO: use TRY macro
+    if ((r = omemoStoreMessageKey(session, &k)))
+      Throw(ctx, r);
+    session->state.nr++;
   }
 }
 
@@ -667,22 +640,24 @@ static void DecryptMessageImpl(CTX ctx, struct omemoSession *session,
   // the message.
 
   omemoKey mk;
-  struct omemoMessageKey *key;
-  if ((key = FindMessageKey(&session->mkskipped, headerdh, headern))) {
-    memcpy(mk, key->mk, 32);
-    session->mkskipped.removed = key;
+  struct omemoMessageKey key = { 0 };
+  memcpy(key.dh, headerdh, 32);
+  key.nr = headern;
+  int r;
+  if (!(r = omemoLoadMessageKey(session, &key))) {
+    memcpy(mk, key.mk, 32);
+  } else if (r < 0) {
+    Throw(ctx, r);
   } else {
     if (!shouldstep && headern < session->state.nr) Throw(ctx, OMEMO_EKEYGONE);
     uint64_t nskips = shouldstep
       ? GetAmountSkipped(session->state.nr, headerpn) + headern
       : GetAmountSkipped(session->state.nr, headern);
-    if (nskips > OMEMO_MAXSKIPPED) Throw(ctx, OMEMO_EMAXSKIP);
-    if (nskips > OMEMO_MAXSKIPPED - session->mkskipped.n) Throw(ctx, OMEMO_ESKIPBUF);
     if (shouldstep) {
-      SkipMessageKeys(ctx, &session->state, &session->mkskipped, headerpn);
+      SkipMessageKeys(ctx, session, headerpn);
       DHRatchet(ctx, &session->state, headerdh);
     }
-    SkipMessageKeys(ctx, &session->state, &session->mkskipped, headern);
+    SkipMessageKeys(ctx, session, headern);
     GetBaseMaterials(ctx, session->state.ckr, mk, session->state.ckr);
     session->state.nr++;
   }
@@ -739,22 +714,16 @@ static void DecryptKeyImpl(CTX ctx, struct omemoSession *session, const struct o
 int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   if (!session || !store || !store->isinitialized || !msg || !msgn)
     return OMEMO_ESTATE;
-  //assert(session->mkskipped.p && !session->mkskipped.removed);
   struct omemoState backup;
-  uint32_t mkskippednbackup = session->mkskipped.n;
   memcpy(&backup, &session->state, sizeof(struct omemoState));
   int r;
   SetupCtx(ctx);
   if (Recover(ctx, r)) {
     memcpy(&session->state, &backup, sizeof(struct omemoState));
     memset(payload, 0, OMEMO_INTERNAL_PAYLOAD_SIZE);
-    session->mkskipped.n = mkskippednbackup;
-    session->mkskipped.removed = NULL;
     return r;
   }
   DecryptKeyImpl(ctx, session, store, payload, isprekey, msg, msgn);
-  if (session->mkskipped.removed)
-    NormalizeSkipMessageKeysTrivial(&session->mkskipped);
   return 0;
 }
 
@@ -904,23 +873,6 @@ int omemoDeserializeStore(const char *p, size_t n, struct omemoStore *store) {
   return 0;
 }
 
-static inline uint32_t GetMessageKeySize(const struct omemoMessageKey *mk) {
-  return 34 * 2 + 1 + GetVarIntSize(mk->nr); // TODO: Serialized?
-}
-
-static uint8_t *SerializeSkippedMessageKeys(uint8_t *d, const struct omemoSkippedMessageKeys *mkskipped) {
-  for (int i = 0; i < mkskipped->n; i++) {
-    assert(GetMessageKeySize(mkskipped->p+i) < 128);
-    d = FormatVarInt(d, PB_LEN, 15, GetMessageKeySize(mkskipped->p+i));
-    d = FormatVarInt(d, PB_UINT32, 1, mkskipped->p[i].nr);
-    d = FormatVarInt(d, PB_LEN, 2, 32);
-    d = (memcpy(d, mkskipped->p[i].dh, 32), d + 32);
-    d = FormatVarInt(d, PB_LEN, 3, 32);
-    d = (memcpy(d, mkskipped->p[i].mk, 32), d + 32);
-  }
-  return d;
-}
-
 size_t omemoGetSerializedSessionSize(
     const struct omemoSession *session) {
   uint32_t sum = 35 * 4   // SerializedKey
@@ -931,8 +883,6 @@ size_t omemoGetSerializedSessionSize(
                  GetVarIntSize(session->pendingpk_id) +
                  GetVarIntSize(session->pendingspk_id) +
                  GetVarIntSize(session->fsm);
-  for (int i = 0; i < session->mkskipped.n; i++)
-    sum += 2 + GetMessageKeySize(session->mkskipped.p + i);
   return sum;
 }
 
@@ -952,13 +902,11 @@ void omemoSerializeSession(uint8_t *p, const struct omemoSession *session) {
   d = FormatVarInt(d, PB_UINT32, 12, session->pendingpk_id);
   d = FormatVarInt(d, PB_UINT32, 13, session->pendingspk_id);
   d = FormatVarInt(d, PB_UINT32, 14, session->fsm);
-  d = SerializeSkippedMessageKeys(d, &session->mkskipped);
   assert(d-p == omemoGetSerializedSessionSize(session));
 }
 
 int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *session) {
   assert(p && n && session);
-  assert(session->mkskipped.p);
   struct ProtobufField fields[] = {
     [1] = {PB_REQUIRED | PB_LEN, 33},
     [2] = {PB_REQUIRED | PB_LEN, 32},
@@ -993,22 +941,5 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
   const char *e = p + n;
-  while (session->mkskipped.n < OMEMO_MAXSKIPPED &&
-         !ParseRepeatingField(p, e - p, &fields[15], 15) &&
-         fields[15].p) {
-    struct ProtobufField innerfields[] = {
-      [1] = {PB_REQUIRED | PB_UINT32},
-      [2] = {PB_REQUIRED | PB_LEN, 32},
-      [3] = {PB_REQUIRED | PB_LEN, 32},
-    };
-    if (ParseProtobuf(fields[15].p, fields[15].v, innerfields, 4))
-      return OMEMO_EPROTOBUF;
-    session->mkskipped.p[session->mkskipped.n].nr = innerfields[1].v;
-    memcpy(session->mkskipped.p[session->mkskipped.n].dh, innerfields[2].p, 32);
-    memcpy(session->mkskipped.p[session->mkskipped.n].mk, innerfields[3].p, 32);
-    session->mkskipped.n++;
-    p = fields[15].p + fields[15].v;
-    fields[15].v = 0, fields[15].p = NULL;
-  }
   return 0;
 }

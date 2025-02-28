@@ -21,7 +21,6 @@
 #include <stdbool.h>
 
 #define OMEMO_NUMPREKEYS 100
-#define OMEMO_MAXSKIPPED 1000
 
 #define OMEMO_EPROTOBUF (-1)
 #define OMEMO_ECRYPTO (-2)
@@ -32,6 +31,7 @@
 #define OMEMO_EMAXSKIP (-7)
 #define OMEMO_EKEYGONE (-8)
 #define OMEMO_EALLOC (-9)
+#define OMEMO_EUSER (-10)
 
 #define OMEMO_INTERNAL_PAYLOAD_SIZE 32
 #define OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE 48
@@ -66,20 +66,6 @@ struct omemoMessageKey {
   omemoKey mk;
 };
 
-// p is a pointer to the array of message keys with capacity c.
-// the array contains n entries.
-// When the array is full and you don't want to allocate more space you
-// can remove the old entries and reduce n.
-// removed is NULL before calling a decryption function. When a message
-// has been decrypted AND a skipped message key is used, removed will
-// point to that key in array p. After this happens, it is the task of
-// the API consumer to remove the key from the array and move the
-// contents so that the array doesn't contain holes.
-struct omemoSkippedMessageKeys {
-  struct omemoMessageKey p[OMEMO_MAXSKIPPED], *removed;
-  size_t n;
-};
-
 struct omemoState {
   struct omemoKeyPair dhs;
   omemoKey dhr;
@@ -112,7 +98,6 @@ struct omemoSession {
   int fsm;
   omemoKey remoteidentity;
   struct omemoState state;
-  struct omemoSkippedMessageKeys mkskipped;
   omemoKey pendingek;
   uint32_t pendingpk_id, pendingspk_id;
 };
@@ -123,6 +108,32 @@ struct omemoBundle {
   omemoKey pk; // Randomly selected prekey
   uint32_t pk_id, spk_id;
 };
+
+/*struct omemoCallbacks {
+  int (*getrandom)(void *, size_t, void *user);
+  int (*loadmessagekey)(struct omemoMessageKey *, void *user);
+  int (*storemessagekey)(const struct omemoMessageKey *, void *user);
+};*/
+
+/**
+ * User supplied function.
+ *
+ * To pass userdata to this callback, it is recommended to wrap
+ * omemoSession within another struct and appending user data fields to
+ * the new struct.
+ *
+ * @returns 0 when found or 1 when not found or OMEMO_E*
+ */
+int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *);
+
+/**
+ * User supplied function.
+ *
+ * @see omemoLoadMessageKey()
+ */
+// TODO: add remaining amount of keys to be stored, so that this
+// function can return error if too many.
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *);
 
 /**
  * Unimplemented random function.
@@ -155,7 +166,7 @@ int omemoRefillPreKeys(struct omemoStore *store);
 size_t omemoGetSerializedStoreSize(const struct omemoStore *store);
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store);
 int omemoDeserializeStore(const char *p, size_t n, struct omemoStore *store);
-size_t omemoGetSerializedSessionSize(const struct omemoSession *sesson);
+size_t omemoGetSerializedSessionSize(const struct omemoSession *session);
 void omemoSerializeSession(uint8_t *p, const struct omemoSession *session);
 
 /**
