@@ -258,7 +258,6 @@ bool xmppParseElement(struct xmppParser *p) {
 
 static void ReadAckAnswer(struct xmppParser *p, struct xmppStanza *st) {
   struct xmppXmlSlice attr;
-  int r;
   st->type = XMPP_STANZA_ACKANSWER;
   while (xmppParseAttribute(p, &attr)) {
     if (!strcmp(p->x.attr, "h")) {
@@ -349,7 +348,7 @@ static void xmppParseStream(struct xmppParser *p, struct xmppStream *s) {
 static int xmppParseStanza(struct xmppParser *p, struct xmppStanza *st, bool instream) {
   int r;
   int i = p->i;
-  struct xmppXmlSlice attr, cont;
+  struct xmppXmlSlice attr;
   memset(st, 0, sizeof(*st));
   yxml_init(&p->x, p->xbuf, p->xbufn);
   if (instream) {
@@ -565,7 +564,6 @@ static char *Itoa(char *d, char *e, int i) {
 
 void xmppAppendXml(struct xmppBuilder *c, const char *fmt, ...) {
   va_list ap;
-  struct xmppXmlSlice slc;
   size_t n;
   bool skip = false;
   int i;
@@ -837,7 +835,7 @@ int xmppSupplyPassword(struct xmppClient *c, const char *pwd) {
   return 0;
 }
 
-static bool xmppResume(struct xmppClient *c) {
+bool xmppResume(struct xmppClient *c) {
   if (!c->cansmackresume)
     return false;
   c->state = CLIENTSTATE_INIT;

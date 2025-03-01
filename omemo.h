@@ -131,11 +131,14 @@ int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *sk);
 /**
  * User supplied function.
  *
+ * When n > max skipped keys, the implementation of this function should
+ * return an error. omemoStoreMessageKey will be called n-1 more times.
+ *
  * @see omemoLoadMessageKey()
+ *
+ * @param n amount of keys to be skipped in total
  */
-// TODO: add remaining amount of keys to be stored, so that this
-// function can return error if too many.
-int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *);
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *, uint64_t n);
 
 /**
  * Unimplemented random function.
@@ -164,6 +167,10 @@ int omemoSetupStore(struct omemoStore *store);
  * @returns 0 or OMEMO_ECRYPTO
  */
 int omemoRefillPreKeys(struct omemoStore *store);
+
+int omemoRotateSignedPreKey(struct omemoStore *store);
+
+int omemoGenerateRegistrationId(uint32_t *id);
 
 size_t omemoGetSerializedStoreSize(const struct omemoStore *store);
 void omemoSerializeStore(uint8_t *d, const struct omemoStore *store);

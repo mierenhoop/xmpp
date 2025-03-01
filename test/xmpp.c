@@ -206,7 +206,6 @@ static void TestXmlSlice() {
 static char in[50000], xbuf[2000];
 
 static struct xmppParser SetupXmppParser(const char *xml) {
-  static char buf[1000];
   struct xmppParser p = {0};
   p.p = in;
   p.c = sizeof(in);

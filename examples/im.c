@@ -75,15 +75,6 @@ static int RandomInt() {
   return n;
 }
 
-static bool HasRemoteJid() {
-  if (remotejid.localp) {
-    return true;
-  } else {
-    puts("Please choose who to talk to.\nTry: /talk jid");
-    return false;
-  }
-}
-
 static bool HasConnection() {
   if (xmppIsInitialized(&client)) {
     return true;
@@ -831,14 +822,17 @@ sqlite3 *db;
 int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 int xmppRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 
+// TODO: test this
 int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *sk) {
   sqlite3_stmt *stmt;
   int rc = sqlite3_prepare_v2(db, "delete from mkskipped where dh = ? and nr = ? returning mk;", -1, &stmt, NULL);
-  sqlite3_bind_blob(stmt, 1, sk->dh, sizeof(sk->dh), NULL);
-  sqlite3_bind_int(stmt, 2, sk->nr);
-  sqlite3_step(stmt);
+  assert(!rc);
+  assert(!sqlite3_bind_blob(stmt, 1, sk->dh, sizeof(sk->dh), NULL));
+  assert(!sqlite3_bind_int(stmt, 2, sk->nr));
+  rc = sqlite3_step(stmt);
   if (rc == SQLITE_ROW) {
     const void *blob = sqlite3_column_blob(stmt, 0);
+    assert(blob);
     int size = sqlite3_column_bytes(stmt, 0);
     if (size == sizeof(sk->mk)) {
       memcpy(sk->mk, blob, sizeof(sk->mk));
@@ -846,23 +840,25 @@ int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *sk) {
     } else {
       rc = OMEMO_EUSER;
     }
-  } else if (rc == SQLITE_OK) {
+  } else if (rc == SQLITE_DONE) {
     rc = 1;
   } else {
     rc = OMEMO_EUSER;
   }
-  sqlite3_finalize(stmt);
+  assert(!sqlite3_finalize(stmt));
   return rc;
 }
 
-int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *sk) {
+// TODO: test this
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *sk, uint64_t) {
   sqlite3_stmt *stmt;
   int rc = sqlite3_prepare_v2(db, "insert into mkskipped(dh,nr,mk) values (?,?,?);", -1, &stmt, NULL);
-  sqlite3_bind_blob(stmt, 1, sk->dh, sizeof(sk->dh), NULL);
-  sqlite3_bind_int(stmt, 2, sk->nr);
-  sqlite3_bind_blob(stmt, 3, sk->mk, sizeof(sk->mk), NULL);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  assert(!rc);
+  assert(!sqlite3_bind_blob(stmt, 1, sk->dh, sizeof(sk->dh), NULL));
+  assert(!sqlite3_bind_int(stmt, 2, sk->nr));
+  assert(!sqlite3_bind_blob(stmt, 3, sk->mk, sizeof(sk->mk), NULL));
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  assert(!sqlite3_finalize(stmt));
   return OMEMO_EUSER;
 }
 
@@ -893,12 +889,13 @@ void SaveSession() {
   OpenDatabase();
   sqlite3_stmt *stmt;
   int rc = sqlite3_prepare_v2(db, "replace into session(rowid, data) values (1, ?);", -1, &stmt, NULL);
+  assert(!rc);
   size_t n = omemoGetSerializedSessionSize(&omemosession);
   uint8_t *buf = Malloc(n);
   omemoSerializeSession(buf, &omemosession);
-  sqlite3_bind_blob(stmt, 1, buf, n, NULL);
-  sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
+  assert(!sqlite3_bind_blob(stmt, 1, buf, n, NULL));
+  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  assert(!sqlite3_finalize(stmt));
   free(buf);
   sqlite3_close_v2(db);
 }
@@ -907,21 +904,22 @@ void LoadSession() {
   OpenDatabase();
   sqlite3_stmt *stmt;
   int rc = sqlite3_prepare_v2(db, "select data from session;", -1, &stmt, NULL);
-  sqlite3_step(stmt);
+  assert(!rc);
+  rc = sqlite3_step(stmt);
   if (rc == SQLITE_ROW) {
     const void *blob = sqlite3_column_blob(stmt, 0);
     assert(blob);
     int size = sqlite3_column_bytes(stmt, 0);
     assert(size > 0);
     assert(!omemoDeserializeSession(blob, size, &omemosession));
-    sqlite3_finalize(stmt);
+    assert(!sqlite3_finalize(stmt));
     sqlite3_close_v2(db);
-  } else if (rc == SQLITE_OK) {
-    sqlite3_finalize(stmt);
+  } else if (rc == SQLITE_DONE) {
+    assert(!sqlite3_finalize(stmt));
     sqlite3_close_v2(db);
     SaveSession();
   } else {
-    sqlite3_finalize(stmt);
+    assert(!sqlite3_finalize(stmt));
     sqlite3_close_v2(db);
     assert(0);
   }

@@ -46,7 +46,7 @@ int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *) {
   return OMEMO_EUSER;
 }
 
-int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *) {
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *, uint64_t) {
   return OMEMO_EUSER;
 }
 

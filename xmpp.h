@@ -499,6 +499,11 @@ int xmppIterate(struct xmppClient *c);
 int xmppSupplyPassword(struct xmppClient *c, const char *pwd);
 
 /**
+ * Resume XMPP session.
+ */
+bool xmppResume(struct xmppClient *c);
+
+/**
  * Gracefully end the XMPP stream.
  *
  * xmppIterate should still be called afterwards. It will return

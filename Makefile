@@ -86,8 +86,8 @@ stop-prosody:
 
 test/bot-venv/:
 	python -m venv test/bot-venv/
-	./test/bot-venv/bin/pip install slixmpp
-	./test/bot-venv/bin/pip install slixmpp-omemo
+	./test/bot-venv/bin/pip install slixmpp==1.8.5
+	./test/bot-venv/bin/pip install slixmpp-omemo==1.0.0
 
 start-omemo-bot: | test/bot-venv/
 	./test/bot-venv/bin/python test/bot-omemo.py

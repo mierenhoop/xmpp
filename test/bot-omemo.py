@@ -22,6 +22,8 @@ from slixmpp_omemo import TrustLevel, XEP_0384
 import traceback
 import random
 
+import asyncio
+
 
 log = logging.getLogger(__name__)
 
@@ -251,4 +253,4 @@ if __name__ == "__main__":
     xmpp.register_plugin("xep_0380")  # Explicit Message Encryption
     xmpp.register_plugin("xep_0384", module=sys.modules[__name__])  # OMEMO
     xmpp.connect(disable_starttls=True)
-    xmpp.process()  # type: ignore[no-untyped-call]
+    asyncio.get_event_loop().run_forever()

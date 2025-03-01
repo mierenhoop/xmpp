@@ -23,12 +23,6 @@
 
 int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 
-static void DumpHex(const uint8_t *p, int n, const char *msg) {
-  for (int i=0;i<n;i++)
-    printf("%02x", p[i]);
-  printf(" << %s\n", msg);
-}
-
 static void CopyHex(uint8_t *d, const char *hex) {
   int n = strlen(hex);
   assert(n % 2 == 0);
@@ -107,8 +101,6 @@ static void TestFormatProtobuf() {
   assert(GetVarIntSize(UINT32_MAX) == 5);
 }
 
-static omemoKey base = {9};
-
 static void TestKeyPair(struct omemoKeyPair *kp, const char *rnd, const char *prv, const char *pub) {
   omemoKey kprv, kpub;
   CopyHex(kp->prv, rnd);
@@ -127,8 +119,8 @@ static void TestKeyPair(struct omemoKeyPair *kp, const char *rnd, const char *pr
 }
 
 static void TestCurve25519() {
-  struct omemoKeyPair kpa, kpb, exp;
-  uint8_t shared[32], expshared[32], rnd[32];
+  struct omemoKeyPair kpa, kpb;
+  uint8_t shared[32], expshared[32];
   TestKeyPair(&kpa, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "70076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c6a", "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
   TestKeyPair(&kpb, "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "58ab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e06b", "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
   CopyHex(expshared, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
@@ -140,8 +132,8 @@ static void TestCurve25519() {
 
 static void TestSignature() {
   omemoKey prv, pub;
-  omemoCurveSignature sig, sig2, expsig;
-  uint8_t msg[12], buf[33+128], rnd[64];
+  omemoCurveSignature sig, expsig;
+  uint8_t msg[12];
   CopyHex(prv, "48a8892cc4e49124b7b57d94fa15becfce071830d6449004685e387"
                "c62409973");
   CopyHex(pub, "55f1bfede27b6a03e0dd389478ffb01462e5c52dbbac32cf870f00a"
@@ -213,7 +205,7 @@ int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *k) {
   return 1;
 }
 
-int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *k) {
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *k, uint64_t) {
   if (mkskippedi >= MKSKIPPEDN)
     return OMEMO_EUSER;
   memcpy(&mkskipped[mkskippedi++], k, sizeof(*k));
@@ -284,7 +276,6 @@ static void TestReceive() {
 }
 
 static void TestDeriveChainKey() {
-  int r;
   static uint8_t seed[] = {
       0x8a, 0xb7, 0x2d, 0x6f, 0x4c, 0xc5, 0xac, 0x0d, 0x38, 0x7e, 0xaf,
       0x46, 0x33, 0x78, 0xdd, 0xb2, 0x8e, 0xdd, 0x07, 0x38, 0x5b, 0x1c,
@@ -360,11 +351,6 @@ static int GetSharedSecretWithoutPreKey(omemoKey rk, omemoKey ck, bool isbob, om
 }
 
 static void TestRatchet() {
-  static uint8_t bobPublic[] = {
-      0x05, 0x2c, 0xb4, 0x97, 0x76, 0xb8, 0x77, 0x02, 0x05, 0x74, 0x5a,
-      0x3a, 0x6e, 0x24, 0xf5, 0x79, 0xcd, 0xb4, 0xba, 0x7a, 0x89, 0x04,
-      0x10, 0x05, 0x92, 0x8e, 0xbb, 0xad, 0xc9, 0xc0, 0x5a, 0xd4, 0x58};
-
   static uint8_t bobIdentityPublic[] = {
       0x05, 0xf1, 0xf4, 0x38, 0x74, 0xf6, 0x96, 0x69, 0x56, 0xc2, 0xdd,
       0x47, 0x3f, 0x8f, 0xa1, 0x5a, 0xde, 0xb7, 0x1d, 0x1c, 0xb9, 0x91,
@@ -389,10 +375,6 @@ static void TestRatchet() {
       0x97, 0x97, 0xca, 0xca, 0x53, 0xc9, 0x89, 0xbb, 0xe2, 0x29, 0xa4,
       0x0c, 0xa7, 0x72, 0x70, 0x10, 0xeb, 0x26, 0x04, 0xfc, 0x14, 0x94,
       0x5d, 0x77, 0x95, 0x8a, 0x0a, 0xed, 0xa0, 0x88, 0xb4, 0x4d};
-  uint8_t bobPrivate[] = {
-      0xa1, 0xca, 0xb4, 0x8f, 0x7c, 0x89, 0x3f, 0xaf, 0xa9, 0x88, 0x0a,
-      0x28, 0xc3, 0xb4, 0x99, 0x9d, 0x28, 0xd6, 0x32, 0x95, 0x62, 0xd2,
-      0x7a, 0x4e, 0xa4, 0xe2, 0x2e, 0x9f, 0xf1, 0xbd, 0xd6, 0x5a};
 
   uint8_t bobIdentityPrivate[] = {
       0x48, 0x75, 0xcc, 0x69, 0xdd, 0xf8, 0xea, 0x07, 0x19, 0xec, 0x94,

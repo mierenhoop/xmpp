@@ -263,14 +263,14 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
   return GenerateKeyPair(kp);
 }
 
-[[nodiscard]] static int GenerateRegistrationId(uint32_t *id) {
+int omemoGenerateRegistrationId(uint32_t *id) {
   TRY(omemoRandom(id, sizeof(*id)));
   *id = (*id % 16380) + 1;
   return 0;
 }
 
-[[nodiscard]] static int CalculateCurveSignature(omemoCurveSignature sig, omemoKey signprv,
-                                    uint8_t *msg, size_t n) {
+[[nodiscard]] static int CalculateCurveSignature(omemoCurveSignature sig, const omemoKey signprv,
+                                    const uint8_t *msg, size_t n) {
   assert(n <= 33);
   uint8_t rnd[sizeof(omemoCurveSignature)];
   TRY(omemoRandom(rnd, sizeof(rnd)));
@@ -286,7 +286,7 @@ static void CalculateCurveAgreement(uint8_t d[static 32], const omemoKey prv,
 
 [[nodiscard]] static int GenerateSignedPreKey(struct omemoSignedPreKey *spk,
                                  uint32_t id,
-                                 struct omemoKeyPair *idkp) {
+                                 const struct omemoKeyPair *idkp) {
   omemoSerializedKey ser;
   spk->id = id;
   TRY(GenerateKeyPair(&spk->kp));
@@ -548,13 +548,18 @@ static const struct omemoSignedPreKey *FindSignedPreKey(const struct omemoStore 
   return NULL;
 }
 
-[[nodiscard]] static int RotateSignedPreKey(struct omemoStore *store) {
-  memcpy(&store->prevsignedprekey, &store->cursignedprekey,
-         sizeof(struct omemoSignedPreKey));
-  return GenerateSignedPreKey(
-      &store->cursignedprekey,
-      IncrementWrapSkipZero(store->prevsignedprekey.id),
+int omemoRotateSignedPreKey(struct omemoStore *store) {
+  struct omemoSignedPreKey spk;
+  int r = GenerateSignedPreKey(
+      &spk,
+      IncrementWrapSkipZero(store->cursignedprekey.id),
       &store->identity);
+  if (!r) {
+    memcpy(&store->prevsignedprekey, &store->cursignedprekey,
+           sizeof(struct omemoSignedPreKey));
+    memcpy(&store->cursignedprekey, &spk, sizeof(spk));
+  }
+  return r;
 }
 
 //  PN = Ns
@@ -586,13 +591,13 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return CLAMP0(n - nr);
 }
 
-[[nodiscard]] static int SkipMessageKeys(struct omemoSession *session, uint32_t n) {
+[[nodiscard]] static int SkipMessageKeys(struct omemoSession *session, uint32_t n, uint64_t fullamount) {
   struct omemoMessageKey k;
   while (session->state.nr < n) {
     TRY(GetBaseMaterials(session->state.ckr, k.mk, session->state.ckr));
     memcpy(k.dh, session->state.dhr, 32);
     k.nr = session->state.nr;
-    TRY(omemoStoreMessageKey(session, &k));
+    TRY(omemoStoreMessageKey(session, &k, fullamount--));
     session->state.nr++;
   }
   return 0;
@@ -646,10 +651,11 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
       ? GetAmountSkipped(session->state.nr, headerpn) + headern
       : GetAmountSkipped(session->state.nr, headern);
     if (shouldstep) {
-      TRY(SkipMessageKeys(session, headerpn));
+      TRY(SkipMessageKeys(session, headerpn, nskips));
+      nskips -= headern;
       TRY(DHRatchet(&session->state, headerdh));
     }
-    TRY(SkipMessageKeys(session, headern));
+    TRY(SkipMessageKeys(session, headern, nskips));
     TRY(GetBaseMaterials(session->state.ckr, mk, session->state.ckr));
     session->state.nr++;
   }
@@ -725,7 +731,7 @@ int omemoDecryptMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uin
   if (!(r = mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, payload, 128)))
     r = mbedtls_gcm_auth_decrypt(&ctx, n, iv, 12, "", 0, payload+16, pn-16, s, d);
   mbedtls_gcm_free(&ctx);
-  return r;
+  return r ? OMEMO_ECRYPTO : 0;
 }
 
 int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
@@ -739,7 +745,7 @@ int omemoEncryptMessage(uint8_t *d, omemoKeyPayload payload,
   if (!(r = mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, payload, 128)))
     r = mbedtls_gcm_crypt_and_tag(&ctx, MBEDTLS_GCM_ENCRYPT, n, iv, 12, "", 0, s, d, 16, payload+16);
   mbedtls_gcm_free(&ctx);
-  return r;
+  return r ? OMEMO_ECRYPTO : 0;
 }
 
 // TODO: can we incorporate this in ParseProtobuf?
@@ -930,6 +936,5 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
   session->pendingpk_id = fields[12].v;
   session->pendingspk_id = fields[13].v;
   session->fsm = fields[14].v;
-  const char *e = p + n;
   return 0;
 }
