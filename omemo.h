@@ -122,9 +122,11 @@ struct omemoBundle {
  * omemoSession within another struct and appending user data fields to
  * the new struct.
  *
+ * @param sk has the nr and dh field filled, use them to look up the mk
+ * and copy it to st->mk
  * @returns 0 when found or 1 when not found or OMEMO_E*
  */
-int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *);
+int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *sk);
 
 /**
  * User supplied function.

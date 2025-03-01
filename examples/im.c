@@ -822,33 +822,48 @@ void RunIm(const char *ip) {
 
 #define SESSION_LOCATION "/tmp/session.db"
 
-#define SCHEMA "create table if not exists session(data);\n"
+#define SCHEMA \
+  "create table if not exists session(data);\n" \
+  "create table if not exists mkskipped(dh, nr, mk);\n"
 
 sqlite3 *db;
-
-int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *) {
-  return OMEMO_EUSER;
-}
-
-int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *) {
-  return OMEMO_EUSER;
-}
 
 int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 int xmppRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }
 
-static bool ReadWholeFile(const char *path, uint8_t **data, size_t *n) {
-  FILE *f = fopen(path, "r");
-  if (!f)
-    return false;
-  fseek(f, 0, SEEK_END);
-  *n = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  if ((*data = malloc(*n))) {
-    fread(*data, 1, *n, f);
+int omemoLoadMessageKey(struct omemoSession *, struct omemoMessageKey *sk) {
+  sqlite3_stmt *stmt;
+  int rc = sqlite3_prepare_v2(db, "delete from mkskipped where dh = ? and nr = ? returning mk;", -1, &stmt, NULL);
+  sqlite3_bind_blob(stmt, 1, sk->dh, sizeof(sk->dh), NULL);
+  sqlite3_bind_int(stmt, 2, sk->nr);
+  sqlite3_step(stmt);
+  if (rc == SQLITE_ROW) {
+    const void *blob = sqlite3_column_blob(stmt, 0);
+    int size = sqlite3_column_bytes(stmt, 0);
+    if (size == sizeof(sk->mk)) {
+      memcpy(sk->mk, blob, sizeof(sk->mk));
+      rc = 0;
+    } else {
+      rc = OMEMO_EUSER;
+    }
+  } else if (rc == SQLITE_OK) {
+    rc = 1;
+  } else {
+    rc = OMEMO_EUSER;
   }
-  fclose(f);
-  return *data != NULL;
+  sqlite3_finalize(stmt);
+  return rc;
+}
+
+int omemoStoreMessageKey(struct omemoSession *, const struct omemoMessageKey *sk) {
+  sqlite3_stmt *stmt;
+  int rc = sqlite3_prepare_v2(db, "insert into mkskipped(dh,nr,mk) values (?,?,?);", -1, &stmt, NULL);
+  sqlite3_bind_blob(stmt, 1, sk->dh, sizeof(sk->dh), NULL);
+  sqlite3_bind_int(stmt, 2, sk->nr);
+  sqlite3_bind_blob(stmt, 3, sk->mk, sizeof(sk->mk), NULL);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return OMEMO_EUSER;
 }
 
 static void OpenDatabase() {
@@ -858,9 +873,21 @@ static void OpenDatabase() {
   assert(rc == SQLITE_OK);
 }
 
-void BeginTransaction() {}
-void CommitTransaction() {}
-void CancelTransaction() {}
+void BeginTransaction() {
+  OpenDatabase();
+  int rc = sqlite3_exec(db, "begin;", NULL, 0, NULL);
+  assert(!rc);
+}
+void CommitTransaction() {
+  int rc = sqlite3_exec(db, "commit;", NULL, 0, NULL);
+  assert(!rc);
+  sqlite3_close_v2(db);
+}
+void CancelTransaction() {
+  int rc = sqlite3_exec(db, "rollback;", NULL, 0, NULL);
+  assert(!rc);
+  sqlite3_close_v2(db);
+}
 
 void SaveSession() {
   OpenDatabase();
