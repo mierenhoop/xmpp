@@ -23,15 +23,12 @@
 #define OMEMO_NUMPREKEYS 100
 
 #define OMEMO_EPROTOBUF (-1)
-#define OMEMO_ECRYPTO (-2)
-#define OMEMO_ECORRUPT (-3)
-#define OMEMO_ESIG (-4)
-#define OMEMO_ESTATE (-5)
-#define OMEMO_ESKIPBUF (-6)
-#define OMEMO_EMAXSKIP (-7)
-#define OMEMO_EKEYGONE (-8)
-#define OMEMO_EALLOC (-9)
-#define OMEMO_EUSER (-10)
+#define OMEMO_ECRYPTO   (-2)
+#define OMEMO_ECORRUPT  (-3)
+#define OMEMO_ESIG      (-4)
+#define OMEMO_ESTATE    (-5)
+#define OMEMO_EKEYGONE  (-6)
+#define OMEMO_EUSER     (-7)
 
 #define OMEMO_INTERNAL_PAYLOAD_SIZE 32
 #define OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE 48
@@ -195,8 +192,10 @@ static inline bool omemoIsStoreInitialized(const struct omemoStore *store) {
 /**
  * Initialize OMEMO session from retrieved bundle.
  *
- * The bundle structure must be manually filled with relevant data of a recently retrieved bundle.
- * TODO: @see omemoDeserializeKey()
+ * The bundle structure must be manually filled with relevant data of a
+ * recently retrieved bundle. It is important to note that the keys in
+ * the XML bundle are in serialized form with 33 bytes and the last 32
+ * bytes should be copied in the bundle structure.
  */
 int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *store, const struct omemoBundle *bundle);
 

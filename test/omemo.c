@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <sys/random.h>
+
 // TODO: for all exposed functions, test all error paths
 
 int omemoRandom(void *d, size_t n) { return getrandom(d, n, 0) != n; }

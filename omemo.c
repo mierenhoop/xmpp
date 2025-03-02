@@ -19,13 +19,9 @@
 #include <mbedtls/gcm.h>
 
 #include <stdint.h>
-#include <string.h>
 #include <stdbool.h>
 #include <assert.h>
 #include <stdlib.h>
-#include <setjmp.h>
-
-#include <sys/random.h>
 
 #include "c25519.h"
 
@@ -220,7 +216,7 @@ static void ConvertCurvePrvToEdPub(omemoKey ed, const omemoKey prv) {
   ed25519_pack(ed, x, y);
 }
 
-[[nodiscard]] static int c25519_sign(omemoCurveSignature sig, const omemoKey prv, const uint8_t *msg, size_t msgn) {
+static int c25519_sign(omemoCurveSignature sig, const omemoKey prv, const uint8_t *msg, size_t msgn) {
   assert(msgn <= 33);
   omemoKey ed;
   uint8_t msgbuf[33+64];
@@ -246,7 +242,7 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
   return !!edsign_verify(sig2, ed, msg, msgn);
 }
 
-[[nodiscard]] static int GenerateKeyPair(struct omemoKeyPair *kp) {
+static int GenerateKeyPair(struct omemoKeyPair *kp) {
   memset(kp, 0, sizeof(*kp));
   TRY(omemoRandom(kp->prv, sizeof(kp->prv)));
   c25519_prepare(kp->prv);
@@ -254,7 +250,7 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
   return 0;
 }
 
-[[nodiscard]] static int GeneratePreKey(struct omemoPreKey *pk, uint32_t id) {
+static int GeneratePreKey(struct omemoPreKey *pk, uint32_t id) {
   pk->id = id;
   return GenerateKeyPair(&pk->kp);
 }
@@ -265,7 +261,7 @@ int omemoGenerateRegistrationId(uint32_t *id) {
   return 0;
 }
 
-[[nodiscard]] static int CalculateCurveSignature(omemoCurveSignature sig, const omemoKey signprv,
+static int CalculateCurveSignature(omemoCurveSignature sig, const omemoKey signprv,
                                     const uint8_t *msg, size_t n) {
   assert(n <= 33);
   uint8_t rnd[sizeof(omemoCurveSignature)];
@@ -280,7 +276,7 @@ static void CalculateCurveAgreement(uint8_t d[static 32], const omemoKey prv,
   curve25519(d, prv, pub);
 }
 
-[[nodiscard]] static int GenerateSignedPreKey(struct omemoSignedPreKey *spk,
+static int GenerateSignedPreKey(struct omemoSignedPreKey *spk,
                                  uint32_t id,
                                  const struct omemoKeyPair *idkp) {
   omemoSerializedKey ser;
@@ -316,7 +312,7 @@ int omemoRefillPreKeys(struct omemoStore *store) {
   return 0;
 }
 
-[[nodiscard]] static int omemoSetupStoreImpl(struct omemoStore *store) {
+static int omemoSetupStoreImpl(struct omemoStore *store) {
   memset(store, 0, sizeof(struct omemoStore));
   TRY(GenerateKeyPair(&store->identity));
   TRY(GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity));
@@ -338,9 +334,13 @@ static void GetAd(uint8_t ad[66], const omemoKey ika, const omemoKey ikb) {
   omemoSerializeKey(ad + 33, ikb);
 }
 
-[[nodiscard]] static int GetMac(uint8_t d[static 8], const omemoKey ika, const omemoKey ikb,
-                  const omemoKey mk, const uint8_t *msg, size_t msgn) {
-  assert(msgn <= OMEMO_INTERNAL_FULLMSG_MAXSIZE);
+static int GetMac(uint8_t d[static 8], const omemoKey ika,
+                  const omemoKey ikb, const omemoKey mk,
+                  const uint8_t *msg, size_t msgn) {
+  // This could theoretically happen while decrypting when the protobuf
+  // is needlessly large.
+  if (msgn > OMEMO_INTERNAL_FULLMSG_MAXSIZE)
+    return OMEMO_ECORRUPT;
   uint8_t macinput[66 + OMEMO_INTERNAL_FULLMSG_MAXSIZE], mac[32];
   GetAd(macinput, ika, ikb);
   memcpy(macinput + 66, msg, msgn);
@@ -351,7 +351,7 @@ static void GetAd(uint8_t ad[66], const omemoKey ika, const omemoKey ikb) {
   return 0;
 }
 
-[[nodiscard]] static int Encrypt(uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
+static int Encrypt(uint8_t out[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE], const omemoKeyPayload in, omemoKey key,
                     uint8_t iv[static 16]) {
   assert(OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE == 48);
   uint8_t tmp[48];
@@ -365,7 +365,7 @@ static void GetAd(uint8_t ad[66], const omemoKey ika, const omemoKey ikb) {
   return 0;
 }
 
-[[nodiscard]] static int Decrypt(uint8_t *out, const uint8_t *in, size_t n, omemoKey key,
+static int Decrypt(uint8_t *out, const uint8_t *in, size_t n, omemoKey key,
                     uint8_t iv[static 16]) {
   mbedtls_aes_context aes;
   if (mbedtls_aes_setkey_dec(&aes, key, 256) ||
@@ -380,7 +380,7 @@ struct __attribute__((__packed__)) DeriveChainKeyOutput {
   uint8_t iv[16];
 };
 
-[[nodiscard]] static int DeriveChainKey(struct DeriveChainKeyOutput *out, const omemoKey ck) {
+static int DeriveChainKey(struct DeriveChainKeyOutput *out, const omemoKey ck) {
   uint8_t salt[32];
   memset(salt, 0, 32);
   assert(sizeof(struct DeriveChainKeyOutput) == 80);
@@ -394,7 +394,7 @@ struct __attribute__((__packed__)) DeriveChainKeyOutput {
 
 // d may be the same pointer as ck
 //  ck, mk = KDF_CK(ck)
-[[nodiscard]] static int GetBaseMaterials(omemoKey d, omemoKey mk, const omemoKey ck) {
+static int GetBaseMaterials(omemoKey d, omemoKey mk, const omemoKey ck) {
   omemoKey tmp;
   uint8_t data = 1;
   if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), ck, 32, &data, 1, mk) != 0)
@@ -410,7 +410,7 @@ struct __attribute__((__packed__)) DeriveChainKeyOutput {
 // header = HEADER(DHs, PN, Ns)
 // Ns += 1
 // return header, ENCRYPT(mk, plaintext, CONCAT(AD, header))
-[[nodiscard]] static int EncryptKeyImpl(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
+static int EncryptKeyImpl(struct omemoSession *session, const struct omemoStore *store, struct omemoKeyMessage *msg, const omemoKeyPayload payload) {
   if (session->fsm != SESSION_INIT && session->fsm != SESSION_READY)
     return OMEMO_ESTATE;
   omemoKey mk;
@@ -450,7 +450,7 @@ int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store
 }
 
 // RK, ck = KDF_RK(RK, DH(DHs, DHr))
-[[nodiscard]] static int DeriveRootKey(struct omemoState *state, omemoKey ck) {
+static int DeriveRootKey(struct omemoState *state, omemoKey ck) {
   uint8_t secret[32], masterkey[64];
   CalculateCurveAgreement(secret, state->dhs.prv, state->dhr);
   if (mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
@@ -468,7 +468,7 @@ int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store
 // DH3 = DH(EKA, SPKB)
 // DH4 = DH(EKA, OPKB)
 // SK = KDF(DH1 || DH2 || DH3 || DH4)
-[[nodiscard]] static int GetSharedSecret(omemoKey sk, bool isbob, const omemoKey ika, const omemoKey ska, const omemoKey eka, const omemoKey ikb, const omemoKey spkb, const omemoKey opkb) {
+static int GetSharedSecret(omemoKey sk, bool isbob, const omemoKey ika, const omemoKey ska, const omemoKey eka, const omemoKey ikb, const omemoKey spkb, const omemoKey opkb) {
   uint8_t secret[32*5] = {0}, salt[32];
   memset(secret, 0xff, 32);
   // When we are bob, we must swap the first two.
@@ -494,7 +494,7 @@ int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store
 //  state.Nr = 0
 //  state.PN = 0
 //  state.MKSKIPPED = {}
-[[nodiscard]] static int RatchetInitAlice(struct omemoState *state, const omemoKey sk, const omemoKey ekb, const struct omemoKeyPair *eka) {
+static int RatchetInitAlice(struct omemoState *state, const omemoKey sk, const omemoKey ekb, const struct omemoKeyPair *eka) {
   memset(state, 0, sizeof(struct omemoState));
   memcpy(&state->dhs, eka, sizeof(struct omemoKeyPair));
   memcpy(state->rk, sk, 32);
@@ -565,7 +565,7 @@ int omemoRotateSignedPreKey(struct omemoStore *store) {
 //  RK, CKr = KDF_RK(RK, DH(DHs, DHr))
 //  DHs = GENERATE_DH()
 //  RK, CKs = KDF_RK(RK, DH(DHs, DHr))
-[[nodiscard]] static int DHRatchet(struct omemoState *state, const omemoKey dh) {
+static int DHRatchet(struct omemoState *state, const omemoKey dh) {
   state->pn = state->ns;
   state->ns = 0;
   state->nr = 0;
@@ -587,7 +587,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return CLAMP0(n - nr);
 }
 
-[[nodiscard]] static int SkipMessageKeys(struct omemoSession *session, uint32_t n, uint64_t fullamount) {
+static int SkipMessageKeys(struct omemoSession *session, uint32_t n, uint64_t fullamount) {
   struct omemoMessageKey k;
   while (session->state.nr < n) {
     TRY(GetBaseMaterials(session->state.ckr, k.mk, session->state.ckr));
@@ -599,7 +599,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return 0;
 }
 
-[[nodiscard]] static int DecryptKeyImpl(struct omemoSession *session,
+static int DecryptKeyImpl(struct omemoSession *session,
                               const struct omemoStore *store,
                               omemoKeyPayload decrypted, const uint8_t *msg,
                               size_t msgn) {
@@ -617,7 +617,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   // these checks should already be handled by ParseProtobuf, just to make sure...
   if (fields[4].v > 48 || fields[4].v < 32)
     return OMEMO_ECORRUPT;
-  assert(fields[1].v == 33);
+  assert(fields[1].v == 33); // TODO: make a test out of this in test/omemo.c and remove here
 
   uint32_t headern = fields[2].v;
   uint32_t headerpn = fields[3].v;
@@ -668,7 +668,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return 0;
 }
 
-[[nodiscard]] static int DecryptGenericKeyImpl(struct omemoSession *session, struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+static int DecryptGenericKeyImpl(struct omemoSession *session, struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   struct omemoPreKey *pk = NULL;
   if (isprekey) {
     if (msgn == 0 || msg[0] != ((3 << 4) | 3))
@@ -735,7 +735,8 @@ int omemoDecryptKey(struct omemoSession *session, struct omemoStore *store, omem
 
 int omemoDecryptMessage(uint8_t *d, const uint8_t *payload, size_t pn, const uint8_t iv[12], const uint8_t *s, size_t n) {
   int r = 0;
-  assert(pn >= 32);
+  if (pn < 32)
+    return OMEMO_ECORRUPT;
   mbedtls_gcm_context ctx;
   mbedtls_gcm_init(&ctx);
   if (!(r = mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, payload, 128)))
@@ -770,9 +771,9 @@ static bool ParseRepeatingField(const uint8_t *s, size_t n,
     id = *s >> 3;
     s++;
     if (id >= 16 || (id == fieldid && type != (field->type & 7)))
-      return (assert(0), true);
+      return true;
     if (!(s = ParseVarInt(s, e, &v)))
-      return (assert(0), true);
+      return true;
     if (id == fieldid)
       field->v = v;
     if (type == PB_LEN) {
@@ -784,7 +785,7 @@ static bool ParseRepeatingField(const uint8_t *s, size_t n,
       break;
   }
   if (s > e)
-    return (assert(0), true);
+    return true;
   return false;
 }
 
@@ -799,7 +800,6 @@ size_t omemoGetSerializedStoreSize(const struct omemoStore *store) {
   return sum;
 }
 
-// TODO: use protobuf for this too
 void omemoSerializeStore(uint8_t *p, const struct omemoStore *store) {
   uint8_t *d = p;
   d = FormatVarInt(d, PB_UINT32, 1, store->isinitialized);
@@ -926,9 +926,8 @@ int omemoDeserializeSession(const char *p, size_t n, struct omemoSession *sessio
     [12] = {PB_REQUIRED | PB_UINT32},
     [13] = {PB_REQUIRED | PB_UINT32},
     [14] = {PB_REQUIRED | PB_UINT32},
-    [15] = {/*PB_REQUIRED |*/ PB_LEN},
   };
-  if (ParseProtobuf(p, n, fields, 16))
+  if (ParseProtobuf(p, n, fields, 15))
     return OMEMO_EPROTOBUF;
   memcpy(session->remoteidentity, fields[1].p+1, 32);
   memcpy(session->state.dhs.prv, fields[2].p, 32);
