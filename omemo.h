@@ -208,7 +208,7 @@ int omemoEncryptKey(struct omemoSession *session, const struct omemoStore *store
 /**
  * Decrypt message encryption key payload for a specific recipient.
  */
-int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn);
+int omemoDecryptKey(struct omemoSession *session, struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn);
 
 /**
  * Encrypt message which will be stored in the <payload> element.

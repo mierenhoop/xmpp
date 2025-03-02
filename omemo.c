@@ -259,10 +259,6 @@ static bool c25519_verify(const omemoCurveSignature sig, const omemoKey pub, con
   return GenerateKeyPair(&pk->kp);
 }
 
-[[nodiscard]] static int GenerateIdentityKeyPair(struct omemoKeyPair *kp) {
-  return GenerateKeyPair(kp);
-}
-
 int omemoGenerateRegistrationId(uint32_t *id) {
   TRY(omemoRandom(id, sizeof(*id)));
   *id = (*id % 16380) + 1;
@@ -322,7 +318,7 @@ int omemoRefillPreKeys(struct omemoStore *store) {
 
 [[nodiscard]] static int omemoSetupStoreImpl(struct omemoStore *store) {
   memset(store, 0, sizeof(struct omemoStore));
-  TRY(GenerateIdentityKeyPair(&store->identity));
+  TRY(GenerateKeyPair(&store->identity));
   TRY(GenerateSignedPreKey(&store->cursignedprekey, 1, &store->identity));
   TRY(omemoRefillPreKeys(store));
   store->isinitialized = true;
@@ -530,7 +526,7 @@ int omemoInitFromBundle(struct omemoSession *session, const struct omemoStore *s
   return 0;
 }
 
-static const struct omemoPreKey *FindPreKey(const struct omemoStore *store, uint32_t pk_id) {
+static struct omemoPreKey *FindPreKey(struct omemoStore *store, uint32_t pk_id) {
   for (int i = 0; i < OMEMO_NUMPREKEYS; i++) {
     if (store->prekeys[i].id == pk_id)
       return store->prekeys+i;
@@ -672,7 +668,8 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
   return 0;
 }
 
-[[nodiscard]] static int DecryptGenericKeyImpl(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+[[nodiscard]] static int DecryptGenericKeyImpl(struct omemoSession *session, struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+  struct omemoPreKey *pk = NULL;
   if (isprekey) {
     if (msgn == 0 || msg[0] != ((3 << 4) | 3))
       return OMEMO_ECORRUPT;
@@ -691,7 +688,7 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
     // we could put this in session->fsm...
     if (session->state.nr == 0) {
       // TODO: later remove this prekey
-      const struct omemoPreKey *pk = FindPreKey(store, fields[1].v);
+      pk = FindPreKey(store, fields[1].v);
       const struct omemoSignedPreKey *spk = FindSignedPreKey(store, fields[6].v);
       if (!pk || !spk)
         return OMEMO_ECORRUPT;
@@ -707,10 +704,23 @@ static inline uint32_t GetAmountSkipped(int64_t nr, int64_t n) {
       return OMEMO_ESTATE;
   }
   session->fsm = SESSION_READY;
-  return DecryptKeyImpl(session, store, payload, msg, msgn);
+  int r = DecryptKeyImpl(session, store, payload, msg, msgn);
+  if (!r && pk) {
+    // TODO: should we remove the key here or let the user do it? We could
+    // do something like `if (pk) session->usedprekey = pk->id` and have a
+    // function which removes & refills that key. When updating the key the
+    // user probably wants to upload the new bundle (or just the new key),
+    // for now that should only be done when this function returns 0 and
+    // isprekey == true. It might be more user friendly to have separate
+    // function for both decrypting prekey and non-prekey where that get
+    // done automatically.
+    memset(pk, 0, sizeof(*pk));
+    omemoRefillPreKeys(store);
+  }
+  return r;
 }
 
-int omemoDecryptKey(struct omemoSession *session, const struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
+int omemoDecryptKey(struct omemoSession *session, struct omemoStore *store, omemoKeyPayload payload, bool isprekey, const uint8_t *msg, size_t msgn) {
   if (!session || !store || !store->isinitialized || !msg || !msgn)
     return OMEMO_ESTATE;
   struct omemoState backup;
@@ -869,17 +879,15 @@ int omemoDeserializeStore(const char *p, size_t n, struct omemoStore *store) {
   return 0;
 }
 
-size_t omemoGetSerializedSessionSize(
-    const struct omemoSession *session) {
-  uint32_t sum = 35 * 4   // SerializedKey
-                 + 34 * 4 // Key
-                 + 1 * 6 + GetVarIntSize(session->state.ns) +
-                 GetVarIntSize(session->state.nr) +
-                 GetVarIntSize(session->state.pn) +
-                 GetVarIntSize(session->pendingpk_id) +
-                 GetVarIntSize(session->pendingspk_id) +
-                 GetVarIntSize(session->fsm);
-  return sum;
+size_t omemoGetSerializedSessionSize(const struct omemoSession *session) {
+  return 35 * 4   // SerializedKey
+         + 34 * 4 // Key
+         + 1 * 6 + GetVarIntSize(session->state.ns) +
+         GetVarIntSize(session->state.nr) +
+         GetVarIntSize(session->state.pn) +
+         GetVarIntSize(session->pendingpk_id) +
+         GetVarIntSize(session->pendingspk_id) +
+         GetVarIntSize(session->fsm);
 }
 
 void omemoSerializeSession(uint8_t *p, const struct omemoSession *session) {

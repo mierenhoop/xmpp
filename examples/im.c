@@ -419,6 +419,7 @@ static void ParseEncryptedMessage(struct xmppParser *parser, const struct xmppXm
     LogWarn("omemoKeyMessage decryption error: %d", r);
     goto free;
   }
+  // TODO: prekey is removed & updated so `if (isprekey) UploadBundle() and SaveStore()`
   CommitTransaction();
   SaveSession();
   if (ivslc.n && payloadslc.n) {
