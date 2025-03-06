@@ -1,37 +1,29 @@
 ## Notice
 
- Do not use the code in this repository for anything serious; there
- might be unidentified security vulnerabilities present. You are
- encouraged to report such issues when found.
+Do not use the code in this repository for anything serious yet; there
+might be unidentified security vulnerabilities present. You are
+encouraged to report such issues when found.
 
 ## About
 
-This repository contains two libraries:
-
-- `xmpp.c`: a bare minimum framework for keeping track of an XMPP
-  session.
-
-- `omemo.c`: a compact implementation of OMEMO.
+The file `omemo.c` contains a compact implementation of OMEMO.
 
 ### Goals
 
 - Run on embedded: support for ESP32 on ESP-IDF & Raspberry Pi Pico
   \[W\] on pico-sdk (untested).
 
-- Be portable to any OS; empower any system to connect to XMPP networks.
+- Be portable to any OS.
 
-- Be compatible with the major XMPP clients and servers (Prosody guaranteed).
+- Work with all relevant clients that have OMEMO.
 
 - Low amount of code while still being readable.
 
-- Control of memory management (when possible).
+- Control of memory management.
 
 ### Non-goals
 
-- Implement the XMPP spec word-for-word.
-
-- Have an extension/plugin system or support multiple versions of a
-  protocol, for additional features you must patch the library.
+- Support multiple OMEMO versions at once.
 
 ## OMEMO
 
@@ -67,64 +59,59 @@ This repository contains two libraries:
 
 Running the tests:
 
- `$ make start-prosody`
-
- `$ make test`
+ `$ make test-omemo`
 
 Using this library for your own project:
 
- Copy over `/xmpp.c`, `/xmpp.h`, `/yxml.c` and `/yxml.h` to your
- project.
+If you want to use OMEMO, copy over `/omemo.c`, `/omemo.h`,
+`/c25519.c` and `/c25519.h`.
 
- If you want to use OMEMO, copy over `/omemo.c`, `/omemo.h`,
- `/c25519.c` and `/c25519.h`.
-
- In both cases, you must link against libmbedcrypto (and/or configure your
- mbedtls build to only include the needed functions.
+You must link against libmbedcrypto (and/or configure your mbedtls build
+to only include the needed functions.
 
 ### Example
 
- The [`im.c`](./examples/im.c) example shows how additional
- functionality can be used in combination with the library. The example
- is not a feature complete instant messenger and for simplicity's sake
- the code is full of hardcoded and spec deviating behaviour that should
- not represent a serious XMPP client.
+The [`im.c`](./example/im.c) example shows how additional
+functionality can be used in combination with the library. The example
+is not a feature complete instant messenger and for simplicity's sake
+the code is full of hardcoded and spec deviating behaviour that should
+not represent a serious XMPP client.
 
 Run the im (instant messenger) example:
 
- `$ make runim`
+`$ make runim`
 
- By default the localhost self-signed certificate is used. For a simple
- test you can spin up prosody (`$ make start-prosody`) and run the echo
- bot (`$ make start-omemo-bot`).
+By default the localhost self-signed certificate is used. For a simple
+test you can spin up prosody (`$ make start-prosody`) and run the echo
+bot (`$ make start-omemo-bot`).
 
 Compile the esp-idf version of the im:
 
 ```bash
-$ cat > examples/esp-im/config.h <<EOF
+$ cat > example/esp-im/config.h <<EOF
 #define IM_WIFI_SSID "ssid"
 #define IM_WIFI_PASS "password"
 #define IM_SERVER_IP "192.168.1.2"
 EOF
 ```
 
- `$ make esp-im`
+`$ make esp-im`
 
- `$ ESP_DEV=/dev/ttyUSB0 make esp-upload`
+`$ ESP_DEV=/dev/ttyUSB0 make esp-upload`
 
- `$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
+`$ ESP_DEV=/dev/ttyUSB0 make esp-monitor`
 
-### Demo of XMPP & OMEMO on an ESP32
+### Demo of XMPP with OMEMO on an ESP32
 
 https://github.com/user-attachments/assets/b01d9439-f30b-4062-8711-02cbf9599e67
 
 ## License
 
- The code in this repository is licensed under ISC, all vendored code in
- this repository is also permissively licensed:
+The code in this repository is licensed under ISC, all vendored code in
+this repository is also permissively licensed:
 
- yxml is licensed under MIT, c25519 is in the public domain and
- Everest Curve25519 is licensed under Apache-2.0.
+yxml is licensed under MIT, c25519 is in the public domain and
+Everest Curve25519 is licensed under Apache-2.0.
 
- While not directly included, MbedTLS is dual-licensed under Apache-2.0
- or GPL-2.0-or-later.
+While not directly included, MbedTLS is dual-licensed under Apache-2.0
+or GPL-2.0-or-later.

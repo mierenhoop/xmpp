@@ -329,7 +329,7 @@ int omemoSetupStore(struct omemoStore *store) {
 }
 
 //  AD = Encode(IKA) || Encode(IKB)
-static void GetAd(uint8_t ad[66], const omemoKey ika, const omemoKey ikb) {
+static void GetAd(uint8_t ad[static 66], const omemoKey ika, const omemoKey ikb) {
   omemoSerializeKey(ad, ika);
   omemoSerializeKey(ad + 33, ikb);
 }

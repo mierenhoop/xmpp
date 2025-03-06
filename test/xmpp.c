@@ -14,7 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "../xmpp.c"
+#include "../example/xmpp.c"
 
 #include <sys/poll.h>
 

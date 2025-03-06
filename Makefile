@@ -6,17 +6,17 @@ all: o/test o/im o/test-omemo
 o:
 	mkdir -p o
 
-o/xmpp.o: xmpp.c xmpp.h | o
-	$(CC) -c -o $@ $(CFLAGS) xmpp.c
+o/xmpp.o: example/xmpp.c example/xmpp.h | o
+	$(CC) -c -o $@ $(CFLAGS) example/xmpp.c
 
 o/test: o/xmpp.o test/cacert.inc test/xmpp.c
-	$(CC) -o $@ yxml.c test/xmpp.c $(CFLAGS) -lmbedcrypto -lmbedtls -lmbedx509
+	$(CC) -o $@ example/yxml.c test/xmpp.c $(CFLAGS) -Iexample -lmbedcrypto -lmbedtls -lmbedx509
 
 o/test-omemo: test/omemo.c omemo.c c25519.c omemo.h | o
 	$(CC) -o $@ c25519.c test/omemo.c $(CFLAGS) -lmbedcrypto
 
-o/im: o/xmpp.o examples/im.c test/cacert.inc omemo.c c25519.c omemo.h
-	$(CC) -o $@ examples/im.c yxml.c omemo.c c25519.c o/xmpp.o $(CFLAGS) -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509 -lsqlite3
+o/im: o/xmpp.o example/im.c test/cacert.inc omemo.c c25519.c omemo.h
+	$(CC) -o $@ example/im.c example/yxml.c omemo.c c25519.c o/xmpp.o $(CFLAGS) -Iexample -DIM_NATIVE -lmbedcrypto -lmbedtls -lmbedx509 -lsqlite3
 
 o/generatestore: test/generatestore.c omemo.c c25519.c omemo.h | o
 	$(CC) -o $@ c25519.c omemo.c test/generatestore.c $(CFLAGS) -lmbedcrypto
@@ -36,7 +36,7 @@ ifneq (,$(wildcard $(ESP_DEV)))
 	ESP_DEVARG= --device=$(ESP_DEV)
 endif
 
-ESPIDF_DOCKERCMD=docker run -it --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp $(ESP_DEVARG) espressif/idf idf.py -B o/example-esp-im -C examples/esp-im
+ESPIDF_DOCKERCMD=docker run -it --rm -v ${PWD}:/project -u $(shell id -u) -w /project -e HOME=/tmp $(ESP_DEVARG) espressif/idf idf.py -B o/example-esp-im -C example/esp-im
 
 .PHONY: esp-im
 esp-im: | o
