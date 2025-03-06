@@ -3,17 +3,17 @@
          xmlns='http://usefulinc.com/ns/doap#'
          xmlns:xmpp='https://linkmauve.fr/ns/xmpp-doap#'>
   <Project xml:lang='en'>
-    <name>mierenhoop/xmpp</name>
+    <name>picomemo</name>
     <created>2025-01-23</created>
-    <shortdesc xml:lang='en'>Portable XMPP &amp; OMEMO implementations in C</shortdesc>
-    <homepage rdf:resource='https://github.com/mierenhoop/xmpp'/>
-    <license rdf:resource='https://raw.githubusercontent.com/mierenhoop/xmpp/refs/heads/master/LICENSE'/>
+    <shortdesc xml:lang='en'>Portable OMEMO implementation in C</shortdesc>
+    <homepage rdf:resource='https://github.com/mierenhoop/picomemo'/>
+    <license rdf:resource='https://raw.githubusercontent.com/mierenhoop/picomemo/refs/heads/master/LICENSE'/>
     <programming-language>C</programming-language>
     <category rdf:resource='https://linkmauve.fr/ns/xmpp-doap#category-library'/>
     <repository>
       <GitRepository>
-        <browse rdf:resource='https://github.com/mierenhoop/xmpp'/>
-        <location rdf:resource='https://github.com/mierenhoop/xmpp.git'/>
+        <browse rdf:resource='https://github.com/mierenhoop/picomemo'/>
+        <location rdf:resource='https://github.com/mierenhoop/picomemo.git'/>
       </GitRepository>
     </repository>
     <!-- We only implement a small part of this... -->
